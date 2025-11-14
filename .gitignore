@@ -16,6 +16,8 @@ fp-info-cache
 *#auto_saved_files#
 *.lck
 
+production/backups
+
 # macOS system files
 .DS_Store
 .DS_Store?
