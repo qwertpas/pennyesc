@@ -8,6 +8,8 @@ Ended up being about $6/board for raw components, but after setup fees ($16), sh
 
 <img src="pics/cad_v1.jpg" width="800">
 
+<img src="pics/drawing_v1.png" width="800">
+
 <img src="pics/schematic_v1.png" width="800">
 
 
