@@ -117,6 +117,21 @@
 #define TMAG5273_OP_CONTINUOUS       0x2
 #define TMAG5273_OP_WAKEUP_SLEEP     0x3
 
+/* ============================================================================
+ * GPIO Definitions for Motor Control
+ * ============================================================================ */
+#define HALLA_PORT   GPIOC
+#define HALLA_PIN    GPIO14
+
+#define HALLB_PORT   GPIOC
+#define HALLB_PIN    GPIO15
+
+#define HALLC_PORT   GPIOA
+#define HALLC_PIN    GPIO0
+
+#define BRAKE_PORT   GPIOA
+#define BRAKE_PIN    GPIO1
+
 /**
  * Manual Clock Setup for STM32L0
  * Goal: 32MHz System Clock
@@ -144,6 +159,7 @@ static void clock_setup(void)
     // Enable Peripheral Clocks
     rcc_periph_clock_enable(RCC_GPIOA);
     rcc_periph_clock_enable(RCC_GPIOB);
+    rcc_periph_clock_enable(RCC_GPIOC);
     rcc_periph_clock_enable(RCC_USART2);
     rcc_periph_clock_enable(RCC_SPI1);
     rcc_periph_clock_enable(RCC_I2C1);
@@ -297,29 +313,29 @@ static bool tmag5273_init_fast_angle(void)
     /* DEVICE_CONFIG_1:
      * - CRC disabled (bit 7 = 0) - faster I2C
      * - MAG_TEMPCO = 0 (no temp compensation)
-     * - CONV_AVG = 1 (2x averaging) - helps with noise
+     * - CONV_AVG = 0 (1x, no averaging) - fastest
      * - READ_MODE = 0 (standard I2C read)
      */
     tmag5273_write_reg(TMAG5273_DEVICE_CONFIG_1, 
-        (TMAG5273_CONV_AVG_2X << TMAG5273_CONV_AVG_SHIFT));
+        (TMAG5273_CONV_AVG_1X << TMAG5273_CONV_AVG_SHIFT));
     
     /* SENSOR_CONFIG_1:
      * - SLEEPTIME = 0 (1ms, not used in continuous mode)
-     * - MAG_CH_EN = XYZ (0x7) - Enable ALL magnetic channels for testing
+     * - MAG_CH_EN = XYZ (0x7) - Enable all channels to debug which axes respond
      */
     tmag5273_write_reg(TMAG5273_SENSOR_CONFIG_1,
         (0 << TMAG5273_SLEEPTIME_SHIFT) |
         (TMAG5273_MAG_CH_XYZ << TMAG5273_MAG_CH_EN_SHIFT));
     
     /* SENSOR_CONFIG_2:
-     * - ANGLE_EN = XY (0x1) - Try X-Y plane angle instead
-     * - Z_RANGE = 1 (higher range ±80mT for A1 variant)
-     * - X_Y_RANGE = 1 (higher range ±80mT for A1 variant)
+     * - ANGLE_EN = XY (0x1) - Calculate angle from X-Y plane
+     * - Z_RANGE = 0 (lower range for better sensitivity)
+     * - X_Y_RANGE = 0 (±40mT range for A1 variant)
      */
     tmag5273_write_reg(TMAG5273_SENSOR_CONFIG_2,
         (TMAG5273_ANGLE_XY << TMAG5273_ANGLE_EN_SHIFT) |
-        (1 << TMAG5273_X_Y_RANGE_SHIFT) |
-        (1 << 0));  /* Z_RANGE = 1 (higher range) */
+        (0 << TMAG5273_X_Y_RANGE_SHIFT) |
+        (0 << 0));  /* Z_RANGE = 0 */
     
     /* INT_CONFIG_1:
      * - MASK_INTB = 1 (bit 0) - REQUIRED when INT pin is not connected/floating!
@@ -447,6 +463,31 @@ static void print_str(const char *s)
 }
 
 /**
+ * Print an unsigned integer as decimal
+ */
+static void print_uint(uint16_t val)
+{
+    char buf[6];
+    int i = 0;
+    
+    if (val == 0) {
+        usart_send_blocking(USART2, '0');
+        return;
+    }
+    
+    /* Build digits in reverse */
+    while (val > 0) {
+        buf[i++] = '0' + (val % 10);
+        val /= 10;
+    }
+    
+    /* Print in correct order */
+    while (i > 0) {
+        usart_send_blocking(USART2, buf[--i]);
+    }
+}
+
+/**
  * Debug function - dump ALL registers to find where data might be
  */
 static void tmag5273_debug_dump(void)
@@ -558,6 +599,31 @@ static void tim2_pwm_setup(void)
     timer_enable_counter(TIM2);
 }
 
+static void motor_gpio_setup(void)
+{
+    /* Configure Hall sensor outputs and brake control as push-pull outputs */
+    
+    /* PC14 - HALLA */
+    gpio_mode_setup(HALLA_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, HALLA_PIN);
+    gpio_set_output_options(HALLA_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, HALLA_PIN);
+    gpio_clear(HALLA_PORT, HALLA_PIN);  /* Start low */
+    
+    /* PC15 - HALLB */
+    gpio_mode_setup(HALLB_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, HALLB_PIN);
+    gpio_set_output_options(HALLB_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, HALLB_PIN);
+    gpio_clear(HALLB_PORT, HALLB_PIN);  /* Start low */
+    
+    /* PA0 - HALLC */
+    gpio_mode_setup(HALLC_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, HALLC_PIN);
+    gpio_set_output_options(HALLC_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, HALLC_PIN);
+    gpio_clear(HALLC_PORT, HALLC_PIN);  /* Start low */
+    
+    /* PA1 - BRAKE */
+    gpio_mode_setup(BRAKE_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, BRAKE_PIN);
+    gpio_set_output_options(BRAKE_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, BRAKE_PIN);
+    gpio_clear(BRAKE_PORT, BRAKE_PIN);  /* Start with brake off */
+}
+
 
 /* Structure to hold all sensor data */
 typedef struct {
@@ -592,8 +658,8 @@ static bool tmag5273_read_all(tmag_data_t *out) {
     out->status = raw_data[8];
     
     // Parse Angle (0x19, 0x1A)
-    uint16_t angle_raw = ((raw_data[9] & 0x01) << 8) | raw_data[10]; // 9-bit
-    out->angle_deg = (float)angle_raw * 360.0f / 512.0f;
+    uint16_t angle_raw = (raw_data[9] << 8) | raw_data[10]; // 9-bit
+    out->angle_deg = (float)angle_raw * 360.0f / 8192.0f;
     
     return true;
 }
@@ -606,6 +672,7 @@ int main(void)
     spi1_setup();
     i2c1_setup();
     tim2_pwm_setup();
+    motor_gpio_setup();
     
     delay_ms(5); // Allow sensor power up
 
@@ -623,35 +690,55 @@ int main(void)
         tmag5273_write_reg(TMAG5273_CONV_STATUS, 0x10);
     }
     
-    // Wait a moment for first conversion
-    delay_ms(10);
-    
-    // Check if POR came back (Indicates Brownout/Power Issue)
-    status = tmag5273_read_reg(TMAG5273_CONV_STATUS);
-    if (status & 0x10) {
-        print_str("WARNING: POR returned! Check Power Supply/Capacitor.\r\n");
-    }
 
     tmag_data_t sensor_data;
 
+    print_str("TMAG5273 Ready\r\n");
+    print_str("Rotate magnet to see which axes respond\r\n\r\n");
+    
+    /* Read and display config to verify */
+    uint8_t cfg1 = tmag5273_read_reg(TMAG5273_SENSOR_CONFIG_1);
+    uint8_t cfg2 = tmag5273_read_reg(TMAG5273_SENSOR_CONFIG_2);
+    print_str("CFG1: 0x");
+    print_hex(cfg1);
+    print_str(" CFG2: 0x");
+    print_hex(cfg2);
+    print_str("\r\n\r\n");
+
     while (1) {
-        // Use Burst Read
+        // Read all sensor data
         tmag5273_read_all(&sensor_data);
         
-        // Debug Output
-        print_str("S:");
-        print_hex(sensor_data.status);
-        
-        // If X is still exactly 0x0000, it's highly suspicious
-        print_str(" X:");
+        /* Show ALL three axes to see which one is responding */
+        print_str("X:");
         print_hex((sensor_data.x_raw >> 8) & 0xFF);
         print_hex(sensor_data.x_raw & 0xFF);
         
-        print_str(" T:"); // Print Temp to verify sensor life
-        int temp_int = (int)sensor_data.temp_degc;
-        print_hex(temp_int);
-
+        print_str(" Y:");
+        print_hex((sensor_data.y_raw >> 8) & 0xFF);
+        print_hex(sensor_data.y_raw & 0xFF);
+        
+        print_str(" Z:");
+        print_hex((sensor_data.z_raw >> 8) & 0xFF);
+        print_hex(sensor_data.z_raw & 0xFF);
+        
+        /* Print angle */
+        print_str("  Angle: ");
+        int angle_int = (int)sensor_data.angle_deg;
+        int angle_frac = (int)((sensor_data.angle_deg - angle_int) * 10);
+        if (angle_frac < 0) angle_frac = -angle_frac;
+        
+        print_uint(angle_int);
+        print_str(".");
+        usart_send_blocking(USART2, '0' + angle_frac);
+        print_str(" deg");
+        
         print_str("\r\n");
+
+        gpio_toggle(HALLA_PORT, HALLA_PIN);
+        gpio_toggle(HALLB_PORT, HALLB_PIN);
+        gpio_toggle(HALLC_PORT, HALLC_PIN);
+
         
         delay_ms(100);
     }
