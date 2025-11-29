@@ -9,6 +9,7 @@
 #include <libopencm3/cm3/systick.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "mct8316z.h"
 
 /* ============================================================================
  * TMAG5273 Hall-Effect Sensor Driver
@@ -669,13 +670,23 @@ int main(void)
     clock_setup();
     systick_setup();
     usart2_setup();
-    spi1_setup();
+    // spi1_setup(); // Replaced by mct8316z_init()
     i2c1_setup();
     tim2_pwm_setup();
     motor_gpio_setup();
+
+    mct8316z_init(); // Initialize MCT8316Z SPI
     
     delay_ms(5); // Allow sensor power up
 
+    // Configure MCT8316Z
+    mct8316z_set_pwm_mode_async_dig(); // Set Asynchronous rectification with digital Hall
+
+    // Set PWM Duty Cycle to 10%
+    // Timer Period is 799 (800 ticks). 10% = 80.
+    timer_set_oc_value(TIM2, TIM_OC4, 120); 
+    // timer_set_oc_value(TIM2, TIM_OC4, 400);
+    
     if (!tmag5273_init_fast_angle()) {
         print_str("Init Failed\r\n");
         while(1);
@@ -735,89 +746,68 @@ int main(void)
         
         print_str("\r\n");
 
-        gpio_toggle(HALLA_PORT, HALLA_PIN);
-        gpio_toggle(HALLB_PORT, HALLB_PIN);
-        gpio_toggle(HALLC_PORT, HALLC_PIN);
+        /* Commutation Sequence based on Table 8-4 (Digital Hall Inputs) 
+         * DIR = 0 (Clockwise?)
+         * Step | Hall A | Hall B | Hall C
+         * -----|--------|--------|--------
+         * 1    | 1      | 0      | 1
+         * 2    | 1      | 0      | 0
+         * 3    | 1      | 1      | 0
+         * 4    | 0      | 1      | 0
+         * 5    | 0      | 1      | 1
+         * 6    | 0      | 0      | 1
+         * 
+         * Note: The table provided in the prompt shows:
+         * State | A | B | C
+         * 1     | 1 | 1 | 0
+         * 2     | 1 | 0 | 0
+         * 3     | 1 | 0 | 1
+         * 4     | 0 | 0 | 1
+         * 5     | 0 | 1 | 1
+         * 6     | 0 | 1 | 0
+         * 
+         * Let's follow the user provided table exactly.
+         */
+        static int step = 1;
+        switch (step) {
+            case 1: // A=1, B=1, C=0
+                gpio_set(HALLA_PORT, HALLA_PIN);
+                gpio_set(HALLB_PORT, HALLB_PIN);
+                gpio_clear(HALLC_PORT, HALLC_PIN);
+                break;
+            case 2: // A=1, B=0, C=0
+                gpio_set(HALLA_PORT, HALLA_PIN);
+                gpio_clear(HALLB_PORT, HALLB_PIN);
+                gpio_clear(HALLC_PORT, HALLC_PIN);
+                break;
+            case 3: // A=1, B=0, C=1
+                gpio_set(HALLA_PORT, HALLA_PIN);
+                gpio_clear(HALLB_PORT, HALLB_PIN);
+                gpio_set(HALLC_PORT, HALLC_PIN);
+                break;
+            case 4: // A=0, B=0, C=1
+                gpio_clear(HALLA_PORT, HALLA_PIN);
+                gpio_clear(HALLB_PORT, HALLB_PIN);
+                gpio_set(HALLC_PORT, HALLC_PIN);
+                break;
+            case 5: // A=0, B=1, C=1
+                gpio_clear(HALLA_PORT, HALLA_PIN);
+                gpio_set(HALLB_PORT, HALLB_PIN);
+                gpio_set(HALLC_PORT, HALLC_PIN);
+                break;
+            case 6: // A=0, B=1, C=0
+                gpio_clear(HALLA_PORT, HALLA_PIN);
+                gpio_set(HALLB_PORT, HALLB_PIN);
+                gpio_clear(HALLC_PORT, HALLC_PIN);
+                break;
+        }
+        
+        step++;
+        if (step > 6) step = 1;
 
         
-        delay_ms(100);
+        // mct8316z_print_all_regs(); // Print MCT8316Z registers
+        
+        delay_ms(20);
     }
 }
-
-
-
-// int main(void)
-// {
-//     clock_setup();
-//     systick_setup();
-//     usart2_setup();
-//     spi1_setup();
-//     i2c1_setup();
-//     tim2_pwm_setup();
-    
-//     /* Wait for TMAG5273 power-up (1ms typical) */
-//     delay_ms(2);
-    
-//     /* Initialize TMAG5273 for fast angle reading */
-//     if (!tmag5273_init_fast_angle()) {
-//         /* Sensor initialization failed - blink error */
-//         while (1) {
-//             usart_send_blocking(USART2, 'E');
-//             usart_send_blocking(USART2, 'R');
-//             usart_send_blocking(USART2, 'R');
-//             usart_send_blocking(USART2, '\r');
-//             usart_send_blocking(USART2, '\n');
-//             delay_ms(1000);
-//         }
-//     }
-    
-//     /* Print startup message */
-//     const char *msg = "TMAG5273 Ready\r\n";
-//     while (*msg) {
-//         usart_send_blocking(USART2, *msg++);
-//     }
-    
-//     /* Wait for first conversion to complete */
-//     delay_ms(10);
-    
-//     /* Debug dump - check all registers and raw data */
-//     tmag5273_debug_dump();
-
-//     while (1) {
-//         /* Read raw bytes directly and print them */
-//         uint8_t status = tmag5273_read_reg(TMAG5273_CONV_STATUS);
-//         uint8_t x_msb = tmag5273_read_reg(TMAG5273_X_MSB_RESULT);
-//         uint8_t x_lsb = tmag5273_read_reg(TMAG5273_X_LSB_RESULT);
-//         uint8_t y_msb = tmag5273_read_reg(TMAG5273_Y_MSB_RESULT);
-//         uint8_t y_lsb = tmag5273_read_reg(TMAG5273_Y_LSB_RESULT);
-//         uint8_t z_msb = tmag5273_read_reg(TMAG5273_Z_MSB_RESULT);
-//         uint8_t z_lsb = tmag5273_read_reg(TMAG5273_Z_LSB_RESULT);
-//         uint8_t ang_msb = tmag5273_read_reg(TMAG5273_ANGLE_MSB_RESULT);
-//         uint8_t ang_lsb = tmag5273_read_reg(TMAG5273_ANGLE_LSB_RESULT);
-//         uint8_t cfg1 = tmag5273_read_reg(TMAG5273_SENSOR_CONFIG_1);
-//         uint8_t cfg2 = tmag5273_read_reg(TMAG5273_SENSOR_CONFIG_2);
-        
-//         print_str("CFG:");
-//         print_hex(cfg1);
-//         print_hex(cfg2);
-//         print_str(" ST:");
-//         print_hex(status);
-//         print_str(" X:");
-//         print_hex(x_msb);
-//         print_hex(x_lsb);
-//         print_str(" Y:");
-//         print_hex(y_msb);
-//         print_hex(y_lsb);
-//         print_str(" Z:");
-//         print_hex(z_msb);
-//         print_hex(z_lsb);
-//         print_str(" A:");
-//         print_hex(ang_msb);
-//         print_hex(ang_lsb);
-//         print_str("\r\n");
-        
-//         delay_ms(200);
-//     }
-
-//     return 0;
-// }
