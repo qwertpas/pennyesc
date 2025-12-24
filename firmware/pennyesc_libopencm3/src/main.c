@@ -10,6 +10,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "mct8316z.h"
+#include "angleLUT.h"
+
+// Pi constant for angle conversion (avoid pulling in math.h)
+#define PI 3.14159265358979323846f
 
 /* ============================================================================
  * TMAG5273 Hall-Effect Sensor Driver
@@ -212,28 +216,6 @@ static void usart2_setup(void)
     usart_enable(USART2);
 }
 
-static void spi1_setup(void)
-{
-    // MSP: PA4(NSS), PA5(SCK), PA6(MISO), PA7(MOSI) -> AF0
-    gpio_set_af(GPIOA, GPIO_AF0, GPIO4 | GPIO5 | GPIO6 | GPIO7);
-    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO4 | GPIO5 | GPIO6 | GPIO7);
-
-    // Reset SPI1 to clear any state
-    rcc_periph_reset_pulse(RST_SPI1);
-
-    // Master, CPOL=0, CPHA=1 (2nd Edge - Falling Edge sampling)
-    // 16-bit Data Frame, MSB First
-    spi_init_master(SPI1, 
-                    SPI_CR1_BAUDRATE_FPCLK_DIV_8, 
-                    SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE, 
-                    SPI_CR1_CPHA_CLK_TRANSITION_2, 
-                    SPI_CR1_DFF_16BIT,             
-                    SPI_CR1_MSBFIRST);
-
-    spi_enable_ss_output(SPI1); // Hardware NSS
-    spi_enable(SPI1);
-}
-
 static void i2c1_setup(void)
 {
     // MSP: PB6 (SCL), PB7 (SDA) -> AF1
@@ -318,7 +300,7 @@ static bool tmag5273_init_fast_angle(void)
      * - READ_MODE = 0 (standard I2C read)
      */
     tmag5273_write_reg(TMAG5273_DEVICE_CONFIG_1, 
-        (TMAG5273_CONV_AVG_1X << TMAG5273_CONV_AVG_SHIFT));
+        (TMAG5273_CONV_AVG_32X << TMAG5273_CONV_AVG_SHIFT));
     
     /* SENSOR_CONFIG_1:
      * - SLEEPTIME = 0 (1ms, not used in continuous mode)
@@ -326,7 +308,7 @@ static bool tmag5273_init_fast_angle(void)
      */
     tmag5273_write_reg(TMAG5273_SENSOR_CONFIG_1,
         (0 << TMAG5273_SLEEPTIME_SHIFT) |
-        (TMAG5273_MAG_CH_XYZ << TMAG5273_MAG_CH_EN_SHIFT));
+        (TMAG5273_MAG_CH_XYZT << TMAG5273_MAG_CH_EN_SHIFT));
     
     /* SENSOR_CONFIG_2:
      * - ANGLE_EN = XY (0x1) - Calculate angle from X-Y plane
@@ -335,7 +317,7 @@ static bool tmag5273_init_fast_angle(void)
      */
     tmag5273_write_reg(TMAG5273_SENSOR_CONFIG_2,
         (TMAG5273_ANGLE_XY << TMAG5273_ANGLE_EN_SHIFT) |
-        (0 << TMAG5273_X_Y_RANGE_SHIFT) |
+        (1 << TMAG5273_X_Y_RANGE_SHIFT) | //X_Y_RANGE=1 for 80mT
         (0 << 0));  /* Z_RANGE = 0 */
     
     /* INT_CONFIG_1:
@@ -357,93 +339,6 @@ static bool tmag5273_init_fast_angle(void)
 }
 
 /**
- * Read angle result (fastest method - direct register read)
- * Returns angle in degrees * 16 (fixed point, divide by 16 for degrees)
- * Range: 0 to 360 degrees
- * 
- * The TMAG5273 CORDIC engine calculates angle from the selected axes.
- * Result is 9-bit (0-511 representing 0-360°)
- * Resolution: 360/512 ≈ 0.703° per LSB
- */
-static uint16_t tmag5273_read_angle_raw(void)
-{
-    uint8_t data[2];
-    
-    /* Burst read angle MSB and LSB in one transaction (fastest) */
-    tmag5273_read_regs(TMAG5273_ANGLE_MSB_RESULT, data, 2);
-    
-    /* Angle is 9 bits: MSB[0:0] is bit 8, LSB[7:0] is bits 7:0 */
-    return ((uint16_t)(data[0] & 0x01) << 8) | data[1];
-}
-
-/**
- * Read angle in degrees (floating point)
- * Returns: 0.0 to 360.0 degrees
- */
-static float tmag5273_read_angle_deg(void)
-{
-    uint16_t raw = tmag5273_read_angle_raw();
-    /* 9-bit value (0-511) maps to 0-360 degrees */
-    return (float)raw * 360.0f / 512.0f;
-}
-
-/**
- * Read angle in fixed-point (faster than float)
- * Returns: angle in 1/10 degrees (0-3600 for 0-360°)
- */
-static uint16_t tmag5273_read_angle_tenths(void)
-{
-    uint16_t raw = tmag5273_read_angle_raw();
-    /* 9-bit value (0-511) maps to 0-3600 (tenths of degrees) */
-    return (uint16_t)(((uint32_t)raw * 3600) / 512);
-}
-
-/**
- * Read Z-axis magnetic field (raw 12-bit signed value)
- * For when you just need Z-axis magnitude, not angle
- */
-static int16_t tmag5273_read_z_raw(void)
-{
-    uint8_t data[2];
-    
-    tmag5273_read_regs(TMAG5273_Z_MSB_RESULT, data, 2);
-    
-    /* 12-bit signed result, upper 4 bits of MSB are flags */
-    int16_t raw = ((int16_t)(data[0] & 0x0F) << 8) | data[1];
-    
-    /* Sign extend from 12-bit to 16-bit */
-    if (raw & 0x0800) {
-        raw |= 0xF000;
-    }
-    
-    return raw;
-}
-
-/**
- * Fast combined read - get angle and magnitude in one I2C transaction
- * This is the fastest way to get both values
- */
-static void tmag5273_read_angle_magnitude(uint16_t *angle_raw, uint8_t *magnitude)
-{
-    uint8_t data[3];
-    
-    /* Burst read: ANGLE_MSB, ANGLE_LSB, MAGNITUDE (3 bytes) */
-    tmag5273_read_regs(TMAG5273_ANGLE_MSB_RESULT, data, 3);
-    
-    *angle_raw = ((uint16_t)(data[0] & 0x01) << 8) | data[1];
-    *magnitude = data[2];
-}
-
-/**
- * Check if new conversion result is available
- */
-static bool tmag5273_data_ready(void)
-{
-    uint8_t status = tmag5273_read_reg(TMAG5273_CONV_STATUS);
-    return (status & 0x01) != 0;  /* Bit 0 = CONV_COMPLETE */
-}
-
-/**
  * Print a hex byte over UART
  */
 static void print_hex(uint8_t val)
@@ -460,123 +355,6 @@ static void print_str(const char *s)
 {
     while (*s) {
         usart_send_blocking(USART2, *s++);
-    }
-}
-
-/**
- * Print an unsigned integer as decimal
- */
-static void print_uint(uint16_t val)
-{
-    char buf[6];
-    int i = 0;
-    
-    if (val == 0) {
-        usart_send_blocking(USART2, '0');
-        return;
-    }
-    
-    /* Build digits in reverse */
-    while (val > 0) {
-        buf[i++] = '0' + (val % 10);
-        val /= 10;
-    }
-    
-    /* Print in correct order */
-    while (i > 0) {
-        usart_send_blocking(USART2, buf[--i]);
-    }
-}
-
-/**
- * Debug function - dump ALL registers to find where data might be
- */
-static void tmag5273_debug_dump(void)
-{
-    uint8_t i;
-    uint8_t data[32];
-    
-    print_str("=== TMAG5273 Full Register Dump ===\r\n");
-    
-    /* Read ALL registers 0x00 - 0x1B one by one */
-    print_str("Individual reads:\r\n");
-    for (i = 0; i <= 0x1B; i++) {
-        print_str("Reg 0x");
-        print_hex(i);
-        print_str(": 0x");
-        print_hex(tmag5273_read_reg(i));
-        print_str("\r\n");
-    }
-    
-    print_str("\r\n--- Burst read all result regs (0x10-0x1B) ---\r\n");
-    /* Try burst read from 0x10 to 0x1B (12 bytes) */
-    tmag5273_read_regs(0x10, data, 12);
-    for (i = 0; i < 12; i++) {
-        print_str("0x");
-        print_hex(0x10 + i);
-        print_str(": 0x");
-        print_hex(data[i]);
-        print_str("\r\n");
-    }
-    
-    print_str("\r\n--- Try trigger conversion ---\r\n");
-    /* Try setting to standby then back to continuous to trigger fresh conversion */
-    tmag5273_write_reg(TMAG5273_DEVICE_CONFIG_2, TMAG5273_OP_STANDBY);
-    delay_ms(1);
-    tmag5273_write_reg(TMAG5273_DEVICE_CONFIG_2, TMAG5273_OP_CONTINUOUS);
-    delay_ms(5);  /* Wait for conversion */
-    
-    /* Read status after re-trigger */
-    print_str("After retrigger - CONV_STATUS: 0x");
-    print_hex(tmag5273_read_reg(TMAG5273_CONV_STATUS));
-    print_str("\r\n");
-    
-    /* Read results after trigger */
-    print_str("X: 0x");
-    print_hex(tmag5273_read_reg(TMAG5273_X_MSB_RESULT));
-    print_hex(tmag5273_read_reg(TMAG5273_X_LSB_RESULT));
-    print_str("  Z: 0x");
-    print_hex(tmag5273_read_reg(TMAG5273_Z_MSB_RESULT));
-    print_hex(tmag5273_read_reg(TMAG5273_Z_LSB_RESULT));
-    print_str("  ANG: 0x");
-    print_hex(tmag5273_read_reg(TMAG5273_ANGLE_MSB_RESULT));
-    print_hex(tmag5273_read_reg(TMAG5273_ANGLE_LSB_RESULT));
-    print_str("\r\n\r\n");
-}
-
-/**
- * Print angle over UART (for debugging)
- */
-static void print_angle(uint16_t angle_tenths)
-{
-    char buf[16];
-    int len = 0;
-    
-    /* Convert angle in tenths to string (e.g., 1234 -> "123.4") */
-    uint16_t degrees = angle_tenths / 10;
-    uint16_t frac = angle_tenths % 10;
-    
-    /* Simple integer to string for degrees */
-    if (degrees >= 100) {
-        buf[len++] = '0' + (degrees / 100);
-        degrees %= 100;
-        buf[len++] = '0' + (degrees / 10);
-        buf[len++] = '0' + (degrees % 10);
-    } else if (degrees >= 10) {
-        buf[len++] = '0' + (degrees / 10);
-        buf[len++] = '0' + (degrees % 10);
-    } else {
-        buf[len++] = '0' + degrees;
-    }
-    
-    buf[len++] = '.';
-    buf[len++] = '0' + frac;
-    buf[len++] = '\r';
-    buf[len++] = '\n';
-    buf[len] = '\0';
-    
-    for (int i = 0; i < len; i++) {
-        usart_send_blocking(USART2, buf[i]);
     }
 }
 
@@ -665,12 +443,26 @@ static bool tmag5273_read_all(tmag_data_t *out) {
     return true;
 }
 
+volatile int loopdelay = 150; //ms
+
+volatile int magx = 0;
+volatile int magy = 0;
+volatile int magz = 0;
+volatile float magangle = 0;
+volatile int magtemp = 0;
+volatile int step_count = 0;
+
+
+
 int main(void)
 {
+    // delay_ms(100); 
+    for (volatile int i = 0; i < 500000; i++); // startup delay in case of failed flash
+
+
     clock_setup();
     systick_setup();
     usart2_setup();
-    // spi1_setup(); // Replaced by mct8316z_init()
     i2c1_setup();
     tim2_pwm_setup();
     motor_gpio_setup();
@@ -684,7 +476,10 @@ int main(void)
 
     // Set PWM Duty Cycle to 10%
     // Timer Period is 799 (800 ticks). 10% = 80.
-    timer_set_oc_value(TIM2, TIM_OC4, 120); 
+    // timer_set_oc_value(TIM2, TIM_OC4, 50); 
+    timer_set_oc_value(TIM2, TIM_OC4, 0); 
+    // timer_set_oc_value(TIM2, TIM_OC4, 140); 
+    // timer_set_oc_value(TIM2, TIM_OC4, 300); 
     // timer_set_oc_value(TIM2, TIM_OC4, 400);
     
     if (!tmag5273_init_fast_angle()) {
@@ -716,35 +511,46 @@ int main(void)
     print_hex(cfg2);
     print_str("\r\n\r\n");
 
+    uint32_t last_step_time = system_millis;
+
     while (1) {
         // Read all sensor data
         tmag5273_read_all(&sensor_data);
         
-        /* Show ALL three axes to see which one is responding */
-        print_str("X:");
-        print_hex((sensor_data.x_raw >> 8) & 0xFF);
-        print_hex(sensor_data.x_raw & 0xFF);
+        magx = sensor_data.x_raw;
+        magy = sensor_data.y_raw;
+        magz = sensor_data.z_raw;
+        magtemp = sensor_data.temp_degc;
         
-        print_str(" Y:");
-        print_hex((sensor_data.y_raw >> 8) & 0xFF);
-        print_hex(sensor_data.y_raw & 0xFF);
+        // Compute corrected angle using lookup table
+        // angleLUT_get_angle returns radians (0 to 2π), convert to degrees (0 to 360)
+        float angle_rad = angleLUT_get_angle((int16_t)magx, (int16_t)magy);
+        magangle = angle_rad * 180.0f / PI;  // Convert radians to degrees
+
+        // print_str("X:");
+        // print_hex((magx >> 8) & 0xFF);
+        // print_hex(magx & 0xFF);
+
+        // print_str(" Y:");
+        // print_hex((magy >> 8) & 0xFF);
+        // print_hex(magy & 0xFF);
+
+        // print_str(" Z:");
+        // print_hex((magz >> 8) & 0xFF);
+        // print_hex(magz & 0xFF);
         
-        print_str(" Z:");
-        print_hex((sensor_data.z_raw >> 8) & 0xFF);
-        print_hex(sensor_data.z_raw & 0xFF);
+        // /* Print angle */
+        // print_str("  Angle: ");
+        // int angle_int = (int)sensor_data.angle_deg;
+        // int angle_frac = (int)((sensor_data.angle_deg - angle_int) * 10);
+        // if (angle_frac < 0) angle_frac = -angle_frac;
         
-        /* Print angle */
-        print_str("  Angle: ");
-        int angle_int = (int)sensor_data.angle_deg;
-        int angle_frac = (int)((sensor_data.angle_deg - angle_int) * 10);
-        if (angle_frac < 0) angle_frac = -angle_frac;
+        // print_uint(angle_int);
+        // print_str(".");
+        // usart_send_blocking(USART2, '0' + angle_frac);
+        // print_str(" deg");
         
-        print_uint(angle_int);
-        print_str(".");
-        usart_send_blocking(USART2, '0' + angle_frac);
-        print_str(" deg");
-        
-        print_str("\r\n");
+        // print_str("\r\n");
 
         /* Commutation Sequence based on Table 8-4 (Digital Hall Inputs) 
          * DIR = 0 (Clockwise?)
@@ -766,48 +572,60 @@ int main(void)
          * 5     | 0 | 1 | 1
          * 6     | 0 | 1 | 0
          * 
-         * Let's follow the user provided table exactly.
          */
-        static int step = 1;
-        switch (step) {
-            case 1: // A=1, B=1, C=0
+        switch (step_count % 6) {
+            case 0: // A=1, B=1, C=0
                 gpio_set(HALLA_PORT, HALLA_PIN);
                 gpio_set(HALLB_PORT, HALLB_PIN);
                 gpio_clear(HALLC_PORT, HALLC_PIN);
                 break;
-            case 2: // A=1, B=0, C=0
+            case 1: // A=1, B=0, C=0
                 gpio_set(HALLA_PORT, HALLA_PIN);
                 gpio_clear(HALLB_PORT, HALLB_PIN);
                 gpio_clear(HALLC_PORT, HALLC_PIN);
                 break;
-            case 3: // A=1, B=0, C=1
+            case 2: // A=1, B=0, C=1
                 gpio_set(HALLA_PORT, HALLA_PIN);
                 gpio_clear(HALLB_PORT, HALLB_PIN);
                 gpio_set(HALLC_PORT, HALLC_PIN);
                 break;
-            case 4: // A=0, B=0, C=1
+            case 3: // A=0, B=0, C=1
                 gpio_clear(HALLA_PORT, HALLA_PIN);
                 gpio_clear(HALLB_PORT, HALLB_PIN);
                 gpio_set(HALLC_PORT, HALLC_PIN);
                 break;
-            case 5: // A=0, B=1, C=1
+            case 4: // A=0, B=1, C=1
                 gpio_clear(HALLA_PORT, HALLA_PIN);
                 gpio_set(HALLB_PORT, HALLB_PIN);
                 gpio_set(HALLC_PORT, HALLC_PIN);
                 break;
-            case 6: // A=0, B=1, C=0
+            case 5: // A=0, B=1, C=0
                 gpio_clear(HALLA_PORT, HALLA_PIN);
                 gpio_set(HALLB_PORT, HALLB_PIN);
                 gpio_clear(HALLC_PORT, HALLC_PIN);
                 break;
         }
         
-        step++;
-        if (step > 6) step = 1;
+        // Increment step_count only every loopdelay ms
+        // Reverse direction every 20 seconds
+        static int direction = 1;
+        static uint32_t last_dir_change = 0;
+        uint32_t current_time = system_millis;
+
+        // Reverse direction every 20,000ms (20 seconds)
+        if ((current_time - last_dir_change) >= 20000) {
+            direction = -direction;
+            last_dir_change = current_time;
+        }
+
+        if ((current_time - last_step_time) >= (uint32_t)loopdelay) {
+            step_count += direction;
+            last_step_time = current_time;
+        }
 
         
         // mct8316z_print_all_regs(); // Print MCT8316Z registers
         
-        delay_ms(20);
+        // delay_ms(1);  // Fast loop with 1ms delay
     }
 }
