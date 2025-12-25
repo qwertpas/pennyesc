@@ -34,6 +34,12 @@ void tmag5273_clear_por(void);
 void tmag5273_read_xyt(tmag_data_t *out);
 
 /**
+ * Fast read: X and Y only (skips temperature, no float math)
+ * ~30% faster than tmag5273_read_xyt
+ */
+void tmag5273_read_xy_fast(int16_t *x, int16_t *y);
+
+/**
  * Read a single register (for debugging)
  */
 uint8_t tmag5273_read_reg(uint8_t reg);

@@ -7,6 +7,7 @@
 #include <libopencm3/stm32/pwr.h>
 #include <libopencm3/stm32/flash.h>
 #include <libopencm3/stm32/crc.h>
+#include <libopencm3/stm32/dma.h>
 #include <libopencm3/cm3/systick.h>
 #include <libopencm3/cm3/nvic.h>
 #include <stdint.h>
@@ -44,6 +45,15 @@
 
 /* Motor parameters */
 #define POLE_PAIRS  6
+
+/* Encoder sampling ISR frequency (choose 5000 or 10000) */
+#define ISR_FREQ_HZ         5000
+#define ISR_PERIOD_US       (1000000 / ISR_FREQ_HZ)  /* 200us at 5kHz, 100us at 10kHz */
+#define ISR_TIMER_PERIOD    ((1000000 / ISR_FREQ_HZ) - 1)  /* 199 at 5kHz, 99 at 10kHz */
+
+/* Velocity calculation: update every ~1ms worth of samples */
+#define VEL_UPDATE_SAMPLES  (ISR_FREQ_HZ / 1000)  /* 5 at 5kHz, 10 at 10kHz */
+#define VEL_MULTIPLIER      1000  /* Convert delta_crad/ms to crad/s */
 
 /* GPIO Definitions for Motor Control */
 #define HALLA_PORT   GPIOC
@@ -98,6 +108,11 @@ static volatile uint8_t rx_idx = 0;
 static volatile uint32_t rx_last_byte_time = 0;
 #define RX_INTER_BYTE_TIMEOUT_MS 10
 
+/* DMA circular buffer for UART RX */
+#define DMA_RX_BUF_SIZE 32
+static volatile uint8_t dma_rx_buf[DMA_RX_BUF_SIZE];
+static volatile uint16_t dma_rx_tail = 0;  /* Where we've read up to */
+
 /* Sensor data (shared with ISR) */
 static volatile int16_t sensor_x = 0;
 static volatile int16_t sensor_y = 0;
@@ -111,12 +126,23 @@ volatile uint32_t isr_duration_us = 0;
 volatile uint32_t isr_max_us = 0;
 volatile uint32_t isr_count = 0;
 volatile uint32_t isr_overrun_count = 0;
+volatile uint32_t isr_interval_us = 0;  /* Time between ISR calls (should be ~ISR_PERIOD_US) */
+volatile uint32_t isr_interval_min_us = 0xFFFFFFFF;
+volatile uint32_t isr_interval_max_us = 0;
 volatile uint32_t uart_rx_count = 0;
 volatile uint32_t uart_crc_errors = 0;
+volatile uint32_t uart_bytes_rx = 0;  /* Raw byte counter for debugging */
+volatile uint32_t uart_overrun_errors = 0;  /* ORE error counter */
 volatile uint32_t looptime_us = 0;
 volatile int32_t debug_position = 0;
 volatile int32_t debug_velocity = 0;
 volatile int debug_comm_step = 0;
+
+/* Granular ISR timing breakdown (in microseconds) */
+volatile uint32_t debug_i2c_us = 0;      /* Time for I2C sensor read */
+volatile uint32_t debug_lut_us = 0;      /* Time for angle LUT lookup */
+volatile uint32_t debug_update_us = 0;   /* Time for position update + velocity */
+volatile uint32_t debug_control_us = 0;  /* Time for control logic + PWM + commutation */
 
 /* ============================================================================
  * System Functions
@@ -212,6 +238,33 @@ static void usart2_setup(void)
 }
 
 /* ============================================================================
+ * DMA Setup for UART RX (circular buffer)
+ * ============================================================================ */
+
+static void dma1_ch5_setup(void)
+{
+    rcc_periph_clock_enable(RCC_DMA);
+    dma_channel_reset(DMA1, DMA_CHANNEL5);
+    
+    /* USART2_RX -> DMA1 Channel 5, request 4 (per RM0377 Table 45) */
+    dma_set_channel_request(DMA1, DMA_CHANNEL5, 4);
+    
+    dma_set_peripheral_address(DMA1, DMA_CHANNEL5, (uint32_t)&USART_RDR(USART2));
+    dma_set_memory_address(DMA1, DMA_CHANNEL5, (uint32_t)dma_rx_buf);
+    dma_set_number_of_data(DMA1, DMA_CHANNEL5, DMA_RX_BUF_SIZE);
+    
+    dma_set_read_from_peripheral(DMA1, DMA_CHANNEL5);
+    dma_enable_memory_increment_mode(DMA1, DMA_CHANNEL5);
+    dma_set_peripheral_size(DMA1, DMA_CHANNEL5, DMA_CCR_PSIZE_8BIT);
+    dma_set_memory_size(DMA1, DMA_CHANNEL5, DMA_CCR_MSIZE_8BIT);
+    dma_set_priority(DMA1, DMA_CHANNEL5, DMA_CCR_PL_HIGH);
+    dma_enable_circular_mode(DMA1, DMA_CHANNEL5);
+    
+    dma_enable_channel(DMA1, DMA_CHANNEL5);
+    usart_enable_rx_dma(USART2);
+}
+
+/* ============================================================================
  * I2C Setup (1MHz for fast TMAG reads)
  * ============================================================================ */
 
@@ -245,15 +298,15 @@ static void tim2_pwm_setup(void)
 }
 
 /* ============================================================================
- * 10kHz Timer Setup (TIM21 for encoder sampling)
+ * Timer Setup (TIM21 for encoder sampling at ISR_FREQ_HZ)
  * ============================================================================ */
 
 static void tim21_setup(void)
 {
     /* TIM21 is a basic timer on STM32L0 */
-    /* 32MHz / 32 = 1MHz timer clock, period 100 = 10kHz */
+    /* 32MHz / 32 = 1MHz timer clock */
     timer_set_prescaler(TIM21, 31);  /* 32MHz / 32 = 1MHz */
-    timer_set_period(TIM21, 99);     /* 1MHz / 100 = 10kHz */
+    timer_set_period(TIM21, ISR_TIMER_PERIOD);  /* Set by ISR_FREQ_HZ */
     timer_enable_irq(TIM21, TIM_DIER_UIE);
     nvic_enable_irq(NVIC_TIM21_IRQ);
     nvic_set_priority(NVIC_TIM21_IRQ, 0);  /* Highest priority */
@@ -337,33 +390,48 @@ static void update_absolute_position(float angle_rad)
 
 void tim21_isr(void)
 {
-    uint32_t start = get_time_us();
+    uint32_t t0 = get_time_us();
     timer_clear_flag(TIM21, TIM_SR_UIF);
     
-    /* Read TMAG5273 sensor */
-    tmag_data_t sensor;
-    tmag5273_read_xyt(&sensor);
-    sensor_x = sensor.x_raw;
-    sensor_y = sensor.y_raw;
+    /* Measure interval between ISR calls (should be ~100us for 10kHz) */
+    static uint32_t last_isr_time_us = 0;
+    if (last_isr_time_us != 0) {
+        uint32_t interval = t0 - last_isr_time_us;
+        isr_interval_us = interval;
+        if (interval < isr_interval_min_us) isr_interval_min_us = interval;
+        if (interval > isr_interval_max_us) isr_interval_max_us = interval;
+    }
+    last_isr_time_us = t0;
     
-    /* Get angle from calibration LUT (returns radians) */
-    float angle_rad = angleLUT_get_angle(sensor.x_raw, sensor.y_raw);
+    /* ---- SECTION 1: I2C sensor read (fast: X/Y only, no temp) ---- */
+    uint32_t t1 = get_time_us();
+    int16_t x, y;
+    tmag5273_read_xy_fast(&x, &y);
+    sensor_x = x;
+    sensor_y = y;
+    uint32_t t2 = get_time_us();
+    debug_i2c_us = t2 - t1;
+    
+    /* ---- SECTION 2: LUT lookup ---- */
+    float angle_rad = angleLUT_get_angle(x, y);
     current_angle_rad = angle_rad;
+    uint32_t t3 = get_time_us();
+    debug_lut_us = t3 - t2;
     
-    /* Update multi-turn position */
+    /* ---- SECTION 3: Position/velocity update ---- */
     update_absolute_position(angle_rad);
     
-    /* Velocity estimation (centiradians per second) */
-    /* At 10kHz, delta_t = 0.0001s, so velocity = delta_pos * 10000 */
     static uint8_t vel_counter = 0;
     vel_counter++;
-    if (vel_counter >= 10) {  /* Update velocity every 1ms (10 samples) */
-        velocity_crads = (absolute_position_crad - last_position_crad) * 1000;
+    if (vel_counter >= VEL_UPDATE_SAMPLES) {  /* Update velocity every ~1ms */
+        velocity_crads = (absolute_position_crad - last_position_crad) * VEL_MULTIPLIER;
         last_position_crad = absolute_position_crad;
         vel_counter = 0;
     }
+    uint32_t t4 = get_time_us();
+    debug_update_us = t4 - t3;
     
-    /* Position control logic */
+    /* ---- SECTION 4: Control logic + PWM + commutation ---- */
     int16_t duty_to_apply = 0;
     if (target_position_set) {
         int32_t error = target_position_crad - absolute_position_crad;
@@ -383,27 +451,26 @@ void tim21_isr(void)
     }
     current_duty = duty_to_apply;
     
-    /* Apply PWM duty */
     int16_t abs_duty = duty_to_apply < 0 ? -duty_to_apply : duty_to_apply;
     if (abs_duty > 799) abs_duty = 799;
     timer_set_oc_value(TIM2, TIM_OC4, abs_duty);
     
-    /* Commutation - use predicted position for better tracking */
     int32_t pred_crad = absolute_position_crad;
     if (direction != 0) {
-        /* Add velocity prediction for next step */
         pred_crad += (velocity_crads / 10000);  /* 0.1ms prediction */
     }
     
     int step = angle_to_step(pred_crad, direction > 0 ? advance_deg : -advance_deg);
     set_hall_outputs(step);
     debug_comm_step = step;
+    uint32_t t5 = get_time_us();
+    debug_control_us = t5 - t4;
     
-    /* Benchmark instrumentation */
-    uint32_t elapsed = get_time_us() - start;
+    /* Total ISR time */
+    uint32_t elapsed = t5 - t0;
     isr_duration_us = elapsed;
     if (elapsed > isr_max_us) isr_max_us = elapsed;
-    if (elapsed > 100) isr_overrun_count++;
+    if (elapsed > ISR_PERIOD_US) isr_overrun_count++;  /* Overrun = took longer than period */
     isr_count++;
     
     /* Update debug vars */
@@ -477,7 +544,7 @@ static void process_command(void)
             target_position_set = true;
             /* Use existing commanded_duty for speed */
             if (commanded_duty == 0) {
-                commanded_duty = 200;  /* Default duty if none set */
+                commanded_duty = 150;  /* Default duty if none set */
             }
             break;
         }
@@ -502,8 +569,14 @@ static void uart_poll(void)
         rx_idx = 0;
     }
     
-    while (usart_get_flag(USART2, USART_ISR_RXNE)) {
-        uint8_t b = usart_recv(USART2);
+    /* Calculate head position (where DMA is writing next) */
+    uint16_t head = DMA_RX_BUF_SIZE - dma_get_number_of_data(DMA1, DMA_CHANNEL5);
+    
+    /* Process all available bytes from DMA circular buffer */
+    while (dma_rx_tail != head) {
+        uint8_t b = dma_rx_buf[dma_rx_tail];
+        dma_rx_tail = (dma_rx_tail + 1) % DMA_RX_BUF_SIZE;
+        uart_bytes_rx++;  /* Count every byte received */
         rx_last_byte_time = system_millis;
         
         /* Resync: START_BYTE always starts a new packet (handles mid-packet corruption) */
@@ -561,12 +634,15 @@ static void uart_poll(void)
 
 static void check_timeout(void)
 {
+    /* Disabled for standalone testing - re-enable for production! */
+    #if 0
     if ((system_millis - last_valid_cmd_time) > COMM_TIMEOUT_MS) {
         /* Safety: stop motor if no commands received */
         commanded_duty = 0;
         target_position_set = false;
         timer_set_oc_value(TIM2, TIM_OC4, 0);
     }
+    #endif
 }
 
 /* ============================================================================
@@ -582,6 +658,7 @@ int main(void)
     systick_setup();
     crc8_init();
     usart2_setup();
+    dma1_ch5_setup();  /* DMA for UART RX circular buffer */
     i2c1_setup();
     tim2_pwm_setup();
     motor_gpio_setup();

@@ -94,3 +94,15 @@ void tmag5273_read_xyt(tmag_data_t *out)
     out->y_raw = (int16_t)((raw[4] << 8) | raw[5]);
 }
 
+/* Fast read: X and Y only (4 bytes instead of 6, no float math) */
+void tmag5273_read_xy_fast(int16_t *x, int16_t *y)
+{
+    uint8_t raw[4];
+    
+    /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
+    read_regs(0x12, raw, 4);
+    
+    *x = (int16_t)((raw[0] << 8) | raw[1]);
+    *y = (int16_t)((raw[2] << 8) | raw[3]);
+}
+

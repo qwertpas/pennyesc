@@ -120,6 +120,8 @@ static BLDCResponse sendCommand(uint8_t cmd, const uint8_t* payload, uint8_t pay
     
     if (rxIdx < RESPONSE_LEN) {
         stats.timeouts++;
+        // Serial.println("Timeout");
+        // Serial.println(rxIdx);
         return resp;
     }
     
@@ -189,7 +191,7 @@ void loop() {
     
     /* Poll at 1kHz using micros() for precise timing */
     uint32_t now = micros();
-    if (now - lastPollUs >= 1000) {  /* 1000µs = 1ms = 1kHz */
+    if (now - lastPollUs >= 2000) {  /* 2000µs = 2ms = 500Hz */
         lastPollUs = now;
         loopCount++;
         
