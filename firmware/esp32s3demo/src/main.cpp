@@ -182,65 +182,85 @@ void setup() {
     
     delay(100);
     Serial.println("BLDC Controller Ready");
-    Serial.println("Commands: f=forward, r=reverse, s=stop, p=goto pi, z=goto zero, ?=stats");
+    Serial.println("Commands: d[duty], t[target rad], p[pulse duty], ?=stats");
 }
+
+BLDCResponse r = {false, 0, 0, 0};
 
 void loop() {
     static uint32_t lastPollUs = 0;
     static uint32_t loopCount = 0;
+    static uint32_t pulseEndTime = 0;
+    static bool pulseActive = false;
     
+    /* Handle pulse timeout */
+    if (pulseActive && millis() >= pulseEndTime) {
+        setDuty(0);
+        pulseActive = false;
+        Serial.println("Pulse finished: duty=0");
+    }
+
     /* Poll at 1kHz using micros() for precise timing */
     uint32_t now = micros();
     if (now - lastPollUs >= 2000) {  /* 2000µs = 2ms = 500Hz */
         lastPollUs = now;
         loopCount++;
         
-        BLDCResponse r = poll();
+        r = poll();
         
-        /* Print stats every 1000 loops (1 second at 1kHz) */
-        if (loopCount % 1000 == 0 && r.valid) {
-            Serial.printf("Pos: %.2f rad, Vel: %.1f RPM | Latency: %lu/%lu/%lu us | Errs: %lu CRC, %lu TO\n",
-                r.positionRad(), r.velocityRPM(), 
-                stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs,
-                stats.crcErrors, stats.timeouts);
-        }
+        // /* Print stats every 100 loops (0.2 second at 500Hz) */
+        // if (loopCount % 100 == 0 && r.valid) {
+        //     Serial.printf("Pos: %.2f rad, Vel: %.1f RPM | Latency: %lu/%lu/%lu us | Errs: %lu CRC, %lu TO\n",
+        //         r.positionRad(), r.velocityRPM(), 
+        //         stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs,
+        //         stats.crcErrors, stats.timeouts);
+        // }
     }
     
     /* Handle serial commands */
-    if (Serial.available()) {
-        char c = Serial.read();
-        switch (c) {
-            case 'f':
-                setDuty(200);
-                Serial.println("Forward: duty=200");
-                break;
-            case 'r':
-                setDuty(-200);
-                Serial.println("Reverse: duty=-200");
-                break;
-            case 's':
-                setDuty(0);
-                Serial.println("Stop: duty=0");
-                break;
-            case 'p':
-                setPositionRad(3.14159f);
-                Serial.println("Goto: pi radians");
-                break;
-            case 'z':
-                setPositionRad(0);
-                Serial.println("Goto: zero");
-                break;
-            case '?':
-                Serial.printf("Stats: Sent=%lu, Recv=%lu, CRC Err=%lu, Timeouts=%lu\n",
-                    stats.sent, stats.received, stats.crcErrors, stats.timeouts);
-                Serial.printf("Latency: cur=%lu us, avg=%lu us, max=%lu us\n",
-                    stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs);
-                break;
-            case 'h':
-                Serial.println("Commands: f=forward, r=reverse, s=stop, p=goto pi, z=goto zero, ?=stats");
-                break;
-            default:
-                break;
+    static String inputString = "";
+    while (Serial.available()) {
+        char inChar = (char)Serial.read();
+        if (inChar == '\n' || inChar == '\r') {
+            if (inputString.length() > 0) {
+                inputString.trim();
+                if (inputString.length() > 0) {
+                    char cmd = inputString.charAt(0);
+                    String valStr = inputString.substring(1);
+                    
+                    if (cmd == 'd') {
+                        int16_t duty = (int16_t)valStr.toInt();
+                        setDuty(duty);
+                        Serial.printf("Set Duty: %d\n", duty);
+                    } else if (cmd == 't') {
+                        float pos = valStr.toFloat();
+                        setPositionRad(pos);
+                        Serial.printf("Set Target Position: %.3f rad\n", pos);
+                    } else if (cmd == 'p') {
+                        int16_t pulseDuty = (int16_t)valStr.toInt();
+                        setDuty(pulseDuty);
+                        pulseEndTime = millis() + 500;
+                        pulseActive = true;
+                        Serial.printf("Pulse Started: duty=%d for 0.5s\n", pulseDuty);
+                    } else if (cmd == '?') {
+                        Serial.printf("Stats: Sent=%lu, Recv=%lu, CRC Err=%lu, Timeouts=%lu\n",
+                            stats.sent, stats.received, stats.crcErrors, stats.timeouts);
+                        Serial.printf("Latency: cur=%lu us, avg=%lu us, max=%lu us\n",
+                            stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs);
+                        Serial.printf("Pos: %.2f rad, Vel: %.1f RPM | Latency: %lu/%lu/%lu us | Errs: %lu CRC, %lu TO\n",
+                              r.positionRad(), r.velocityRPM(), 
+                              stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs,
+                              stats.crcErrors, stats.timeouts);
+                    } else if (cmd == 'h') {
+                        Serial.println("Commands: d[duty], t[target rad], p[pulse duty], ?=stats");
+                    } else {
+                        Serial.println("Unknown command. Use d, t, p, or ?");
+                    }
+                }
+                inputString = "";
+            }
+        } else {
+            inputString += inChar;
         }
     }
 }
