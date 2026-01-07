@@ -225,8 +225,96 @@ RX: AA 01 ...
 
 Both sides treat `0xAA` as a packet-start marker. If received mid-packet, the parser resets and starts a new packet. This enables recovery from corruption or partial packets.
 
+## 5. Magnetic Sensor Calibration
+
+The TMAG5273 magnetic angle sensor requires calibration to correct for magnet mounting errors (tilt, offset, non-orthogonality). This produces a lookup table (LUT) that maps raw X/Y readings to corrected angles.
+
+### Current Calibration Process
+
+```mermaid
+flowchart LR
+    A[Flash Calibration FW] --> B[Log with MCUViewer]
+    B --> C[Export CSV]
+    C --> D[Run octant_centroid.py]
+    D --> E[Copy LUT to angleLUT.c]
+    E --> F[Flash Main FW]
+```
+
+**Step 1: Flash calibration firmware**
+
+```bash
+cd pennyesc_libopencm3
+pio run -e calibration -t upload
+```
+
+This flashes `main_calibration.c` which spins the motor open-loop at fixed duty, stepping through 6 electrical states every 150ms. It reverses direction every 20 seconds.
+
+**Step 2: Log sensor data**
+
+Connect MCUViewer to the STM32 and add these variables to watch:
+- `magx` - Raw X-axis reading
+- `magy` - Raw Y-axis reading  
+- `step_count` - Current commutation step
+
+Start logging and let it run for at least one full cycle (40+ seconds) to capture both directions.
+
+**Step 3: Export and process**
+
+Export the MCUViewer log to CSV, then run the centroid script:
+
+```bash
+cd pennyesc_libopencm3/data
+# Update TRAIN_CSV_FILENAME in the script to match your exported file
+python octant_centroid.py
+```
+
+The script:
+1. Groups sensor readings by `step_count`
+2. Calculates centroid pseudo-index for each step
+3. Maps centroids to true angles (known from step position)
+4. Interpolates a smooth 2048-entry LUT
+
+**Step 4: Update the LUT**
+
+Copy the generated `OCTANT_LUT[2048]` array from the script output into:
+
+```
+pennyesc_libopencm3/src/angleLUT.c
+```
+
+**Step 5: Flash main firmware**
+
+```bash
+pio run -t upload  # Uses default environment (main.c)
+```
+
+### Future Improvements
+
+**Automated calibration (no external logger):**
+- Add UART command to trigger calibration mode
+- Stream X/Y/step data over existing protocol
+- Process on ESP32 or host PC
+
+**Closed-loop calibration:**
+- Use external encoder as ground truth
+- Spin at constant velocity, correlate sensor angle with encoder
+- Eliminates dependency on open-loop step timing
+
+**Temperature compensation:**
+- Log temperature during calibration runs at different temps
+- Generate temp-indexed LUT or polynomial correction
+
+**Finer resolution:**
+- Increase commutation steps (e.g., 72 instead of 36 per revolution)
+- Use slower stepping for more samples per step
+- Improves interpolation accuracy at octant boundaries
+
+
 ## Key Files
 
 - [`pennyesc_libopencm3/src/main.c`](pennyesc_libopencm3/src/main.c) - STM32 motor controller firmware
+- [`pennyesc_libopencm3/src/main_calibration.c`](pennyesc_libopencm3/src/main_calibration.c) - Calibration firmware (open-loop stepping)
+- [`pennyesc_libopencm3/src/angleLUT.c`](pennyesc_libopencm3/src/angleLUT.c) - Generated angle correction LUT
+- [`pennyesc_libopencm3/data/octant_centroid.py`](pennyesc_libopencm3/data/octant_centroid.py) - LUT generation script
 - [`esp32s3demo/src/main.cpp`](esp32s3demo/src/main.cpp) - ESP32 host controller with serial CLI
 

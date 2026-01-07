@@ -289,8 +289,8 @@ static void tim2_pwm_setup(void)
     gpio_mode_setup(GPIOB, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO1);
     timer_set_mode(TIM2, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
     timer_set_prescaler(TIM2, 0);
-    timer_set_period(TIM2, 399);  /* 80kHz PWM */
-    // timer_set_period(TIM2, 799);  /* 40kHz PWM */
+    // timer_set_period(TIM2, 399);  /* 80kHz PWM */
+    timer_set_period(TIM2, 799);  /* 40kHz PWM */
     timer_set_oc_mode(TIM2, TIM_OC4, TIM_OCM_PWM1);
     timer_set_oc_value(TIM2, TIM_OC4, 0);
     timer_enable_oc_output(TIM2, TIM_OC4);
