@@ -5,9 +5,9 @@
 
 | ESP32-S3 | STM32L011 (PennyESC) |
 |----------|----------------------|
-| GPIO 13 (TX) | PA10 (USART2 RX) |
-| GPIO 12 (RX) | PA9 (USART2 TX) |
-| GND | GND |
+| GPIO 13 (RX) | PA9 (USART2 TX) |
+| GPIO 12 (TX) | PA10 (USART2 RX) |
+| GPIO 11 | GND |
 
 Both devices use **921600 baud, 8N1** between them.
 

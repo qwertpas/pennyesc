@@ -1,10 +1,11 @@
 #include <Arduino.h>
 
 /* ============================================================================
- * Protocol Constants (inline - no separate header per design principles)
+ * Protocol Constants
  * ============================================================================ */
-#define BLDC_RX 12
-#define BLDC_TX 13
+#define BLDC_RX 13
+#define BLDC_TX 12
+#define BLDC_GND 11
 #define BLDC_BAUD 921600
 
 #define START_BYTE 0xAA
@@ -177,6 +178,10 @@ static BLDCResponse setPositionRad(float rad) {
  * Setup and Main Loop
  * ============================================================================ */
 void setup() {
+    pinMode(BLDC_GND, OUTPUT);
+    digitalWrite(BLDC_GND, LOW);
+    delay(100);
+
     Serial.begin(115200);  /* USB debug */
     Serial1.begin(BLDC_BAUD, SERIAL_8N1, BLDC_RX, BLDC_TX);
     
