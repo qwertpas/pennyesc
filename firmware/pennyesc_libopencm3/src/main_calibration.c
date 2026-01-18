@@ -435,6 +435,14 @@ typedef struct {
     uint8_t status;
 } tmag_data_t;
 
+// TMAG5273 debug - raw bytes from I2C read (declared early for use in read functions)
+volatile uint8_t tmag_raw0 = 0;  // T_MSB
+volatile uint8_t tmag_raw1 = 0;  // T_LSB
+volatile uint8_t tmag_raw2 = 0;  // X_MSB
+volatile uint8_t tmag_raw3 = 0;  // X_LSB
+volatile uint8_t tmag_raw4 = 0;  // Y_MSB
+volatile uint8_t tmag_raw5 = 0;  // Y_LSB
+
 static bool tmag5273_read_all(tmag_data_t *out) {
     uint8_t raw_data[13]; // Registers 0x10 through 0x1B
     
@@ -465,10 +473,18 @@ static bool tmag5273_read_all(tmag_data_t *out) {
 }
 
 static bool tmag5273_read_xyt(tmag_data_t *out) {
-    uint8_t raw_data[6]; // Registers 0x10 through 0x1B
+    uint8_t raw_data[6]; // Registers 0x10 through 0x15
     
-    // BURST READ: Start at 0x10 (Temp MSB) and read 12 bytes
+    // BURST READ: Start at 0x10 (Temp MSB) and read 6 bytes
     tmag5273_read_regs(TMAG5273_T_MSB_RESULT, raw_data, 6);
+    
+    // Copy to debug variables for MCUViewer
+    tmag_raw0 = raw_data[0];
+    tmag_raw1 = raw_data[1];
+    tmag_raw2 = raw_data[2];
+    tmag_raw3 = raw_data[3];
+    tmag_raw4 = raw_data[4];
+    tmag_raw5 = raw_data[5];
     
     // Parse Temp (0x10, 0x11)
     int16_t t_raw = (raw_data[0] << 8) | raw_data[1];
@@ -494,7 +510,10 @@ volatile int step_count = 0;
 
 volatile uint32_t looptime_us = 0;  // Loop time in microseconds
 
-
+// MCT8316Z status registers for debugging
+volatile uint16_t mct_ic_status = 0;   // Reg 0x00 - IC_STATUS
+volatile uint16_t mct_status1 = 0;     // Reg 0x01 - STATUS1 (OCP details)
+volatile uint16_t mct_status2 = 0;     // Reg 0x02 - STATUS2 (more faults)
 
 int main(void)
 {
@@ -515,12 +534,14 @@ int main(void)
 
     // Configure MCT8316Z
     mct8316z_set_pwm_mode_async_dig(); // Set Asynchronous rectification with digital Hall
+    mct8316z_disable_protections();    // Disable OCP and motor lock for debugging
 
     // Set PWM Duty Cycle to 10%
     // Timer Period is 799 (800 ticks). 10% = 80.
     // timer_set_oc_value(TIM2, TIM_OC4, 50); 
     // timer_set_oc_value(TIM2, TIM_OC4, 0); 
-    timer_set_oc_value(TIM2, TIM_OC4, 140); 
+    timer_set_oc_value(TIM2, TIM_OC4, 100); 
+    // timer_set_oc_value(TIM2, TIM_OC4, 50); 
     // timer_set_oc_value(TIM2, TIM_OC4, 300); 
     // timer_set_oc_value(TIM2, TIM_OC4, 400);
     
@@ -676,6 +697,19 @@ int main(void)
             looptime_us = current_time_us - last_time_us;
         }
         last_time_us = current_time_us;
+
+        // Read MCT8316Z status registers every loop for debugging
+        // These are visible in MCUViewer
+        mct_ic_status = mct8316z_read_reg(MCT8316Z_REG_IC_STATUS);
+        mct_status1 = mct8316z_read_reg(MCT8316Z_REG_STATUS1);
+        mct_status2 = mct8316z_read_reg(MCT8316Z_REG_STATUS2);
+        
+        // Auto-clear faults if FAULT bit (bit 7 of IC_STATUS data) is set
+        // Response format: [Status byte (15:8)][Data byte (7:0)]
+        // The data byte contains the register value
+        if ((mct_ic_status & 0x80)) {  // FAULT bit in data byte
+            mct8316z_clear_faults();
+        }
     }
 }
 

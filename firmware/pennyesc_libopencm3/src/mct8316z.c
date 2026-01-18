@@ -103,6 +103,26 @@ void mct8316z_write_reg(uint8_t addr, uint8_t data)
     gpio_set(GPIOA, GPIO4);
 }
 
+void mct8316z_clear_faults(void)
+{
+    // CLR_FLT is bit 0 of CONTROL2A (0x04)
+    // Writing 1 to this bit clears all latched faults (NPOR, OCP, etc.)
+    // This bit is self-clearing (auto-resets to 0)
+    
+    // Read current CONTROL2A value
+    uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
+    uint8_t current_data = (uint8_t)(val & 0xFF);
+    
+    // Set CLR_FLT bit
+    current_data |= MCT8316Z_CLR_FLT;
+    
+    // Write back
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, current_data);
+    
+    // Small delay for fault clear to process
+    for (volatile int x = 0; x < 1000; x++);
+}
+
 void mct8316z_set_pwm_mode_async_dig(void)
 {
     // 0. Unlock Registers (just in case)
@@ -114,19 +134,25 @@ void mct8316z_set_pwm_mode_async_dig(void)
     // Delay to ensure unlock processes
     for (volatile int x = 0; x < 1000; x++);
 
-    // 1. Read current CONTROL2A (Reg 0x04)
+    // 1. Clear any latched faults from power-on (NPOR, etc.)
+    mct8316z_clear_faults();
+
+    // 2. Read current CONTROL2A (Reg 0x04)
     uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
     uint8_t current_data = (uint8_t)(val & 0xFF);
 
-    // 2. Modify PWM_MODE bits (Bits 2-1)
+    // 3. Modify PWM_MODE bits (Bits 2-1)
     // Asynchronous rectification with digital Hall = 1h (01b)
     // Clear bits 2-1
     current_data &= ~(0x06); 
     // Set bit 1
     current_data |= MCT8316Z_PWM_MODE_ASYNC_DIG;
     
-    // 3. Write back
+    // 4. Write back
     mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, current_data);
+    
+    // 5. Clear faults again after configuration (belt and suspenders)
+    mct8316z_clear_faults();
 }
 
 // Local print helpers
@@ -175,3 +201,28 @@ void mct8316z_print_all_regs(void)
     }
 }
 
+void mct8316z_disable_protections(void)
+{
+    // Registers must be unlocked first (done in set_pwm_mode_async_dig)
+    
+    // CONTROL4 (0x06): Set OCP_MODE to disabled (bits 1-0 = 11b)
+    // This disables overcurrent protection
+    uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL4);
+    uint8_t data = (uint8_t)(val & 0xFF);
+    data &= ~MCT8316Z_OCP_MODE_MASK;          // Clear OCP_MODE bits
+    data |= MCT8316Z_OCP_MODE_DISABLED;       // Set to disabled (0x03)
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL4, data);
+    
+    for (volatile int x = 0; x < 1000; x++);  // Small delay
+    
+    // CONTROL8 (0x0A): Set MTR_LOCK_MODE to disabled (bits 1-0 = 11b)
+    // Also set MTR_LOCK_TDET to 5000ms (bits 3-2 = 11b) as extra safety
+    val = mct8316z_read_reg(MCT8316Z_REG_CONTROL8);
+    data = (uint8_t)(val & 0xFF);
+    data &= ~(MCT8316Z_MTR_LOCK_MODE_MASK | MCT8316Z_MTR_LOCK_TDET_MASK);  // Clear both fields
+    data |= MCT8316Z_MTR_LOCK_DISABLED;       // Disable motor lock detection
+    data |= MCT8316Z_MTR_LOCK_TDET_5000MS;    // Set longest detection time anyway
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL8, data);
+    
+    for (volatile int x = 0; x < 1000; x++);  // Small delay
+}
