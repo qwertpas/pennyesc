@@ -429,122 +429,12 @@ type = 0
 visibility = true
 
 [group0-plot0-series0]
-name = absolute_position_crad
-visibility = true
-format = DEC
-
-[group0-plot0-series1]
-name = commanded_duty
-visibility = true
-format = DEC
-
-[group0-plot0-series2]
-name = current_angle_rad
-visibility = true
-format = DEC
-
-[group0-plot0-series3]
-name = current_duty
-visibility = true
-format = DEC
-
-[group0-plot0-series4]
-name = direction
-visibility = true
-format = DEC
-
-[group0-plot0-series5]
-name = isr_count
-visibility = true
-format = DEC
-
-[group0-plot0-series6]
-name = isr_duration_us
-visibility = true
-format = DEC
-
-[group0-plot0-series7]
-name = isr_interval_max_us
-visibility = true
-format = DEC
-
-[group0-plot0-series8]
-name = isr_interval_min_us
-visibility = true
-format = DEC
-
-[group0-plot0-series9]
-name = isr_interval_us
-visibility = true
-format = DEC
-
-[group0-plot0-series10]
-name = looptime_us
-visibility = true
-format = DEC
-
-[group0-plot0-series11]
-name = magangle
-visibility = true
-format = DEC
-
-[group0-plot0-series12]
 name = magx
 visibility = true
 format = DEC
 
-[group0-plot0-series13]
+[group0-plot0-series1]
 name = magy
-visibility = true
-format = DEC
-
-[group0-plot0-series14]
-name = step_count
-visibility = true
-format = DEC
-
-[group0-plot0-series15]
-name = system_millis
-visibility = true
-format = DEC
-
-[group0-plot0-series16]
-name = tmag_raw0
-visibility = true
-format = DEC
-
-[group0-plot0-series17]
-name = tmag_raw1
-visibility = true
-format = DEC
-
-[group0-plot0-series18]
-name = tmag_raw2
-visibility = true
-format = DEC
-
-[group0-plot0-series19]
-name = tmag_raw4
-visibility = true
-format = DEC
-
-[group0-plot0-series20]
-name = tmag_raw5
-visibility = true
-format = DEC
-
-[group0-plot0-series21]
-name = uart_crc_errors
-visibility = true
-format = DEC
-
-[group0-plot0-series22]
-name = uart_rx_count
-visibility = true
-format = DEC
-
-[group0-plot0-series23]
-name = velocity_crads
 visibility = true
 format = DEC
 
