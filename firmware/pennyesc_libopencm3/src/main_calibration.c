@@ -499,7 +499,7 @@ static bool tmag5273_read_xyt(tmag_data_t *out) {
     return true;
 }
 
-volatile int loopdelay = 150; //ms
+volatile int loopdelay = 200; //ms
 
 volatile int magx = 0;
 volatile int magy = 0;

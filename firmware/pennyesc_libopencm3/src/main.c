@@ -38,7 +38,7 @@
 /* Position control */
 #define PI_CRAD             314     /* π in centiradians */
 #define TWO_PI_CRAD         628     /* 2π in centiradians */
-#define POSITION_DEADBAND_CRAD 5    /* ~3 degrees deadband */
+#define POSITION_DEADBAND_CRAD 500    /* ~3 degrees deadband */
 
 /* Timeout */
 #define COMM_TIMEOUT_MS     2000
@@ -119,7 +119,7 @@ static volatile int16_t sensor_y = 0;
 static volatile float current_angle_rad = 0;
 
 /* Commutation */
-static volatile int advance_deg = 90; //130
+static volatile int advance_deg = 110; //130
 
 /* Debug/benchmark variables (visible in MCUViewer) */
 volatile uint32_t isr_duration_us = 0;
