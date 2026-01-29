@@ -12,6 +12,7 @@ typedef struct {
     float temp_degc;
     int16_t x_raw;
     int16_t y_raw;
+    int16_t z_raw; 
 } tmag_data_t;
 
 /**
@@ -38,6 +39,8 @@ void tmag5273_read_xyt(tmag_data_t *out);
  * ~30% faster than tmag5273_read_xyt
  */
 void tmag5273_read_xy_fast(int16_t *x, int16_t *y);
+void tmag5273_read_z_fast(int16_t *z);
+
 
 /**
  * Read a single register (for debugging)

@@ -18,6 +18,7 @@
 #define SLEEPTIME_SHIFT         0
 #define MAG_CH_EN_SHIFT         4
 #define MAG_CH_XYT              0x9
+#define MAG_CH_XYZ              0x7
 #define ANGLE_EN_SHIFT          2
 #define ANGLE_OFF               0x0
 #define X_Y_RANGE_SHIFT         1
@@ -55,7 +56,7 @@ bool tmag5273_init(void)
     
     /* SENSOR_CONFIG_1: Enable X, Y, Temperature channels */
     tmag5273_write_reg(REG_SENSOR_CONFIG_1,
-        (0 << SLEEPTIME_SHIFT) | (MAG_CH_XYT << MAG_CH_EN_SHIFT));
+        (0 << SLEEPTIME_SHIFT) | (MAG_CH_XYZ << MAG_CH_EN_SHIFT));
     
     /* SENSOR_CONFIG_2: No angle calc, 80mT range */
     tmag5273_write_reg(REG_SENSOR_CONFIG_2,
@@ -80,10 +81,10 @@ void tmag5273_clear_por(void)
 
 void tmag5273_read_xyt(tmag_data_t *out)
 {
-    uint8_t raw[6];
+    uint8_t raw[8];
     
     /* Burst read: T_MSB, T_LSB, X_MSB, X_LSB, Y_MSB, Y_LSB */
-    read_regs(REG_T_MSB_RESULT, raw, 6);
+    read_regs(REG_T_MSB_RESULT, raw, 8);
     
     /* Temperature: 25°C + (raw - 17500) / 60 */
     int16_t t_raw = (raw[0] << 8) | raw[1];
@@ -92,6 +93,8 @@ void tmag5273_read_xyt(tmag_data_t *out)
     /* X and Y magnetic field (signed 16-bit) */
     out->x_raw = (int16_t)((raw[2] << 8) | raw[3]);
     out->y_raw = (int16_t)((raw[4] << 8) | raw[5]);
+    out->z_raw = (int16_t)((raw[6] << 8) | raw[7]);
+
 }
 
 /* Fast read: X and Y only (4 bytes instead of 6, no float math) */
@@ -104,5 +107,15 @@ void tmag5273_read_xy_fast(int16_t *x, int16_t *y)
     
     *x = (int16_t)((raw[0] << 8) | raw[1]);
     *y = (int16_t)((raw[2] << 8) | raw[3]);
+}
+
+void tmag5273_read_z_fast(int16_t *z)
+{
+    uint8_t raw[2];
+    
+    /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
+    read_regs(0x16, raw, 2);
+    
+    *z = (int16_t)((raw[0] << 8) | raw[1]);
 }
 

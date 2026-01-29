@@ -6,144 +6,80 @@
 #include <libopencm3/stm32/timer.h>
 #include <libopencm3/stm32/pwr.h>
 #include <libopencm3/stm32/flash.h>
+#include <libopencm3/stm32/crc.h>
+#include <libopencm3/stm32/dma.h>
 #include <libopencm3/cm3/systick.h>
+#include <libopencm3/cm3/nvic.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 #include "mct8316z.h"
+#include "tmag5273.h"
 #include "angleLUT.h"
 
-// Pi constant for angle conversion (avoid pulling in math.h)
-#define PI 3.14159265358979323846f
+#include <assert.h>
+//Change this for every ESC you flash, maximum value of 16
+#define ESC_ADDRESS 0
+
+//WARNING: STATUS AND CMD fields for response and command packets can only be 4 bits wide
+#if ESC_ADDRESS > 0xF
+#error "Set ESC_ADDRESS to a value that is at most4 bits wide"
+#endif 
 
 /* ============================================================================
- * TMAG5273 Hall-Effect Sensor Driver
- * Datasheet: Texas Instruments TMAG5273
+ * Protocol Constants (inline - no separate header per design principles)
  * ============================================================================ */
+#define START_BYTE          0xAA
+#define CMD_SET_POSITION    0x01
+#define CMD_SET_DUTY        0x02
+#define CMD_POLL            0x03
 
-/* I2C Addresses for different TMAG5273 variants (7-bit) */
-#define TMAG5273A_I2C_ADDR    0x35
-#define TMAG5273B_I2C_ADDR    0x22
-#define TMAG5273C_I2C_ADDR    0x78
-#define TMAG5273D_I2C_ADDR    0x44
+/* Packet sizes */
+#define CMD_POLL_LEN        3   /* START + CMD + CRC */
+#define CMD_DUTY_LEN        5   /* START + CMD + int16 + CRC */
+#define CMD_POSITION_LEN    7   /* START + CMD + int32 + CRC */
+#define RESPONSE_LEN        11  /* START + STATUS + int32 + int32 + CRC */
 
-/* Select your variant here */
-#define TMAG5273_I2C_ADDR     TMAG5273A_I2C_ADDR
+/* Status flags */
+#define STATUS_POSITION_REACHED  0x01
+#define STATUS_ERROR            0x02
 
-/* Register Addresses */
-#define TMAG5273_DEVICE_CONFIG_1     0x00
-#define TMAG5273_DEVICE_CONFIG_2     0x01
-#define TMAG5273_SENSOR_CONFIG_1     0x02
-#define TMAG5273_SENSOR_CONFIG_2     0x03
-#define TMAG5273_X_THR_CONFIG        0x04
-#define TMAG5273_Y_THR_CONFIG        0x05
-#define TMAG5273_Z_THR_CONFIG        0x06
-#define TMAG5273_T_CONFIG            0x07
-#define TMAG5273_INT_CONFIG_1        0x08
-#define TMAG5273_MAG_GAIN_CONFIG     0x09
-#define TMAG5273_MAG_OFFSET_CONFIG_1 0x0A
-#define TMAG5273_MAG_OFFSET_CONFIG_2 0x0B
-#define TMAG5273_I2C_ADDRESS         0x0C
-#define TMAG5273_DEVICE_ID           0x0D
-#define TMAG5273_MANUFACTURER_ID_LSB 0x0E
-#define TMAG5273_MANUFACTURER_ID_MSB 0x0F
-#define TMAG5273_T_MSB_RESULT        0x10
-#define TMAG5273_T_LSB_RESULT        0x11
-#define TMAG5273_X_MSB_RESULT        0x12
-#define TMAG5273_X_LSB_RESULT        0x13
-#define TMAG5273_Y_MSB_RESULT        0x14
-#define TMAG5273_Y_LSB_RESULT        0x15
-#define TMAG5273_Z_MSB_RESULT        0x16
-#define TMAG5273_Z_LSB_RESULT        0x17
-#define TMAG5273_CONV_STATUS         0x18
-#define TMAG5273_ANGLE_MSB_RESULT    0x19
-#define TMAG5273_ANGLE_LSB_RESULT    0x1A
-#define TMAG5273_MAGNITUDE_RESULT    0x1B
+/* Position control */
+#define PI_CRAD             314     /* π in centiradians */
+#define TWO_PI_CRAD         628     /* 2π in centiradians */
+#define POSITION_DEADBAND_CRAD 500    /* ~3 degrees deadband */
 
-/* DEVICE_CONFIG_1 Register Bits */
-#define TMAG5273_CRC_EN              (1 << 7)  /* CRC enable */
-#define TMAG5273_MAG_TEMPCO_SHIFT    5         /* Magnet temp coefficient */
-#define TMAG5273_CONV_AVG_SHIFT      2         /* Conversion averaging */
-#define TMAG5273_READ_MODE           (1 << 1)  /* 0=Standard, 1=1-byte special read */
+/* Timeout */
+#define COMM_TIMEOUT_MS     2000
 
-/* DEVICE_CONFIG_2 Register Bits */
-#define TMAG5273_THR_HYST_SHIFT      5
-#define TMAG5273_LP_LN               (1 << 4)  /* Low power/noise mode */
-#define TMAG5273_I2C_GLITCH_FILTER   (1 << 3)
-#define TMAG5273_TRIGGER_MODE        (1 << 2)  /* INT pin trigger mode */
-#define TMAG5273_OPERATING_MODE_SHIFT 0        /* 00=Standby, 01=Sleep, 10=Continuous, 11=WakeupSleep */
+/* Motor parameters */
+#define POLE_PAIRS  6
 
-/* SENSOR_CONFIG_1 Register Bits */
-#define TMAG5273_MAG_CH_EN_SHIFT     4         /* Magnetic channel enable */
-#define TMAG5273_SLEEPTIME_SHIFT     0
+/* Encoder sampling ISR frequency (choose 5000 or 10000) */
+#define ISR_FREQ_HZ         5000
+#define ISR_PERIOD_US       (1000000 / ISR_FREQ_HZ)  /* 200us at 5kHz, 100us at 10kHz */
+#define ISR_TIMER_PERIOD    ((1000000 / ISR_FREQ_HZ) - 1)  /* 199 at 5kHz, 99 at 10kHz */
 
-/* MAG_CH_EN Values */
-#define TMAG5273_MAG_CH_OFF          0x0
-#define TMAG5273_MAG_CH_X            0x1
-#define TMAG5273_MAG_CH_Y            0x2
-#define TMAG5273_MAG_CH_Z            0x3
-#define TMAG5273_MAG_CH_XY           0x4
-#define TMAG5273_MAG_CH_XZ           0x5
-#define TMAG5273_MAG_CH_YZ           0x6
-#define TMAG5273_MAG_CH_XYZ          0x7
-#define TMAG5273_MAG_CH_XYZT         0x8
-#define TMAG5273_MAG_CH_XYT          0x9
-#define TMAG5273_MAG_CH_XZT          0xA
-#define TMAG5273_MAG_CH_YZT          0xB
-#define TMAG5273_MAG_CH_XT           0xC
-#define TMAG5273_MAG_CH_YT           0xD
-#define TMAG5273_MAG_CH_ZT           0xE
-#define TMAG5273_MAG_CH_T            0xF
+/* Velocity calculation: update every ~1ms worth of samples */
+#define VEL_UPDATE_SAMPLES  (ISR_FREQ_HZ / 1000)  /* 5 at 5kHz, 10 at 10kHz */
+#define VEL_MULTIPLIER      1000  /* Convert delta_crad/ms to crad/s */
 
-/* SENSOR_CONFIG_2 Register Bits */
-#define TMAG5273_THRX_COUNT          (1 << 6)
-#define TMAG5273_MAG_THR_DIR         (1 << 5)
-#define TMAG5273_MAG_GAIN_CH_SHIFT   4
-#define TMAG5273_ANGLE_EN_SHIFT      2         /* Angle calculation axis pair */
-#define TMAG5273_X_Y_RANGE_SHIFT     1
-#define TMAG5273_Z_RANGE             (1 << 0)
-
-/* ANGLE_EN Values - Which axes to use for angle calculation */
-#define TMAG5273_ANGLE_OFF           0x0  /* No angle calculation */
-#define TMAG5273_ANGLE_XY            0x1  /* X-Y plane angle */
-#define TMAG5273_ANGLE_YZ            0x2  /* Y-Z plane angle */
-#define TMAG5273_ANGLE_XZ            0x3  /* X-Z plane angle */
-
-/* CONV_AVG Values - Averaging options */
-#define TMAG5273_CONV_AVG_1X         0x0  /* No averaging (fastest) */
-#define TMAG5273_CONV_AVG_2X         0x1
-#define TMAG5273_CONV_AVG_4X         0x2
-#define TMAG5273_CONV_AVG_8X         0x3
-#define TMAG5273_CONV_AVG_16X        0x4
-#define TMAG5273_CONV_AVG_32X        0x5
-
-/* Operating Modes */
-#define TMAG5273_OP_STANDBY          0x0
-#define TMAG5273_OP_SLEEP            0x1
-#define TMAG5273_OP_CONTINUOUS       0x2
-#define TMAG5273_OP_WAKEUP_SLEEP     0x3
-
-/* ============================================================================
- * GPIO Definitions for Motor Control
- * ============================================================================ */
+/* GPIO Definitions for Motor Control */
 #define HALLA_PORT   GPIOC
 #define HALLA_PIN    GPIO14
-
 #define HALLB_PORT   GPIOC
 #define HALLB_PIN    GPIO15
-
 #define HALLC_PORT   GPIOA
 #define HALLC_PIN    GPIO0
-
 #define BRAKE_PORT   GPIOA
 #define BRAKE_PIN    GPIO1
 
-/**
- * Manual Clock Setup for STM32L0
- * Goal: 32MHz System Clock
- * Source: HSI16 (16MHz Internal)
- * PLL: Mul x4, Div /2 => (16 * 4) / 2 = 32MHz
- */
-const struct rcc_clock_scale rcc_hsi16_32mhz = {
+/* ============================================================================
+ * Global State
+ * ============================================================================ */
+
+/* Clock configuration: 32MHz from HSI16 via PLL */
+static const struct rcc_clock_scale rcc_hsi16_32mhz = {
     .pll_source = RCC_CFGR_PLLSRC_HSI16_CLK,
     .pll_mul = RCC_CFGR_PLLMUL_MUL4,
     .pll_div = RCC_CFGR_PLLDIV_DIV2,
@@ -157,11 +93,78 @@ const struct rcc_clock_scale rcc_hsi16_32mhz = {
     .apb2_frequency = 32000000,
 };
 
+volatile uint32_t system_millis = 0;
+
+/* Multi-turn position tracking (centiradians) */
+static volatile int32_t absolute_position_crad = 0;
+static volatile int32_t last_angle_crad = 0;
+static volatile int32_t velocity_crads = 0;  /* centiradians per second */
+static volatile int32_t last_position_crad = 0;
+
+/* Control state */
+static volatile bool target_position_set = false;
+static volatile int32_t target_position_crad = 0;
+static volatile int16_t commanded_duty = 0;
+static volatile int16_t current_duty = 0;
+static volatile int direction = 0;
+
+/* Communication state */
+static volatile uint32_t last_valid_cmd_time = 0;
+
+/* UART RX buffer */
+static uint8_t rx_buf[16];
+static volatile uint8_t rx_idx = 0;
+static volatile uint32_t rx_last_byte_time = 0;
+#define RX_INTER_BYTE_TIMEOUT_MS 10
+
+/* DMA circular buffer for UART RX */
+#define DMA_RX_BUF_SIZE 32
+static volatile uint8_t dma_rx_buf[DMA_RX_BUF_SIZE];
+static volatile uint16_t dma_rx_tail = 0;  /* Where we've read up to */
+
+/* Sensor data (shared with ISR) */
+static volatile int16_t sensor_x = 0;
+static volatile int16_t sensor_y = 0;
+static volatile float current_angle_rad = 0;
+
+/* Commutation */
+static volatile int advance_deg = 110; //130
+
+/* Debug/benchmark variables (visible in MCUViewer) */
+volatile uint32_t isr_duration_us = 0;
+volatile uint32_t isr_max_us = 0;
+volatile uint32_t isr_count = 0;
+volatile uint32_t isr_overrun_count = 0;
+volatile uint32_t isr_interval_us = 0;  /* Time between ISR calls (should be ~ISR_PERIOD_US) */
+volatile uint32_t isr_interval_min_us = 0xFFFFFFFF;
+volatile uint32_t isr_interval_max_us = 0;
+volatile uint32_t uart_rx_count = 0;
+volatile uint32_t uart_crc_errors = 0;
+volatile uint32_t uart_bytes_rx = 0;  /* Raw byte counter for debugging */
+volatile uint32_t uart_overrun_errors = 0;  /* ORE error counter */
+volatile uint32_t looptime_us = 0;
+volatile int32_t debug_position = 0;
+volatile int32_t debug_velocity = 0;
+volatile int debug_comm_step = 0;
+
+/* Granular ISR timing breakdown (in microseconds) */
+volatile uint32_t debug_i2c_us = 0;      /* Time for I2C sensor read */
+volatile uint32_t debug_lut_us = 0;      /* Time for angle LUT lookup */
+volatile uint32_t debug_update_us = 0;   /* Time for position update + velocity */
+volatile uint32_t debug_control_us = 0;  /* Time for control logic + PWM + commutation */
+
+/* ============================================================================
+ * System Functions
+ * ============================================================================ */
+
+void sys_tick_handler(void)
+{
+    system_millis++;
+}
+
 static void clock_setup(void)
 {
     rcc_clock_setup_pll(&rcc_hsi16_32mhz);
-
-    // Enable Peripheral Clocks
     rcc_periph_clock_enable(RCC_GPIOA);
     rcc_periph_clock_enable(RCC_GPIOB);
     rcc_periph_clock_enable(RCC_GPIOC);
@@ -169,28 +172,16 @@ static void clock_setup(void)
     rcc_periph_clock_enable(RCC_SPI1);
     rcc_periph_clock_enable(RCC_I2C1);
     rcc_periph_clock_enable(RCC_TIM2);
-}
-
-// --- SysTick & Delay Helper ---
-volatile uint32_t system_millis = 0;
-
-void sys_tick_handler(void);
-void sys_tick_handler(void)
-{
-    system_millis++;
+    rcc_periph_clock_enable(RCC_TIM21);
+    rcc_periph_clock_enable(RCC_CRC);
 }
 
 static void systick_setup(void)
 {
-    // Clock = AHB = 32MHz
-    // Tick = 1ms => Reload = 32,000,000 / 1000 - 1 = 31999
     systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
-    systick_set_reload(31999);
+    systick_set_reload(31999);  /* 1ms at 32MHz */
     systick_interrupt_enable();
     systick_counter_enable();
-    
-    // Ensure global interrupts are enabled (CM0/CM3)
-    __asm__("cpsie i"); 
 }
 
 static void delay_ms(uint32_t ms)
@@ -199,531 +190,538 @@ static void delay_ms(uint32_t ms)
     while ((system_millis - start) < ms);
 }
 
-/**
- * Get current time in microseconds using SysTick
- * SysTick is configured for 1ms ticks (reload = 31999 at 32MHz)
- * Clock = 32MHz, so 1 microsecond = 32 ticks
- * We use the current SysTick value for sub-millisecond precision
- */
 static uint32_t get_time_us(void)
 {
     uint32_t millis = system_millis;
-    uint32_t systick_val = systick_get_value();
-    
-    // SysTick counts down from reload value (31999) to 0
-    // Calculate how many ticks have elapsed in current millisecond period
-    uint32_t ticks_elapsed = 31999 - systick_val;
-    
-    // Convert to microseconds: (millis * 1000) + (ticks / 32)
-    // At 32MHz: 1 us = 32 ticks, so ticks_elapsed / 32 gives microseconds
-    return (millis * 1000) + (ticks_elapsed / 32);
+    uint32_t ticks_elapsed = 31999 - systick_get_value();
+    return (millis * 1000) + (ticks_elapsed >> 5);  /* /32 via shift */
 }
+
+/* ============================================================================
+ * Hardware CRC-8 (polynomial 0x07)
+ * ============================================================================ */
+
+static void crc8_init(void)
+{
+    /* CRC peripheral already clocked in clock_setup */
+    CRC_CR = CRC_CR_RESET;
+    
+    /* Set 8-bit polynomial size */
+    CRC_CR = (CRC_CR & ~CRC_CR_POLYSIZE) | CRC_CR_POLYSIZE_8;
+    
+    /* Set polynomial to 0x07 (CRC-8/CCITT) */
+    CRC_POL = 0x07;
+    
+    /* Set initial value to 0x00 */
+    CRC_INIT = 0x00;
+}
+
+static uint8_t crc8_calculate(const uint8_t *data, uint8_t len)
+{
+    /* Reset CRC to initial value */
+    CRC_CR |= CRC_CR_RESET;
+    
+    /* Feed data byte by byte using 8-bit access */
+    for (uint8_t i = 0; i < len; i++) {
+        *((volatile uint8_t *)&CRC_DR) = data[i];
+    }
+    
+    return (uint8_t)(CRC_DR & 0xFF);
+}
+
+/* ============================================================================
+ * UART Setup
+ * ============================================================================ */
 
 static void usart2_setup(void)
 {
-    // MSP: PA9 (TX), PA10 (RX) -> AF4
     gpio_set_af(GPIOA, GPIO_AF4, GPIO9 | GPIO10);
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
-
-    // Config: 921600 baud, 8N1
     usart_set_baudrate(USART2, 921600);
     usart_set_databits(USART2, 8);
     usart_set_stopbits(USART2, USART_STOPBITS_1);
     usart_set_mode(USART2, USART_MODE_TX_RX);
     usart_set_parity(USART2, USART_PARITY_NONE);
     usart_set_flow_control(USART2, USART_FLOWCONTROL_NONE);
-
     usart_enable(USART2);
 }
 
+/* ============================================================================
+ * DMA Setup for UART RX (circular buffer)
+ * ============================================================================ */
+
+static void dma1_ch5_setup(void)
+{
+    rcc_periph_clock_enable(RCC_DMA);
+    dma_channel_reset(DMA1, DMA_CHANNEL5);
+    
+    /* USART2_RX -> DMA1 Channel 5, request 4 (per RM0377 Table 45) */
+    dma_set_channel_request(DMA1, DMA_CHANNEL5, 4);
+    
+    dma_set_peripheral_address(DMA1, DMA_CHANNEL5, (uint32_t)&USART_RDR(USART2));
+    dma_set_memory_address(DMA1, DMA_CHANNEL5, (uint32_t)dma_rx_buf);
+    dma_set_number_of_data(DMA1, DMA_CHANNEL5, DMA_RX_BUF_SIZE);
+    
+    dma_set_read_from_peripheral(DMA1, DMA_CHANNEL5);
+    dma_enable_memory_increment_mode(DMA1, DMA_CHANNEL5);
+    dma_set_peripheral_size(DMA1, DMA_CHANNEL5, DMA_CCR_PSIZE_8BIT);
+    dma_set_memory_size(DMA1, DMA_CHANNEL5, DMA_CCR_MSIZE_8BIT);
+    dma_set_priority(DMA1, DMA_CHANNEL5, DMA_CCR_PL_HIGH);
+    dma_enable_circular_mode(DMA1, DMA_CHANNEL5);
+    
+    dma_enable_channel(DMA1, DMA_CHANNEL5);
+    usart_enable_rx_dma(USART2);
+}
+
+/* ============================================================================
+ * I2C Setup (1MHz for fast TMAG reads)
+ * ============================================================================ */
+
 static void i2c1_setup(void)
 {
-    // MSP: PB6 (SCL), PB7 (SDA) -> AF1
     gpio_set_af(GPIOB, GPIO_AF1, GPIO6 | GPIO7);
     gpio_mode_setup(GPIOB, GPIO_MODE_AF, GPIO_PUPD_PULLUP, GPIO6 | GPIO7);
     gpio_set_output_options(GPIOB, GPIO_OTYPE_OD, GPIO_OSPEED_HIGH, GPIO6 | GPIO7);
-
     i2c_peripheral_disable(I2C1);
-
-    /* Fast Mode Plus timing for ~1MHz I2C (TMAG5273 supports up to 1MHz)
-     * With 32MHz I2CCLK:
-     * PRESC=0, SCLDEL=1, SDADEL=0, SCLH=4, SCLL=9
-     * This gives approximately 1MHz SCL with proper setup/hold times
-     * 
-     * For Fast Mode (400kHz), use: 0x00100413 (original CubeMX value)
-     * For Fast Mode Plus (~1MHz): 0x00100109 
-     */
-    // I2C_TIMINGR(I2C1) = 0x00100109;  /* ~1MHz for fastest TMAG5273 reads */
-    I2C_TIMINGR(I2C1) = 0x00100413;  
-
+    /* ~1MHz Fast Mode Plus for fast TMAG5273 reads */
+    I2C_TIMINGR(I2C1) = 0x00100109;
     i2c_peripheral_enable(I2C1);
 }
 
 /* ============================================================================
- * TMAG5273 Driver Functions
+ * PWM Setup (TIM2 for motor)
  * ============================================================================ */
-
-/**
- * Write a single register to TMAG5273
- */
-static void tmag5273_write_reg(uint8_t reg, uint8_t value)
-{
-    uint8_t data[2] = {reg, value};
-    i2c_transfer7(I2C1, TMAG5273_I2C_ADDR, data, 2, NULL, 0);
-}
-
-/**
- * Read a single register from TMAG5273
- */
-static uint8_t tmag5273_read_reg(uint8_t reg)
-{
-    uint8_t value = 42;
-    i2c_transfer7(I2C1, TMAG5273_I2C_ADDR, &reg, 1, &value, 1);
-    return value;
-}
-
-/**
- * Read multiple consecutive registers (burst read)
- * This is faster than individual reads for multiple registers
- */
-static void tmag5273_read_regs(uint8_t start_reg, uint8_t *data, uint8_t len)
-{
-    i2c_transfer7(I2C1, TMAG5273_I2C_ADDR, &start_reg, 1, data, len);
-}
-
-/**
- * Initialize TMAG5273 for fastest angle reading using X-Z axes
- * 
- * Configuration for maximum speed:
- * - Continuous measurement mode
- * - No averaging (1x) for fastest updates
- * - Enable X and Z channels for X-Z plane angle calculation
- * - Low noise mode disabled (faster)
- * - CRC disabled (faster I2C)
- */
-static bool tmag5273_init_fast_angle(void)
-{
-    uint8_t device_id;
-    
-    /* Read Device ID to verify communication */
-    device_id = tmag5273_read_reg(TMAG5273_DEVICE_ID);
-    
-    /* Device ID should be 0x49 for TMAG5273 */
-    if ((device_id & 0x3F) == 0) {
-        return false;  /* Communication failed */
-    }
-    
-    /* DEVICE_CONFIG_1:
-     * - CRC disabled (bit 7 = 0) - faster I2C
-     * - MAG_TEMPCO = 0 (no temp compensation)
-     * - CONV_AVG = 0 (1x, no averaging) - fastest
-     * - READ_MODE = 0 (standard I2C read)
-     */
-    tmag5273_write_reg(TMAG5273_DEVICE_CONFIG_1, 
-        // (TMAG5273_CONV_AVG_1X << TMAG5273_CONV_AVG_SHIFT));
-        (TMAG5273_CONV_AVG_32X << TMAG5273_CONV_AVG_SHIFT));
-    
-    /* SENSOR_CONFIG_1:
-     * - SLEEPTIME = 0 (1ms, not used in continuous mode)
-     * - MAG_CH_EN = XYZ (0x7) - Enable all channels to debug which axes respond
-     */
-    /*tmag5273_write_reg(TMAG5273_SENSOR_CONFIG_1,
-        (0 << TMAG5273_SLEEPTIME_SHIFT) |
-        (TMAG5273_MAG_CH_XYT << TMAG5273_MAG_CH_EN_SHIFT));
-    */
-
-    tmag5273_write_reg(TMAG5273_SENSOR_CONFIG_1,
-        (0 << TMAG5273_SLEEPTIME_SHIFT) |
-        (TMAG5273_MAG_CH_XYZ << TMAG5273_MAG_CH_EN_SHIFT));
-
-
-    /* SENSOR_CONFIG_2:
-     * - ANGLE_EN = XY (0x1) - Calculate angle from X-Y plane
-     * - Z_RANGE = 0 (lower range for better sensitivity)
-     * - X_Y_RANGE = 0 (±40mT range for A1 variant)
-     */
-    tmag5273_write_reg(TMAG5273_SENSOR_CONFIG_2,
-        (TMAG5273_ANGLE_OFF << TMAG5273_ANGLE_EN_SHIFT) |
-        (1 << TMAG5273_X_Y_RANGE_SHIFT) | //X_Y_RANGE=1 for 80mT
-        (0 << 0));  /* Z_RANGE = 0 */
-    
-    /* INT_CONFIG_1:
-     * - MASK_INTB = 1 (bit 0) - REQUIRED when INT pin is not connected/floating!
-     * This masks the interrupt function and prevents floating INT issues
-     */
-    tmag5273_write_reg(TMAG5273_INT_CONFIG_1, 0x01);  /* MASK_INTB = 1 */
-    
-    /* DEVICE_CONFIG_2:
-     * - LP_LN = 0 (low power mode, but we use continuous anyway)
-     * - I2C_GLITCH_FILTER = 0 (disabled for speed)
-     * - TRIGGER_MODE = 0 (I2C command trigger)
-     * - OPERATING_MODE = 2 (Continuous measurement) - keeps converting
-     */
-    tmag5273_write_reg(TMAG5273_DEVICE_CONFIG_2,
-        (TMAG5273_OP_CONTINUOUS << TMAG5273_OPERATING_MODE_SHIFT));
-    
-    return true;
-}
-
-/**
- * Print a hex byte over UART
- */
-static void print_hex(uint8_t val)
-{
-    const char hex[] = "0123456789ABCDEF";
-    usart_send_blocking(USART2, hex[(val >> 4) & 0x0F]);
-    usart_send_blocking(USART2, hex[val & 0x0F]);
-}
-
-/**
- * Print a string over UART
- */
-static void print_str(const char *s)
-{
-    while (*s) {
-        usart_send_blocking(USART2, *s++);
-    }
-}
 
 static void tim2_pwm_setup(void)
 {
-    // MSP: PB1 -> TIM2_CH4 -> AF5
     gpio_set_af(GPIOB, GPIO_AF5, GPIO1);
     gpio_mode_setup(GPIOB, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO1);
-
-    // Timer Base: 40kHz @ 32MHz Clock
     timer_set_mode(TIM2, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
-    timer_set_prescaler(TIM2, 0); 
-    timer_set_period(TIM2, 799);  
-
-    // Channel 4 PWM Mode 1
+    timer_set_prescaler(TIM2, 0);
+    // timer_set_period(TIM2, 399);  /* 80kHz PWM */
+    timer_set_period(TIM2, 799);  /* 40kHz PWM */
     timer_set_oc_mode(TIM2, TIM_OC4, TIM_OCM_PWM1);
-    timer_set_oc_value(TIM2, TIM_OC4, 0); // Start at 0% duty
+    timer_set_oc_value(TIM2, TIM_OC4, 0);
     timer_enable_oc_output(TIM2, TIM_OC4);
-    
     timer_enable_oc_preload(TIM2, TIM_OC4);
     timer_enable_counter(TIM2);
 }
 
+/* ============================================================================
+ * Timer Setup (TIM21 for encoder sampling at ISR_FREQ_HZ)
+ * ============================================================================ */
+
+static void tim21_setup(void)
+{
+    /* TIM21 is a basic timer on STM32L0 */
+    /* 32MHz / 32 = 1MHz timer clock */
+    timer_set_prescaler(TIM21, 31);  /* 32MHz / 32 = 1MHz */
+    timer_set_period(TIM21, ISR_TIMER_PERIOD);  /* Set by ISR_FREQ_HZ */
+    timer_enable_irq(TIM21, TIM_DIER_UIE);
+    nvic_enable_irq(NVIC_TIM21_IRQ);
+    nvic_set_priority(NVIC_TIM21_IRQ, 0);  /* Highest priority */
+    timer_enable_counter(TIM21);
+}
+
+/* ============================================================================
+ * Motor Control GPIO
+ * ============================================================================ */
 
 static void motor_gpio_setup(void)
 {
-    /* Configure Hall sensor outputs and brake control as push-pull outputs */
-    
-    /* PC14 - HALLA */
+    /* Hall outputs: PC14, PC15, PA0 */
     gpio_mode_setup(HALLA_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, HALLA_PIN);
     gpio_set_output_options(HALLA_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, HALLA_PIN);
-    gpio_clear(HALLA_PORT, HALLA_PIN);  /* Start low */
-    
-    /* PC15 - HALLB */
+    gpio_clear(HALLA_PORT, HALLA_PIN);
+
     gpio_mode_setup(HALLB_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, HALLB_PIN);
     gpio_set_output_options(HALLB_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, HALLB_PIN);
-    gpio_clear(HALLB_PORT, HALLB_PIN);  /* Start low */
-    
-    /* PA0 - HALLC */
+    gpio_clear(HALLB_PORT, HALLB_PIN);
+
     gpio_mode_setup(HALLC_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, HALLC_PIN);
     gpio_set_output_options(HALLC_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, HALLC_PIN);
-    gpio_clear(HALLC_PORT, HALLC_PIN);  /* Start low */
-    
-    /* PA1 - BRAKE */
+    gpio_clear(HALLC_PORT, HALLC_PIN);
+
+    /* Brake: PA1 */
     gpio_mode_setup(BRAKE_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, BRAKE_PIN);
     gpio_set_output_options(BRAKE_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, BRAKE_PIN);
-    gpio_clear(BRAKE_PORT, BRAKE_PIN);  /* Start with brake off */
+    gpio_clear(BRAKE_PORT, BRAKE_PIN);
 }
 
+/* Hall pattern lookup: [step] = {A, B, C} */
+static const uint8_t hall_pattern[6][3] = {
+    {1, 1, 0}, {1, 0, 0}, {1, 0, 1},
+    {0, 0, 1}, {0, 1, 1}, {0, 1, 0}
+};
 
-/* Structure to hold all sensor data */
-typedef struct {
-    float temp_degc;
-    int16_t x_raw;
-    int16_t y_raw;
-    int16_t z_raw;
-    float angle_deg;
-    uint8_t status;
-} tmag_data_t;
-
-// TMAG5273 debug - raw bytes from I2C read (declared early for use in read functions)
-volatile uint8_t tmag_raw0 = 0;  // T_MSB
-volatile uint8_t tmag_raw1 = 0;  // T_LSB
-volatile uint8_t tmag_raw2 = 0;  // X_MSB
-volatile uint8_t tmag_raw3 = 0;  // X_LSB
-volatile uint8_t tmag_raw4 = 0;  // Y_MSB
-volatile uint8_t tmag_raw5 = 0;  // Y_LSB
-volatile uint8_t tmag_raw6 = 0;  // Z_MSB
-volatile uint8_t tmag_raw7 = 0;  // Z_LSB
-
-static bool tmag5273_read_all(tmag_data_t *out) {
-    uint8_t raw_data[13]; // Registers 0x10 through 0x1B
-    
-    // BURST READ: Start at 0x10 (Temp MSB) and read 12 bytes
-    tmag5273_read_regs(TMAG5273_T_MSB_RESULT, raw_data, 13);
-    
-    // Parse Temp (0x10, 0x11)
-    int16_t t_raw = (raw_data[0] << 8) | raw_data[1];
-    out->temp_degc = 25.0f + ((t_raw - 17500) / 60.0f);
-    
-    // Parse X (0x12, 0x13)
-    out->x_raw = (int16_t)((raw_data[2] << 8) | raw_data[3]);
-    
-    // Parse Y (0x14, 0x15)
-    out->y_raw = (int16_t)((raw_data[4] << 8) | raw_data[5]);
-    
-    // Parse Z (0x16, 0x17)
-    out->z_raw = (int16_t)((raw_data[6] << 8) | raw_data[7]);
-    
-    // Parse Status (0x18)
-    out->status = raw_data[8];
-    
-    // Parse Angle (0x19, 0x1A)
-    uint16_t angle_raw = (raw_data[9] << 8) | raw_data[10]; // 9-bit
-    out->angle_deg = (float)angle_raw * 360.0f / 8192.0f;
-    
-    return true;
+static void set_hall_outputs(int step)
+{
+    step = ((step % 6) + 6) % 6;
+    const uint8_t *p = hall_pattern[step];
+    if (p[0]) gpio_set(HALLA_PORT, HALLA_PIN); else gpio_clear(HALLA_PORT, HALLA_PIN);
+    if (p[1]) gpio_set(HALLB_PORT, HALLB_PIN); else gpio_clear(HALLB_PORT, HALLB_PIN);
+    if (p[2]) gpio_set(HALLC_PORT, HALLC_PIN); else gpio_clear(HALLC_PORT, HALLC_PIN);
 }
 
-static bool tmag5273_read_xyzt(tmag_data_t *out) {
-    uint8_t raw_data[8]; // Registers 0x10 through 0x17
+static int angle_to_step(int32_t angle_crad, int advance)
+{
+    /* Convert centiradians to electrical angle */
+    /* 1 crad = 0.57 degrees, so angle_crad * 57.3 / 100 = degrees */
+    /* electrical = mechanical * pole_pairs + advance */
+    int32_t mech_deg_x10 = (angle_crad * 573) / 100;  /* degrees × 10 */
+    int32_t elec_x10 = mech_deg_x10 * POLE_PAIRS + advance * 10;
     
-    // BURST READ: Start at 0x10 (Temp MSB) and read 8 bytes
-    tmag5273_read_regs(TMAG5273_T_MSB_RESULT, raw_data, 8);
+    elec_x10 = elec_x10 % 3600;
+    if (elec_x10 < 0) elec_x10 += 3600;
     
-    // Copy to debug variables for MCUViewer
-    tmag_raw0 = raw_data[0];
-    tmag_raw1 = raw_data[1];
-    tmag_raw2 = raw_data[2];
-    tmag_raw3 = raw_data[3];
-    tmag_raw4 = raw_data[4];
-    tmag_raw5 = raw_data[5];
-    tmag_raw6 = raw_data[6];
-    tmag_raw7 = raw_data[7];
-    
-    // Parse Temp (0x10, 0x11)
-    int16_t t_raw = (raw_data[0] << 8) | raw_data[1];
-    out->temp_degc = 25.0f + ((t_raw - 17500) / 60.0f);
-    
-    // Parse X (0x12, 0x13)
-    out->x_raw = (int16_t)((raw_data[2] << 8) | raw_data[3]);
-    
-    // Parse Y (0x14, 0x15)
-    out->y_raw = (int16_t)((raw_data[4] << 8) | raw_data[5]);
-
-    out->z_raw = (int16_t)((raw_data[6] << 8) | raw_data[7]);
-
-    return true;
+    return elec_x10 / 600;
 }
 
-volatile int loopdelay = 200; //ms
+/* ============================================================================
+ * Multi-Turn Position Tracking
+ * ============================================================================ */
 
-volatile int magx = 0;
-volatile int magy = 0;
-volatile int magz = 0;
-volatile float magangle = 0;
-volatile int magtemp = 0;
-volatile int step_count = 0;
+static void update_absolute_position(float angle_rad)
+{
+    int32_t current_crad = (int32_t)(angle_rad * 100.0f);
+    int32_t delta = current_crad - last_angle_crad;
+    
+    /* Handle wraparound (detect >π radian jumps) */
+    if (delta > PI_CRAD) delta -= TWO_PI_CRAD;
+    if (delta < -PI_CRAD) delta += TWO_PI_CRAD;
+    
+    absolute_position_crad += delta;
+    last_angle_crad = current_crad;
+}
 
-volatile uint32_t looptime_us = 0;  // Loop time in microseconds
+/* ============================================================================
+ * 10kHz Encoder ISR
+ * ============================================================================ */
 
-// MCT8316Z status registers for debugging
-volatile uint16_t mct_ic_status = 0;   // Reg 0x00 - IC_STATUS
-volatile uint16_t mct_status1 = 0;     // Reg 0x01 - STATUS1 (OCP details)
-volatile uint16_t mct_status2 = 0;     // Reg 0x02 - STATUS2 (more faults)
+void tim21_isr(void)
+{
+    uint32_t t0 = get_time_us();
+    timer_clear_flag(TIM21, TIM_SR_UIF);
+    
+    /* Measure interval between ISR calls (should be ~100us for 10kHz) */
+    static uint32_t last_isr_time_us = 0;
+    if (last_isr_time_us != 0) {
+        uint32_t interval = t0 - last_isr_time_us;
+        isr_interval_us = interval;
+        if (interval < isr_interval_min_us) isr_interval_min_us = interval;
+        if (interval > isr_interval_max_us) isr_interval_max_us = interval;
+    }
+    last_isr_time_us = t0;
+    
+    /* ---- SECTION 1: I2C sensor read (fast: X/Y only, no temp) ---- */
+    uint32_t t1 = get_time_us();
+    int16_t x, y;
+    tmag5273_read_xy_fast(&x, &y);
+    sensor_x = x;
+    sensor_y = y;
+    uint32_t t2 = get_time_us();
+    debug_i2c_us = t2 - t1;
+    
+    /* ---- SECTION 2: LUT lookup ---- */
+    float angle_rad = angleLUT_get_angle(x, y);
+    current_angle_rad = angle_rad;
+    uint32_t t3 = get_time_us();
+    debug_lut_us = t3 - t2;
+    
+    /* ---- SECTION 3: Position/velocity update ---- */
+    update_absolute_position(angle_rad);
+    
+    static uint8_t vel_counter = 0;
+    vel_counter++;
+    if (vel_counter >= VEL_UPDATE_SAMPLES) {  /* Update velocity every ~1ms */
+        velocity_crads = (absolute_position_crad - last_position_crad) * VEL_MULTIPLIER;
+        last_position_crad = absolute_position_crad;
+        vel_counter = 0;
+    }
+    uint32_t t4 = get_time_us();
+    debug_update_us = t4 - t3;
+    
+    /* ---- SECTION 4: Control logic + PWM + commutation ---- */
+    int16_t duty_to_apply = 0;
+    if (target_position_set) {
+        int32_t error = target_position_crad - absolute_position_crad;
+        if (error > POSITION_DEADBAND_CRAD) {
+            duty_to_apply = commanded_duty > 0 ? commanded_duty : -commanded_duty;
+            direction = 1;
+        } else if (error < -POSITION_DEADBAND_CRAD) {
+            duty_to_apply = commanded_duty > 0 ? -commanded_duty : commanded_duty;
+            direction = -1;
+        } else {
+            duty_to_apply = 0;
+            direction = 0;
+        }
+    } else {
+        duty_to_apply = commanded_duty;
+        direction = commanded_duty > 0 ? 1 : (commanded_duty < 0 ? -1 : 0);
+    }
+    current_duty = duty_to_apply;
+    
+    int16_t abs_duty = duty_to_apply < 0 ? -duty_to_apply : duty_to_apply;
+    if (abs_duty > 799) abs_duty = 799;
+    timer_set_oc_value(TIM2, TIM_OC4, abs_duty);
+    
+    /* Use single-turn angle for commutation (not multi-turn absolute position) */
+    int32_t comm_angle_crad = (int32_t)(current_angle_rad * 100.0f);
+    if (direction != 0) {
+        comm_angle_crad += (velocity_crads / 10000);  /* 0.1ms prediction */
+    }
+    
+    int step = angle_to_step(comm_angle_crad, direction > 0 ? advance_deg : -advance_deg);
+    set_hall_outputs(step);
+    debug_comm_step = step;
+    uint32_t t5 = get_time_us();
+    debug_control_us = t5 - t4;
+    
+    /* Total ISR time */
+    uint32_t elapsed = t5 - t0;
+    isr_duration_us = elapsed;
+    if (elapsed > isr_max_us) isr_max_us = elapsed;
+    if (elapsed > ISR_PERIOD_US) isr_overrun_count++;  /* Overrun = took longer than period */
+    isr_count++;
+    
+    /* Update debug vars */
+    debug_position = absolute_position_crad;
+    debug_velocity = velocity_crads;
+}
+
+/* ============================================================================
+ * UART Protocol Handler
+ * ============================================================================ */
+
+static void send_response(void)
+{
+    uint8_t tx_buf[RESPONSE_LEN];
+    
+    /* Build response packet */
+    tx_buf[0] = START_BYTE;
+
+    /* Status byte */
+    uint8_t status = 0;
+    if (target_position_set && direction == 0) {
+        status |= STATUS_POSITION_REACHED;
+    }
+
+    tx_buf[1] = (ESC_ADDRESS << 4) | status;
+    
+    /* Position (int32, little-endian) */
+    int32_t pos = absolute_position_crad;
+    tx_buf[2] = pos & 0xFF;
+    tx_buf[3] = (pos >> 8) & 0xFF;
+    tx_buf[4] = (pos >> 16) & 0xFF;
+    tx_buf[5] = (pos >> 24) & 0xFF;
+    
+    /* Velocity (int32, little-endian) */
+    int32_t vel = velocity_crads;
+    tx_buf[6] = vel & 0xFF;
+    tx_buf[7] = (vel >> 8) & 0xFF;
+    tx_buf[8] = (vel >> 16) & 0xFF;
+    tx_buf[9] = (vel >> 24) & 0xFF;
+    
+    /* CRC */
+    tx_buf[10] = crc8_calculate(tx_buf, 10);
+    
+    /* Send */
+    for (int i = 0; i < RESPONSE_LEN; i++) {
+        usart_send_blocking(USART2, tx_buf[i]);
+    }
+}
+
+static void process_command(void)
+{
+    uint8_t cmd = rx_buf[1] & 0x0F;
+    uint8_t address = rx_buf[1] >> 4; 
+    if (address != ESC_ADDRESS) { return; }
+    
+    switch (cmd) {
+        case CMD_POLL:
+            /* No payload, just respond */
+            break;
+            
+        case CMD_SET_DUTY: {
+            /* 2-byte payload: int16 duty */
+            int16_t duty = (int16_t)(rx_buf[2] | (rx_buf[3] << 8));
+            commanded_duty = duty;
+            target_position_set = false;
+            break;
+        }
+        
+        case CMD_SET_POSITION: {
+            /* 4-byte payload: int32 position in centiradians */
+            int32_t pos = rx_buf[2] | (rx_buf[3] << 8) | 
+                         (rx_buf[4] << 16) | (rx_buf[5] << 24);
+            target_position_crad = pos;
+            target_position_set = true;
+            /* Use existing commanded_duty for speed */
+            if (commanded_duty == 0) {
+                commanded_duty = 150;  /* Default duty if none set */
+            }
+            break;
+        }
+        
+        default:
+            /* Unknown command - ignore */
+            return;
+    }
+    
+    /* Update watchdog */
+    last_valid_cmd_time = system_millis;
+    uart_rx_count++;
+    
+    /* Send response */
+    send_response();
+}
+
+static void uart_poll(void)
+{
+    /* Check for inter-byte timeout (reset incomplete packets) */
+    if (rx_idx > 0 && (system_millis - rx_last_byte_time) > RX_INTER_BYTE_TIMEOUT_MS) {
+        rx_idx = 0;
+    }
+    
+    /* Calculate head position (where DMA is writing next) */
+    uint16_t head = DMA_RX_BUF_SIZE - dma_get_number_of_data(DMA1, DMA_CHANNEL5);
+    
+    /* Process all available bytes from DMA circular buffer */
+    while (dma_rx_tail != head) {
+        uint8_t b = dma_rx_buf[dma_rx_tail];
+        dma_rx_tail = (dma_rx_tail + 1) % DMA_RX_BUF_SIZE;
+        uart_bytes_rx++;  /* Count every byte received */
+        rx_last_byte_time = system_millis;
+        
+        /* Resync: START_BYTE always starts a new packet (handles mid-packet corruption) */
+        if (b == START_BYTE) {
+            rx_idx = 0;
+            rx_buf[rx_idx++] = b;
+            continue;
+        }
+        
+        /* Not START_BYTE - only accept if we're mid-packet */
+        if (rx_idx == 0) {
+            continue;
+        }
+        
+        rx_buf[rx_idx++] = b;
+        
+        /* Determine expected packet length based on command */
+        uint8_t expected_len = 0;
+        if (rx_idx >= 2) {
+            switch (rx_buf[1]) {
+                case CMD_POLL:
+                    expected_len = CMD_POLL_LEN;
+                    break;
+                case CMD_SET_DUTY:
+                    expected_len = CMD_DUTY_LEN;
+                    break;
+                case CMD_SET_POSITION:
+                    expected_len = CMD_POSITION_LEN;
+                    break;
+                default:
+                    /* Unknown command - reset */
+                    rx_idx = 0;
+                    continue;
+            }
+        }
+        
+        /* Check if packet complete */
+        if (expected_len > 0 && rx_idx >= expected_len) {
+            /* Verify CRC */
+            uint8_t crc = crc8_calculate(rx_buf, expected_len - 1);
+            if (crc == rx_buf[expected_len - 1]) {
+                process_command();
+            } else {
+                uart_crc_errors++;
+            }
+            rx_idx = 0;
+        }
+        
+        /* Prevent buffer overflow */
+        if (rx_idx >= sizeof(rx_buf)) {
+            rx_idx = 0;
+        }
+    }
+}
+
+static void check_timeout(void)
+{
+    /* Disabled for standalone testing - re-enable for production! */
+    #if 0
+    if ((system_millis - last_valid_cmd_time) > COMM_TIMEOUT_MS) {
+        /* Safety: stop motor if no commands received */
+        commanded_duty = 0;
+        target_position_set = false;
+        timer_set_oc_value(TIM2, TIM_OC4, 0);
+    }
+    #endif
+}
+
+/* ============================================================================
+ * Main
+ * ============================================================================ */
 
 int main(void)
 {
-    // delay_ms(100); 
-    for (volatile int i = 0; i < 500000; i++); // startup delay in case of failed flash
-
+    /* Startup delay for flash recovery */
+    for (volatile int i = 0; i < 500000; i++);
 
     clock_setup();
     systick_setup();
+    crc8_init();
     usart2_setup();
+    dma1_ch5_setup();  /* DMA for UART RX circular buffer */
     i2c1_setup();
     tim2_pwm_setup();
-    //motor_gpio_setup();
+    motor_gpio_setup();
+    mct8316z_init();
 
-    mct8316z_init(); // Initialize MCT8316Z SPI
-    
-    delay_ms(5); // Allow sensor power up
+    delay_ms(5);
 
-    // Configure MCT8316Z
-    mct8316z_set_pwm_mode_async_dig(); // Set Asynchronous rectification with digital Hall
-    mct8316z_disable_protections();    // Disable OCP and motor lock for debugging
+    mct8316z_set_pwm_mode_async_dig();
+    mct8316z_write_reg(0x0A, 0x0003);  /* Disable motor lock */
 
-    // Set PWM Duty Cycle to 10%
-    // Timer Period is 799 (800 ticks). 10% = 80.
-    // timer_set_oc_value(TIM2, TIM_OC4, 50); 
-    // timer_set_oc_value(TIM2, TIM_OC4, 0); 
-    //timer_set_oc_value(TIM2, TIM_OC4, 100); 
-    // timer_set_oc_value(TIM2, TIM_OC4, 50); 
-    // timer_set_oc_value(TIM2, TIM_OC4, 300); 
-    // timer_set_oc_value(TIM2, TIM_OC4, 400);
-    
-    if (!tmag5273_init_fast_angle()) {
-        print_str("Init Failed\r\n");
-        while(1);
+    delay_ms(5);
+
+    if (!tmag5273_init()) {
+        while (1);  /* Halt on sensor failure */
     }
+    tmag5273_clear_por();
 
-    // --- IMPORTANT: Clear POR Bit ---
-    // Read status, verify POR is set, then write 1 to bit 4 to clear it.
-    uint8_t status = tmag5273_read_reg(TMAG5273_CONV_STATUS);
-    if (status & 0x10) {
-        print_str("POR detected. Clearing...\r\n");
-        // Write 1 to Bit 4 (POR) to clear it
-        tmag5273_write_reg(TMAG5273_CONV_STATUS, 0x10);
-    }
+    /* Initialize position tracking with first reading */
+    tmag_data_t sensor;
+    tmag5273_read_xyt(&sensor);
+
+    tmag5273_read_z_fast(&sensor.z_raw);
+
+    float initial_angle = angleLUT_get_angle(sensor.x_raw, sensor.y_raw);
+    last_angle_crad = (int32_t)(initial_angle * 100.0f);
+    absolute_position_crad = 0;  /* Start at zero */
+    last_position_crad = 0;
     
-
-    tmag_data_t sensor_data;
-
-    print_str("TMAG5273 Ready\r\n");
-    print_str("Rotate magnet to see which axes respond\r\n\r\n");
+    /* Initialize watchdog timer */
+    last_valid_cmd_time = system_millis;
     
-    /* Read and display config to verify */
-    uint8_t cfg1 = tmag5273_read_reg(TMAG5273_SENSOR_CONFIG_1);
-    uint8_t cfg2 = tmag5273_read_reg(TMAG5273_SENSOR_CONFIG_2);
-    print_str("CFG1: 0x");
-    print_hex(cfg1);
-    print_str(" CFG2: 0x");
-    print_hex(cfg2);
-    print_str("\r\n\r\n");
+    /* Enable interrupts and start 10kHz timer */
+    __asm__("cpsie i");
+    tim21_setup();
 
-    uint32_t last_step_time = system_millis;
+    uint32_t last_time_us = 0;
 
     while (1) {
-        // Read all sensor data
-        tmag5273_read_xyzt(&sensor_data);
+        /* Handle UART commands */
+        uart_poll();
         
-        magx = sensor_data.x_raw;
-        magy = sensor_data.y_raw;
-        magz = sensor_data.z_raw;
-        magtemp = sensor_data.temp_degc;
+        /* Check communication timeout */
+        check_timeout();
         
-        // Compute corrected angle using lookup table
-        // angleLUT_get_angle returns radians (0 to 2π), convert to degrees (0 to 360)
-        float angle_rad = angleLUT_get_angle((int16_t)magx, (int16_t)magy);
-        magangle = angle_rad * 180.0f / PI;  // Convert radians to degrees
-
-        // print_str("X:");
-        // print_hex((magx >> 8) & 0xFF);
-        // print_hex(magx & 0xFF);
-
-        // print_str(" Y:");
-        // print_hex((magy >> 8) & 0xFF);
-        // print_hex(magy & 0xFF);
-
-        // print_str(" Z:");
-        // print_hex((magz >> 8) & 0xFF);
-        // print_hex(magz & 0xFF);
-        
-        // /* Print angle */
-        // print_str("  Angle: ");
-        // int angle_int = (int)sensor_data.angle_deg;
-        // int angle_frac = (int)((sensor_data.angle_deg - angle_int) * 10);
-        // if (angle_frac < 0) angle_frac = -angle_frac;
-        
-        // print_uint(angle_int);
-        // print_str(".");
-        // usart_send_blocking(USART2, '0' + angle_frac);
-        // print_str(" deg");
-        
-        // print_str("\r\n");
-
-        /* Commutation Sequence based on Table 8-4 (Digital Hall Inputs) 
-         * DIR = 0 (Clockwise?)
-         * Step | Hall A | Hall B | Hall C
-         * -----|--------|--------|--------
-         * 1    | 1      | 0      | 1
-         * 2    | 1      | 0      | 0
-         * 3    | 1      | 1      | 0
-         * 4    | 0      | 1      | 0
-         * 5    | 0      | 1      | 1
-         * 6    | 0      | 0      | 1
-         * 
-         * Note: The table provided in the prompt shows:
-         * State | A | B | C
-         * 1     | 1 | 1 | 0
-         * 2     | 1 | 0 | 0
-         * 3     | 1 | 0 | 1
-         * 4     | 0 | 0 | 1
-         * 5     | 0 | 1 | 1
-         * 6     | 0 | 1 | 0
-         * 
-         */
-        /*switch (step_count % 6) {
-            case 0: // A=1, B=1, C=0
-                gpio_set(HALLA_PORT, HALLA_PIN);
-                gpio_set(HALLB_PORT, HALLB_PIN);
-                gpio_clear(HALLC_PORT, HALLC_PIN);
-                break;
-            case 1: // A=1, B=0, C=0
-                gpio_set(HALLA_PORT, HALLA_PIN);
-                gpio_clear(HALLB_PORT, HALLB_PIN);
-                gpio_clear(HALLC_PORT, HALLC_PIN);
-                break;
-            case 2: // A=1, B=0, C=1
-                gpio_set(HALLA_PORT, HALLA_PIN);
-                gpio_clear(HALLB_PORT, HALLB_PIN);
-                gpio_set(HALLC_PORT, HALLC_PIN);
-                break;
-            case 3: // A=0, B=0, C=1
-                gpio_clear(HALLA_PORT, HALLA_PIN);
-                gpio_clear(HALLB_PORT, HALLB_PIN);
-                gpio_set(HALLC_PORT, HALLC_PIN);
-                break;
-            case 4: // A=0, B=1, C=1
-                gpio_clear(HALLA_PORT, HALLA_PIN);
-                gpio_set(HALLB_PORT, HALLB_PIN);
-                gpio_set(HALLC_PORT, HALLC_PIN);
-                break;
-            case 5: // A=0, B=1, C=0
-                gpio_clear(HALLA_PORT, HALLA_PIN);
-                gpio_set(HALLB_PORT, HALLB_PIN);
-                gpio_clear(HALLC_PORT, HALLC_PIN);
-                break;
+        /* Measure main loop time */
+        uint32_t now_us = get_time_us();
+        if (last_time_us) {
+            looptime_us = now_us - last_time_us;
         }
-        
-        // Increment step_count only every loopdelay ms
-        // Reverse direction every 20 seconds
-        static int direction = 1;
-        static uint32_t last_dir_change = 0;
-        uint32_t current_time = system_millis;
-
-        // Reverse direction every 20,000ms (20 seconds)
-        if ((current_time - last_dir_change) >= 20000) {
-            direction = -direction;
-            last_dir_change = current_time;
-        }
-
-        if ((current_time - last_step_time) >= (uint32_t)loopdelay) {
-            step_count += direction;
-            last_step_time = current_time;
-        }*/
-
-        
-        // mct8316z_print_all_regs(); // Print MCT8316Z registers
-        
-        // delay_ms(1);  // Fast loop with 1ms delay
-
-        // Measure looptime in microseconds
-        static uint32_t last_time_us = 0;
-        uint32_t current_time_us = get_time_us();
-        if (last_time_us != 0) {
-            looptime_us = current_time_us - last_time_us;
-        }
-        last_time_us = current_time_us;
-
-        // Read MCT8316Z status registers every loop for debugging
-        // These are visible in MCUViewer
-        mct_ic_status = mct8316z_read_reg(MCT8316Z_REG_IC_STATUS);
-        mct_status1 = mct8316z_read_reg(MCT8316Z_REG_STATUS1);
-        mct_status2 = mct8316z_read_reg(MCT8316Z_REG_STATUS2);
-        
-        // Auto-clear faults if FAULT bit (bit 7 of IC_STATUS data) is set
-        // Response format: [Status byte (15:8)][Data byte (7:0)]
-        // The data byte contains the register value
-        if ((mct_ic_status & 0x80)) {  // FAULT bit in data byte
-            mct8316z_clear_faults();
-        }
+        last_time_us = now_us;
     }
 }
-

@@ -19,6 +19,13 @@
 #define STATUS_POSITION_REACHED 0x01
 #define STATUS_ERROR 0x02
 
+//ESC ADDRESSES
+#define ESC_0 0
+#define ESC_1 1
+#define ESC_2 2
+
+#define TEST_ESC ESC_0
+
 /* ============================================================================
  * CRC-8 Lookup Table (polynomial 0x07, CRC-8/CCITT)
  * ============================================================================ */
@@ -81,14 +88,16 @@ struct {
 /* ============================================================================
  * Send Command and Wait for Response
  * ============================================================================ */
-static BLDCResponse sendCommand(uint8_t cmd, const uint8_t* payload, uint8_t payloadLen) {
+static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* payload, uint8_t payloadLen) {
     BLDCResponse resp = {false, 0, 0, 0};
     uint32_t start = micros();
     
+    assert(address <= 0xF);
+
     /* Build and send packet */
     uint8_t txBuf[8];
     txBuf[0] = START_BYTE;
-    txBuf[1] = cmd;
+    txBuf[1] = (address << 4) | cmd;
     if (payload && payloadLen > 0) {
         memcpy(&txBuf[2], payload, payloadLen);
     }
@@ -153,25 +162,25 @@ static BLDCResponse sendCommand(uint8_t cmd, const uint8_t* payload, uint8_t pay
 /* ============================================================================
  * High-Level API Functions
  * ============================================================================ */
-static BLDCResponse setPosition(int32_t position_crad) {
+static BLDCResponse setPosition(uint8_t address, int32_t position_crad) {
     uint8_t payload[4];
     memcpy(payload, &position_crad, 4);
-    return sendCommand(CMD_SET_POSITION, payload, 4);
+    return sendCommand(address, CMD_SET_POSITION, payload, 4);
 }
 
-static BLDCResponse setDuty(int16_t duty) {
+static BLDCResponse setDuty(uint8_t address, int16_t duty) {
     uint8_t payload[2];
     memcpy(payload, &duty, 2);
-    return sendCommand(CMD_SET_DUTY, payload, 2);
+    return sendCommand(address, CMD_SET_DUTY, payload, 2);
 }
 
-static BLDCResponse poll() {
-    return sendCommand(CMD_POLL, nullptr, 0);
+static BLDCResponse poll(uint8_t address) {
+    return sendCommand(address, CMD_POLL, nullptr, 0);
 }
 
 /* Convenience: set position in radians */
-static BLDCResponse setPositionRad(float rad) {
-    return setPosition((int32_t)(rad * 100.0f));
+static BLDCResponse setPositionRad(uint8_t address, float rad) {
+    return setPosition(address, (int32_t)(rad * 100.0f));
 }
 
 /* ============================================================================
@@ -200,7 +209,7 @@ void loop() {
     
     /* Handle pulse timeout */
     if (pulseActive && millis() >= pulseEndTime) {
-        setDuty(0);
+        setDuty(TEST_ESC,0);
         pulseActive = false;
         Serial.println("Pulse finished: duty=0");
     }
@@ -211,7 +220,7 @@ void loop() {
         lastPollUs = now;
         loopCount++;
         
-        r = poll();
+        r = poll(TEST_ESC);
         
         // /* Print stats every 100 loops (0.2 second at 500Hz) */
         // if (loopCount % 100 == 0 && r.valid) {
@@ -222,6 +231,9 @@ void loop() {
         // }
     }
     
+
+
+
     /* Handle serial commands */
     static String inputString = "";
     while (Serial.available()) {
@@ -235,15 +247,15 @@ void loop() {
                     
                     if (cmd == 'd') {
                         int16_t duty = (int16_t)valStr.toInt();
-                        setDuty(duty);
+                        setDuty(TEST_ESC,duty);
                         Serial.printf("Set Duty: %d\n", duty);
                     } else if (cmd == 't') {
                         float pos = valStr.toFloat();
-                        setPositionRad(pos);
+                        setPositionRad(TEST_ESC,pos);
                         Serial.printf("Set Target Position: %.3f rad\n", pos);
                     } else if (cmd == 'p') {
                         int16_t pulseDuty = (int16_t)valStr.toInt();
-                        setDuty(pulseDuty);
+                        setDuty(TEST_ESC,pulseDuty);
                         pulseEndTime = millis() + 500;
                         pulseActive = true;
                         Serial.printf("Pulse Started: duty=%d for 0.5s\n", pulseDuty);
