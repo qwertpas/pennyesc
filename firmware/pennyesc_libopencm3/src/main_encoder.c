@@ -609,8 +609,9 @@ static void uart_poll(void)
         
         /* Determine expected packet length based on command */
         uint8_t expected_len = 0;
+        uint8_t cmd = rx_buf[1] & 0x0F; 
         if (rx_idx >= 2) {
-            switch (rx_buf[1]) {
+            switch (cmd) {
                 case CMD_POLL:
                     expected_len = CMD_POLL_LEN;
                     break;

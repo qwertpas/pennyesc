@@ -24,7 +24,7 @@
 #define ESC_1 1
 #define ESC_2 2
 
-#define TEST_ESC ESC_0
+#define TEST_ESC ESC_1
 
 /* ============================================================================
  * CRC-8 Lookup Table (polynomial 0x07, CRC-8/CCITT)
@@ -47,6 +47,8 @@ static const uint8_t crc8_table[256] PROGMEM = {
     0xAE,0xA9,0xA0,0xA7,0xB2,0xB5,0xBC,0xBB,0x96,0x91,0x98,0x9F,0x8A,0x8D,0x84,0x83,
     0xDE,0xD9,0xD0,0xD7,0xC2,0xC5,0xCC,0xCB,0xE6,0xE1,0xE8,0xEF,0xFA,0xFD,0xF4,0xF3
 };
+
+//static const uint8_t wake_stream[255] PROGMEM = {0xFF};
 
 static uint8_t crc8(const uint8_t* data, size_t len) {
     uint8_t crc = 0x00;
@@ -97,7 +99,7 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
     /* Build and send packet */
     uint8_t txBuf[8];
     txBuf[0] = START_BYTE;
-    txBuf[1] = (address << 4) | cmd;
+    txBuf[1] = (address << 4) | (cmd & 0xF);
     if (payload && payloadLen > 0) {
         memcpy(&txBuf[2], payload, payloadLen);
     }
@@ -183,6 +185,11 @@ static BLDCResponse setPositionRad(uint8_t address, float rad) {
     return setPosition(address, (int32_t)(rad * 100.0f));
 }
 
+//send a constant stream of high values over RX line to wake any connected ESCs
+/*void wakeESC() {
+    sendCommand(0xF, 0xF, wake_stream,sizeof(wake_stream)/sizeof(wake_stream[0]));
+}*/
+
 /* ============================================================================
  * Setup and Main Loop
  * ============================================================================ */
@@ -222,13 +229,15 @@ void loop() {
         
         r = poll(TEST_ESC);
         
-        // /* Print stats every 100 loops (0.2 second at 500Hz) */
-        // if (loopCount % 100 == 0 && r.valid) {
-        //     Serial.printf("Pos: %.2f rad, Vel: %.1f RPM | Latency: %lu/%lu/%lu us | Errs: %lu CRC, %lu TO\n",
-        //         r.positionRad(), r.velocityRPM(), 
-        //         stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs,
-        //         stats.crcErrors, stats.timeouts);
-        // }
+         /* Print stats every 100 loops (0.2 second at 500Hz) */
+         //and try to wake any new devices
+        /*if (loopCount % 100 == 0) { //&& r.valid) {
+             //Serial.printf("Pos: %.2f rad, Vel: %.1f RPM | Latency: %lu/%lu/%lu us | Errs: %lu CRC, %lu TO\n",
+                 r.positionRad(), r.velocityRPM(), 
+                 stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs,
+                 stats.crcErrors, stats.timeouts);
+            //wakeESC();
+        }*/
     }
     
 
