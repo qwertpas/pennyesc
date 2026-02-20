@@ -224,6 +224,7 @@ static void usart2_setup(void)
     // MSP: PA9 (TX), PA10 (RX) -> AF4
     gpio_set_af(GPIOA, GPIO_AF4, GPIO9 | GPIO10);
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_OD , GPIO_OSPEED_2MHZ , GPIO9 | GPIO10);
 
     // Config: 921600 baud, 8N1
     usart_set_baudrate(USART2, 921600);

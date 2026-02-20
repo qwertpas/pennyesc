@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "esc_address.h"
 
 /* ============================================================================
  * Protocol Constants
@@ -19,12 +20,8 @@
 #define STATUS_POSITION_REACHED 0x01
 #define STATUS_ERROR 0x02
 
-//ESC ADDRESSES
-#define ESC_0 0
-#define ESC_1 1
-#define ESC_2 2
-
-#define TEST_ESC ESC_1
+//esc_address.h
+#define TEST_ESC ESC0
 
 /* ============================================================================
  * CRC-8 Lookup Table (polynomial 0x07, CRC-8/CCITT)
@@ -77,7 +74,7 @@ struct BLDCResponse {
 /* ============================================================================
  * Communication Statistics
  * ============================================================================ */
-struct {
+struct EscStats {
     uint32_t sent = 0;
     uint32_t received = 0;
     uint32_t crcErrors = 0;
@@ -85,7 +82,9 @@ struct {
     uint32_t latencyUs = 0;
     uint32_t latencyMaxUs = 0;
     uint32_t latencyAvgUs = 0;
-} stats;
+};
+
+static EscStats stats[ESC_COUNT];
 
 /* ============================================================================
  * Send Command and Wait for Response
@@ -105,7 +104,7 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
     }
     txBuf[2 + payloadLen] = crc8(txBuf, 2 + payloadLen);
     Serial1.write(txBuf, 3 + payloadLen);
-    stats.sent++;
+    stats[address].sent++;
     
     /* Wait for response (11 bytes, timeout 5ms) */
     uint8_t rxBuf[RESPONSE_LEN];
@@ -131,15 +130,13 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
     }
     
     if (rxIdx < RESPONSE_LEN) {
-        stats.timeouts++;
-        // Serial.println("Timeout");
-        // Serial.println(rxIdx);
+        stats[address].timeouts++;
         return resp;
     }
     
     /* Verify CRC */
     if (crc8(rxBuf, RESPONSE_LEN - 1) != rxBuf[RESPONSE_LEN - 1]) {
-        stats.crcErrors++;
+        stats[address].crcErrors++;
         return resp;
     }
     
@@ -148,15 +145,15 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
     resp.status = rxBuf[1];
     memcpy(&resp.position_crad, &rxBuf[2], 4);
     memcpy(&resp.velocity_crads, &rxBuf[6], 4);
-    stats.received++;
-    
+    stats[address].received++;
+
     /* Update latency stats */
     uint32_t elapsed = micros() - start;
-    stats.latencyUs = elapsed;
-    if (elapsed > stats.latencyMaxUs) {
-        stats.latencyMaxUs = elapsed;
+    stats[address].latencyUs = elapsed;
+    if (elapsed > stats[address].latencyMaxUs) {
+        stats[address].latencyMaxUs = elapsed;
     }
-    stats.latencyAvgUs = (stats.latencyAvgUs * 7 + elapsed) / 8;  /* EMA */
+    stats[address].latencyAvgUs = (stats[address].latencyAvgUs * 7 + elapsed) / 8;  /* EMA */
     
     return resp;
 }
@@ -206,7 +203,7 @@ void setup() {
     Serial.println("Commands: d[duty], t[target rad], p[pulse duty], ?=stats");
 }
 
-BLDCResponse r = {false, 0, 0, 0};
+BLDCResponse r[ESC_COUNT] = {};
 
 void loop() {
     static uint32_t lastPollUs = 0;
@@ -215,11 +212,11 @@ void loop() {
     static bool pulseActive = false;
     
     /* Handle pulse timeout */
-    if (pulseActive && millis() >= pulseEndTime) {
+    /*if (pulseActive && millis() >= pulseEndTime) {
         setDuty(TEST_ESC,0);
         pulseActive = false;
         Serial.println("Pulse finished: duty=0");
-    }
+    }*/
 
     /* Poll at 1kHz using micros() for precise timing */
     uint32_t now = micros();
@@ -227,7 +224,10 @@ void loop() {
         lastPollUs = now;
         loopCount++;
         
-        r = poll(TEST_ESC);
+        //Poll every ESC
+        for (int i = 0; i < ESC_COUNT; i++) {
+            r[i] = poll(i);
+        }
         
          /* Print stats every 100 loops (0.2 second at 500Hz) */
          //and try to wake any new devices
@@ -239,54 +239,66 @@ void loop() {
             //wakeESC();
         }*/
     }
+
+        /* Handle serial commands */
+    static char inputBuffer[128];
+    static uint8_t inputIdx = 0;
     
-
-
-
-    /* Handle serial commands */
-    static String inputString = "";
     while (Serial.available()) {
         char inChar = (char)Serial.read();
-        if (inChar == '\n' || inChar == '\r') {
-            if (inputString.length() > 0) {
-                inputString.trim();
-                if (inputString.length() > 0) {
-                    char cmd = inputString.charAt(0);
-                    String valStr = inputString.substring(1);
+        if (inChar == '\n' || inChar == '\r' || inputIdx == sizeof(inputBuffer)/sizeof(inputBuffer[0]) - 1) {
+            if (inputIdx > 0) {
+                inputBuffer[inputIdx] = '\0';  /* Null-terminate */
+                
+                /* Parse command and arguments */
+                char* token = strtok(inputBuffer, " \t");
+                if (token != nullptr) {
+                    char cmd = token[0];
+                    char* arg1 = strtok(nullptr, " \t");
+                    char* arg2 = strtok(nullptr, " \t");
                     
-                    if (cmd == 'd') {
-                        int16_t duty = (int16_t)valStr.toInt();
-                        setDuty(TEST_ESC,duty);
-                        Serial.printf("Set Duty: %d\n", duty);
-                    } else if (cmd == 't') {
-                        float pos = valStr.toFloat();
-                        setPositionRad(TEST_ESC,pos);
-                        Serial.printf("Set Target Position: %.3f rad\n", pos);
-                    } else if (cmd == 'p') {
-                        int16_t pulseDuty = (int16_t)valStr.toInt();
-                        setDuty(TEST_ESC,pulseDuty);
+                    if (cmd == 'd' && arg1) {
+                        int16_t duty = (int16_t)atoi(arg1);
+                        uint8_t esc = arg2 ? (uint8_t)atoi(arg2) : TEST_ESC;
+                        setDuty(esc, duty);
+                        Serial.printf("Set Duty: %d on ESC %d\n", duty, esc);
+                    } else if (cmd == 't' && arg1) {
+                        float pos = atof(arg1);
+                        uint8_t esc = arg2 ? (uint8_t)atoi(arg2) : TEST_ESC;
+                        setPositionRad(esc, pos);
+                        Serial.printf("Set Target Position: %.3f rad on ESC %d\n", pos, esc);
+                    } else if (cmd == 'p' && arg1) {
+                        int16_t pulseDuty = (int16_t)atoi(arg1);
+                        uint8_t esc = arg2 ? (uint8_t)atoi(arg2) : TEST_ESC;
+                        setDuty(esc, pulseDuty);
                         pulseEndTime = millis() + 500;
                         pulseActive = true;
-                        Serial.printf("Pulse Started: duty=%d for 0.5s\n", pulseDuty);
+                        Serial.printf("Pulse Started: duty=%d on ESC %d for 0.5s\n", pulseDuty, esc);
                     } else if (cmd == '?') {
-                        Serial.printf("Stats: Sent=%lu, Recv=%lu, CRC Err=%lu, Timeouts=%lu\n",
-                            stats.sent, stats.received, stats.crcErrors, stats.timeouts);
-                        Serial.printf("Latency: cur=%lu us, avg=%lu us, max=%lu us\n",
-                            stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs);
-                        Serial.printf("Pos: %.2f rad, Vel: %.1f RPM | Latency: %lu/%lu/%lu us | Errs: %lu CRC, %lu TO\n",
-                              r.positionRad(), r.velocityRPM(), 
-                              stats.latencyUs, stats.latencyAvgUs, stats.latencyMaxUs,
-                              stats.crcErrors, stats.timeouts);
+                        Serial.printf("%s\n","============================");
+                        for (int i = 0; i < ESC_COUNT; i++) {
+                            Serial.printf("[ESC %d] Sent=%lu, Recv=%lu, CRC Err=%lu, Timeouts=%lu\n",
+                                i, stats[i].sent, stats[i].received, stats[i].crcErrors, stats[i].timeouts);
+                            Serial.printf("[ESC %d] Latency: cur=%lu us, avg=%lu us, max=%lu us\n",
+                                i, stats[i].latencyUs, stats[i].latencyAvgUs, stats[i].latencyMaxUs);
+                            Serial.printf("[ESC %d] Pos: %.2f rad, Vel: %.1f RPM\n",
+                                i, r[i].positionRad(), r[i].velocityRPM());
+                        }
+                        Serial.printf("%s\n\n","============================");
                     } else if (cmd == 'h') {
-                        Serial.println("Commands: d[duty], t[target rad], p[pulse duty], ?=stats");
+                        Serial.println("Commands:");
+                        Serial.println("  d <duty> [esc]    - Set duty cycle");
+                        Serial.println("  t <position> [esc] - Set target position (rad)");
+                        Serial.println("  p <duty> [esc]    - Pulse duty for 0.5s");
+                        Serial.println("  ? - Show stats");
                     } else {
-                        Serial.println("Unknown command. Use d, t, p, or ?");
+                        Serial.println("Unknown command. Use h for help");
                     }
                 }
-                inputString = "";
+                inputIdx = 0;
             }
-        } else {
-            inputString += inChar;
+        } else if (inputIdx < sizeof(inputBuffer) - 1) {
+            inputBuffer[inputIdx++] = inChar;
         }
     }
 }

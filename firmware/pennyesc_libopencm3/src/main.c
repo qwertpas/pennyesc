@@ -17,6 +17,16 @@
 #include "tmag5273.h"
 #include "angleLUT.h"
 
+#include <assert.h>
+// ============================================================================ 
+//Change this for every ESC you flash, maximum value of 15
+#define ESC_ADDRESS 0
+
+//WARNING: STATUS AND CMD fields for response and command packets can only be 4 bits wide
+#if ESC_ADDRESS > 0xF
+#error "Set ESC_ADDRESS to a value that is at most4 bits wide"
+#endif 
+
 /* ============================================================================
  * Protocol Constants (inline - no separate header per design principles)
  * ============================================================================ */
@@ -228,6 +238,8 @@ static void usart2_setup(void)
 {
     gpio_set_af(GPIOA, GPIO_AF4, GPIO9 | GPIO10);
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_OD , GPIO_OSPEED_2MHZ , GPIO9 | GPIO10);
+
     usart_set_baudrate(USART2, 921600);
     usart_set_databits(USART2, 8);
     usart_set_stopbits(USART2, USART_STOPBITS_1);
@@ -523,7 +535,9 @@ static void send_response(void)
 
 static void process_command(void)
 {
-    uint8_t cmd = rx_buf[1];
+    uint8_t cmd = rx_buf[1] & 0x0F;
+    uint8_t address = rx_buf[1] >> 4; 
+    if (address != ESC_ADDRESS) { return; }
     
     switch (cmd) {
         case CMD_POLL:

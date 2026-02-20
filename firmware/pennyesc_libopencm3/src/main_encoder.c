@@ -17,9 +17,12 @@
 #include "tmag5273.h"
 #include "angleLUT.h"
 
+#include "Lib/esc_address.h"
+
 #include <assert.h>
-//Change this for every ESC you flash, maximum value of 16
-#define ESC_ADDRESS 0
+// ============================================================================ 
+//Change this for every ESC you flash, maximum value of 15
+#define ESC_ADDRESS 1
 
 //WARNING: STATUS AND CMD fields for response and command packets can only be 4 bits wide
 #if ESC_ADDRESS > 0xF
@@ -237,6 +240,8 @@ static void usart2_setup(void)
 {
     gpio_set_af(GPIOA, GPIO_AF4, GPIO9 | GPIO10);
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_OD , GPIO_OSPEED_2MHZ , GPIO9 | GPIO10);
+
     usart_set_baudrate(USART2, 921600);
     usart_set_databits(USART2, 8);
     usart_set_stopbits(USART2, USART_STOPBITS_1);
