@@ -7,8 +7,6 @@ typedef enum ESC_ADDRESS {
     ESC1,
     ESC2,
     ESC_COUNT
-    ESC4
-    ESC5
 } ESC_ADDRESS;
 
 #endif 

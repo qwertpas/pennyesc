@@ -21,7 +21,7 @@
 #define STATUS_ERROR 0x02
 
 //esc_address.h
-#define TEST_ESC ESC0
+#define TEST_ESC ESC1
 
 /* ============================================================================
  * CRC-8 Lookup Table (polynomial 0x07, CRC-8/CCITT)

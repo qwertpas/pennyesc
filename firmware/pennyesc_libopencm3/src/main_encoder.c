@@ -17,12 +17,12 @@
 #include "tmag5273.h"
 #include "angleLUT.h"
 
-#include "Lib/esc_address.h"
+#include "esc_address.h"
 
 #include <assert.h>
 // ============================================================================ 
 //Change this for every ESC you flash, maximum value of 15
-#define ESC_ADDRESS 1
+#define ESC_ADDRESS ESC1
 
 //WARNING: STATUS AND CMD fields for response and command packets can only be 4 bits wide
 #if ESC_ADDRESS > 0xF
@@ -669,10 +669,22 @@ static void check_timeout(void)
  * Main
  * ============================================================================ */
 
+#define UID_BASE 0x1FF80050
+
+
 int main(void)
 {
     /* Startup delay for flash recovery */
     for (volatile int i = 0; i < 500000; i++);
+
+    uint32_t uid0 = *(uint32_t*)UID_BASE;
+    uint32_t uid1 = *(uint32_t*)(UID_BASE + 4);
+    uint32_t uid2 = *(uint32_t*)(UID_BASE + 8);
+    //(void*)*0x1FF80058 in Watch Window to read uid2 as hex
+    //highest byte of uid2 in hexadecimal format is the identifier DD 
+    //ex. 0xDD0000 
+    //or read uid2 as decimal, then convert to hexadecimal format to read DD
+
 
     clock_setup();
     systick_setup();
