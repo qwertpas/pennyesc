@@ -41,7 +41,7 @@
 #define CMD_POLL_LEN        3   /* START + CMD + CRC */
 #define CMD_DUTY_LEN        5   /* START + CMD + int16 + CRC */
 #define CMD_POSITION_LEN    7   /* START + CMD + int32 + CRC */
-#define RESPONSE_LEN        11  /* START + STATUS + int32 + int32 + CRC */
+#define RESPONSE_LEN        17  /* START + STATUS + int32 + int32 + CRC */
 
 /* Status flags */
 #define STATUS_POSITION_REACHED  0x01
@@ -128,6 +128,7 @@ static volatile uint16_t dma_rx_tail = 0;  /* Where we've read up to */
 /* Sensor data (shared with ISR) */
 static volatile int16_t sensor_x = 0;
 static volatile int16_t sensor_y = 0;
+static volatile int16_t sensor_z = 0;
 static volatile float current_angle_rad = 0;
 
 /* Commutation */
@@ -418,17 +419,20 @@ void tim21_isr(void)
     }
     last_isr_time_us = t0;
     
-    /* ---- SECTION 1: I2C sensor read (fast: X/Y only, no temp) ---- */
+    /* ---- SECTION 1: I2C sensor read (fast: X/Y/Z only, no temp) ---- */
     uint32_t t1 = get_time_us();
-    int16_t x, y;
-    tmag5273_read_xy_fast(&x, &y);
+    int16_t x, y,z;
+    //TODO: Remove this blocking read from I2C
+    tmag5273_read_xyz_fast(&x, &y, &z);
     sensor_x = x;
     sensor_y = y;
+    sensor_z = z;
+    
     uint32_t t2 = get_time_us();
     debug_i2c_us = t2 - t1;
     
     /* ---- SECTION 2: LUT lookup ---- */
-    float angle_rad = angleLUT_get_angle(x, y);
+    float angle_rad = angleLUT_get_angle(sensor_x, sensor_y);
     current_angle_rad = angle_rad;
     uint32_t t3 = get_time_us();
     debug_lut_us = t3 - t2;
@@ -513,22 +517,37 @@ static void send_response(void)
 
     tx_buf[1] = (ESC_ADDRESS << 4) | status;
     
+    /* X reading (int16, little-endian) */
+    int16_t x = sensor_x;
+    tx_buf[2] = x & 0xFF;
+    tx_buf[3] = (x >> 8) & 0xFF;
+    
+    /* Y reading (int16, little-endian) */
+    int16_t y = sensor_y;
+    tx_buf[4] = y & 0xFF;
+    tx_buf[5] = (y >> 8) & 0xFF;
+    
+    /* Z reading (int16, little-endian) */
+    int16_t z = sensor_z;  /* Not currently tracked in ISR */
+    tx_buf[6] = z & 0xFF;
+    tx_buf[7] = (z >> 8) & 0xFF;
+    
     /* Position (int32, little-endian) */
     int32_t pos = absolute_position_crad;
-    tx_buf[2] = pos & 0xFF;
-    tx_buf[3] = (pos >> 8) & 0xFF;
-    tx_buf[4] = (pos >> 16) & 0xFF;
-    tx_buf[5] = (pos >> 24) & 0xFF;
+    tx_buf[8] = pos & 0xFF;
+    tx_buf[9] = (pos >> 8) & 0xFF;
+    tx_buf[10] = (pos >> 16) & 0xFF;
+    tx_buf[11] = (pos >> 24) & 0xFF;
     
     /* Velocity (int32, little-endian) */
     int32_t vel = velocity_crads;
-    tx_buf[6] = vel & 0xFF;
-    tx_buf[7] = (vel >> 8) & 0xFF;
-    tx_buf[8] = (vel >> 16) & 0xFF;
-    tx_buf[9] = (vel >> 24) & 0xFF;
+    tx_buf[12] = vel & 0xFF;
+    tx_buf[13] = (vel >> 8) & 0xFF;
+    tx_buf[14] = (vel >> 16) & 0xFF;
+    tx_buf[15] = (vel >> 24) & 0xFF;
     
     /* CRC */
-    tx_buf[10] = crc8_calculate(tx_buf, 10);
+    tx_buf[16] = crc8_calculate(tx_buf, RESPONSE_LEN);
     
     /* Send */
     for (int i = 0; i < RESPONSE_LEN; i++) {
@@ -710,9 +729,7 @@ int main(void)
 
     /* Initialize position tracking with first reading */
     tmag_data_t sensor;
-    tmag5273_read_xyt(&sensor);
-
-    tmag5273_read_z_fast(&sensor.z_raw);
+    tmag5273_read_all(&sensor);
 
     float initial_angle = angleLUT_get_angle(sensor.x_raw, sensor.y_raw);
     last_angle_crad = (int32_t)(initial_angle * 100.0f);
