@@ -7,6 +7,8 @@
 #define BLDC_RX 13
 #define BLDC_TX 12
 #define BLDC_GND 11
+
+#define BLDC_3V3_PULLUP 9
 #define BLDC_BAUD 921600
 
 #define START_BYTE 0xAA
@@ -14,7 +16,7 @@
 #define CMD_SET_DUTY 0x02
 #define CMD_POLL 0x03
 
-#define RESPONSE_LEN 11
+#define RESPONSE_LEN 17
 
 /* Status flags */
 #define STATUS_POSITION_REACHED 0x01
@@ -61,6 +63,9 @@ static uint8_t crc8(const uint8_t* data, size_t len) {
 struct BLDCResponse {
     bool valid;
     uint8_t status;
+    int16_t sensorX;
+    int16_t sensorY;
+    int16_t sensorZ;
     int32_t position_crad;   // centiradians
     int32_t velocity_crads;  // centiradians/second
     
@@ -90,7 +95,7 @@ static EscStats stats[ESC_COUNT];
  * Send Command and Wait for Response
  * ============================================================================ */
 static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* payload, uint8_t payloadLen) {
-    BLDCResponse resp = {false, 0, 0, 0};
+    BLDCResponse resp = {false, 0, 0, 0, 0, 0, 0};
     uint32_t start = micros();
     
     assert(address <= 0xF);
@@ -106,45 +111,68 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
     Serial1.write(txBuf, 3 + payloadLen);
     stats[address].sent++;
     
-    /* Wait for response (11 bytes, timeout 5ms) */
-    uint8_t rxBuf[RESPONSE_LEN];
+    /* Wait for response (17 bytes, timeout 5ms) */
+    uint8_t rxBuf[RESPONSE_LEN];  /* Updated for new response format */
     uint8_t rxIdx = 0;
-    uint32_t timeout = millis() + 5;
+    uint32_t timeout = millis() + 20;
     
     while (rxIdx < RESPONSE_LEN && millis() < timeout) {
         if (Serial1.available()) {
             uint8_t b = Serial1.read();
             
-            /* Resync: START_BYTE always starts a new packet (handles mid-packet corruption) */
+            /* Resync: START_BYTE always starts a new packet */
             if (b == START_BYTE) {
+                //Serial.println("");
+
+                //Serial.println("Got Start Byte");
                 rxIdx = 0;
                 rxBuf[rxIdx++] = b;
                 continue;
-            }
-            
+                }
+                
             /* Not START_BYTE - only accept if we're mid-packet */
             if (rxIdx == 0) continue;
             
             rxBuf[rxIdx++] = b;
-        }
+
+            //Serial.print(b);
+            //Serial.print(" ");
+        }     
     }
-    
+        
     if (rxIdx < RESPONSE_LEN) {
+        //Serial.println(rxIdx);
         stats[address].timeouts++;
         return resp;
     }
+
+    //Serial.println(rxIdx);
     
     /* Verify CRC */
-    if (crc8(rxBuf, RESPONSE_LEN - 1) != rxBuf[RESPONSE_LEN - 1]) {
+    //Serial.println( (ESC_ADDRESS) address);
+    //Serial.println(rxBuf[RESPONSE_LEN-1]);
+    //Serial.println(crc8(rxBuf, RESPONSE_LEN-1));
+    //Serial.println("");
+    if (crc8(rxBuf, RESPONSE_LEN-1) != rxBuf[RESPONSE_LEN-1]) {
         stats[address].crcErrors++;
         return resp;
     }
     
     /* Parse response */
     resp.valid = true;
-    resp.status = rxBuf[1];
-    memcpy(&resp.position_crad, &rxBuf[2], 4);
-    memcpy(&resp.velocity_crads, &rxBuf[6], 4);
+    resp.status = rxBuf[1] & 0x0F;  /* Lower 4 bits are status */
+    
+    /* X, Y, Z sensor readings (little-endian int16) */
+    resp.sensorX = rxBuf[2] | (rxBuf[3] << 8);
+    resp.sensorY = rxBuf[4] | (rxBuf[5] << 8);
+    resp.sensorZ = rxBuf[6] | (rxBuf[7] << 8);
+
+        /* Position (little-endian int32) */
+    resp.position_crad = rxBuf[8] | (rxBuf[9] << 8) | (rxBuf[10] << 16) | (rxBuf[11] << 24);
+    
+    /* Velocity (little-endian int32) */
+    resp.velocity_crads = rxBuf[12] | (rxBuf[13] << 8) | (rxBuf[14] << 16) | (rxBuf[15] << 24);
+    
     stats[address].received++;
 
     /* Update latency stats */
@@ -153,7 +181,7 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
     if (elapsed > stats[address].latencyMaxUs) {
         stats[address].latencyMaxUs = elapsed;
     }
-    stats[address].latencyAvgUs = (stats[address].latencyAvgUs * 7 + elapsed) / 8;  /* EMA */
+    stats[address].latencyAvgUs = (stats[address].latencyAvgUs * 7 + elapsed) / 8;
     
     return resp;
 }
@@ -193,11 +221,16 @@ static BLDCResponse setPositionRad(uint8_t address, float rad) {
 void setup() {
     pinMode(BLDC_GND, OUTPUT);
     digitalWrite(BLDC_GND, LOW);
+
+    pinMode(BLDC_3V3_PULLUP,OUTPUT);
+    digitalWrite(BLDC_3V3_PULLUP, HIGH); 
     delay(100);
 
     Serial.begin(115200);  /* USB debug */
     Serial1.begin(BLDC_BAUD, SERIAL_8N1, BLDC_RX, BLDC_TX);
-    
+    //pinMode(BLDC_RX, INPUT_PULLUP);
+
+
     delay(100);
     Serial.println("BLDC Controller Ready");
     Serial.println("Commands: d[duty], t[target rad], p[pulse duty], ?=stats");
@@ -205,6 +238,8 @@ void setup() {
 
 BLDCResponse r[ESC_COUNT] = {};
 
+
+/// magnetic encoder readings
 void loop() {
     static uint32_t lastPollUs = 0;
     static uint32_t loopCount = 0;
@@ -238,7 +273,22 @@ void loop() {
                  stats.crcErrors, stats.timeouts);
             //wakeESC();
         }*/
+
+        bool print = true; 
+        for (int i = 0; i < 2; i++) {
+            if ( (r[i].sensorX == 0) || (r[i].sensorY) == 0 || (r[i].sensorZ == 0) ) {print = false; }
+        }
+
+        if (print) {
+             Serial.printf("%hd,%hd,%hd,%hd,%hd,%hd\n",r[0].sensorX,r[0].sensorY,r[0].sensorZ,
+                                                r[1].sensorX,r[1].sensorY,r[1].sensorZ); 
+        }
+
+       
     }
+
+    
+
 
         /* Handle serial commands */
     static char inputBuffer[128];
@@ -283,6 +333,8 @@ void loop() {
                                 i, stats[i].latencyUs, stats[i].latencyAvgUs, stats[i].latencyMaxUs);
                             Serial.printf("[ESC %d] Pos: %.2f rad, Vel: %.1f RPM\n",
                                 i, r[i].positionRad(), r[i].velocityRPM());
+                            Serial.printf("[ESC %d] Sensors - X: %d, Y: %d, Z: %d\n",
+                                i, r[i].sensorX, r[i].sensorY, r[i].sensorZ);
                         }
                         Serial.printf("%s\n\n","============================");
                     } else if (cmd == 'h') {

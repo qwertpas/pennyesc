@@ -40,6 +40,9 @@ void tmag5273_read_xyt(tmag_data_t *out);
  */
 void tmag5273_read_xy_fast(int16_t *x, int16_t *y);
 void tmag5273_read_z_fast(int16_t *z);
+void tmag5273_read_xyz_fast(int16_t *x, int16_t *y,int16_t*z);
+
+void tmag5273_read_all(tmag_data_t * out);
 
 
 /**

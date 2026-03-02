@@ -11,6 +11,7 @@
 #include <stdbool.h>
 #include "mct8316z.h"
 #include "angleLUT.h"
+#include "esc_address.h"
 
 // Pi constant for angle conversion (avoid pulling in math.h)
 #define PI 3.14159265358979323846f
@@ -521,7 +522,6 @@ int main(void)
     // delay_ms(100); 
     for (volatile int i = 0; i < 500000; i++); // startup delay in case of failed flash
 
-
     clock_setup();
     systick_setup();
     usart2_setup();
@@ -560,7 +560,6 @@ int main(void)
         tmag5273_write_reg(TMAG5273_CONV_STATUS, 0x10);
     }
     
-
     tmag_data_t sensor_data;
 
     print_str("TMAG5273 Ready\r\n");
