@@ -22,7 +22,7 @@
 #include <assert.h>
 // ============================================================================ 
 //Change this for every ESC you flash, maximum value of 15
-#define ESC_ADDRESS ESC1
+#define ESC_ADDRESS ESC0
 
 //WARNING: STATUS AND CMD fields for response and command packets can only be 4 bits wide
 #if ESC_ADDRESS > 0xF
@@ -76,6 +76,9 @@
 #define HALLC_PIN    GPIO0
 #define BRAKE_PORT   GPIOA
 #define BRAKE_PIN    GPIO1
+
+//USART Baudrate
+#define BAUD_RATE 921600
 
 /* ============================================================================
  * Global State
@@ -243,7 +246,7 @@ static void usart2_setup(void)
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
     gpio_set_output_options(GPIOA, GPIO_OTYPE_OD , GPIO_OSPEED_2MHZ , GPIO9 | GPIO10);
 
-    usart_set_baudrate(USART2, 921600);
+    usart_set_baudrate(USART2, BAUD_RATE);
     usart_set_databits(USART2, 8);
     usart_set_stopbits(USART2, USART_STOPBITS_1);
     usart_set_mode(USART2, USART_MODE_TX_RX);
@@ -547,7 +550,7 @@ static void send_response(void)
     tx_buf[15] = (vel >> 24) & 0xFF;
     
     /* CRC */
-    tx_buf[16] = crc8_calculate(tx_buf, RESPONSE_LEN);
+    tx_buf[16] = crc8_calculate(tx_buf, RESPONSE_LEN-1);
     
     /* Send */
     for (int i = 0; i < RESPONSE_LEN; i++) {

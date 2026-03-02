@@ -122,7 +122,7 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
             
             /* Resync: START_BYTE always starts a new packet */
             if (b == START_BYTE) {
-                Serial.println("");
+                //Serial.println("");
 
                 //Serial.println("Got Start Byte");
                 rxIdx = 0;
@@ -135,11 +135,9 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
             
             rxBuf[rxIdx++] = b;
 
-            Serial.print(b);
-            Serial.print(" ");
-        }
-
-            
+            //Serial.print(b);
+            //Serial.print(" ");
+        }     
     }
         
     if (rxIdx < RESPONSE_LEN) {
@@ -147,8 +145,14 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
         stats[address].timeouts++;
         return resp;
     }
+
+    //Serial.println(rxIdx);
     
     /* Verify CRC */
+    //Serial.println( (ESC_ADDRESS) address);
+    //Serial.println(rxBuf[RESPONSE_LEN-1]);
+    //Serial.println(crc8(rxBuf, RESPONSE_LEN-1));
+    //Serial.println("");
     if (crc8(rxBuf, RESPONSE_LEN-1) != rxBuf[RESPONSE_LEN-1]) {
         stats[address].crcErrors++;
         return resp;
@@ -162,6 +166,7 @@ static BLDCResponse sendCommand(uint8_t address, uint8_t cmd, const uint8_t* pay
     resp.sensorX = rxBuf[2] | (rxBuf[3] << 8);
     resp.sensorY = rxBuf[4] | (rxBuf[5] << 8);
     resp.sensorZ = rxBuf[6] | (rxBuf[7] << 8);
+
         /* Position (little-endian int32) */
     resp.position_crad = rxBuf[8] | (rxBuf[9] << 8) | (rxBuf[10] << 16) | (rxBuf[11] << 24);
     
@@ -223,7 +228,9 @@ void setup() {
 
     Serial.begin(115200);  /* USB debug */
     Serial1.begin(BLDC_BAUD, SERIAL_8N1, BLDC_RX, BLDC_TX);
-    
+    //pinMode(BLDC_RX, INPUT_PULLUP);
+
+
     delay(100);
     Serial.println("BLDC Controller Ready");
     Serial.println("Commands: d[duty], t[target rad], p[pulse duty], ?=stats");
@@ -231,6 +238,8 @@ void setup() {
 
 BLDCResponse r[ESC_COUNT] = {};
 
+
+/// magnetic encoder readings
 void loop() {
     static uint32_t lastPollUs = 0;
     static uint32_t loopCount = 0;
@@ -264,7 +273,22 @@ void loop() {
                  stats.crcErrors, stats.timeouts);
             //wakeESC();
         }*/
+
+        bool print = true; 
+        for (int i = 0; i < 2; i++) {
+            if ( (r[i].sensorX == 0) || (r[i].sensorY) == 0 || (r[i].sensorZ == 0) ) {print = false; }
+        }
+
+        if (print) {
+             Serial.printf("%hd,%hd,%hd,%hd,%hd,%hd\n",r[0].sensorX,r[0].sensorY,r[0].sensorZ,
+                                                r[1].sensorX,r[1].sensorY,r[1].sensorZ); 
+        }
+
+       
     }
+
+    
+
 
         /* Handle serial commands */
     static char inputBuffer[128];
