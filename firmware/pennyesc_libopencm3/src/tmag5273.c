@@ -79,6 +79,18 @@ void tmag5273_clear_por(void)
     }
 }
 
+void tmag5273_read_xyt(tmag_data_t *out)
+{
+    uint8_t raw[6];
+    read_regs(REG_T_MSB_RESULT, raw, 6);
+    
+    int16_t t_raw = (raw[0] << 8) | raw[1];
+    out->temp_degc = 25.0f + ((t_raw - 17500) / 60.0f);
+    out->x_raw = (int16_t)((raw[2] << 8) | raw[3]);
+    out->y_raw = (int16_t)((raw[4] << 8) | raw[5]);
+    out->z_raw = 0;
+}
+
 void tmag5273_read_all(tmag_data_t *out)
 {
     uint8_t raw[8];
