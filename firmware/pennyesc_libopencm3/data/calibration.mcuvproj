@@ -438,6 +438,11 @@ name = magy
 visibility = true
 format = DEC
 
+[group0-plot0-series2]
+name = step_count
+visibility = true
+format = DEC
+
 [trace_plot0]
 name = CH0
 alias = CH0

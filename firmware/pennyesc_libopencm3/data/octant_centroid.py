@@ -12,7 +12,7 @@ TOTAL_LUT_SIZE = 8 * SEGMENT_SIZE # 2048
 
 # Update filenames as needed
 # TRAIN_CSV_FILENAME = 'MCUViewer_log_212000_20251223_filt.csv'
-TRAIN_CSV_FILENAME = 'MCUViewer_log_132745_20260121_filt.csv'
+TRAIN_CSV_FILENAME = 'MCUViewer_log_190627_20260305_filt.csv'
 
 # ==========================================
 # 1. Load Data
