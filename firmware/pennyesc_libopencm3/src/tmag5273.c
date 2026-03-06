@@ -54,7 +54,7 @@ bool tmag5273_init(void)
     /* DEVICE_CONFIG_1: 32x averaging, no CRC */
     tmag5273_write_reg(REG_DEVICE_CONFIG_1, CONV_AVG_2X << CONV_AVG_SHIFT);
     
-    /* SENSOR_CONFIG_1: Enable X, Y, Temperature channels */
+    /* SENSOR_CONFIG_1: Enable X, Y, Z channels */
     tmag5273_write_reg(REG_SENSOR_CONFIG_1,
         (0 << SLEEPTIME_SHIFT) | (MAG_CH_XYZ << MAG_CH_EN_SHIFT));
     
@@ -79,7 +79,7 @@ void tmag5273_clear_por(void)
     }
 }
 
-void tmag5273_read_xyt(tmag_data_t *out)
+void tmag5273_read_all(tmag_data_t *out)
 {
     uint8_t raw[8];
     
@@ -117,5 +117,18 @@ void tmag5273_read_z_fast(int16_t *z)
     read_regs(0x16, raw, 2);
     
     *z = (int16_t)((raw[0] << 8) | raw[1]);
+}
+
+void tmag5273_read_xyz_fast(int16_t *x, int16_t *y,int16_t*z)
+{
+    uint8_t raw[6];
+    
+    /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
+    read_regs(0x12, raw, 6);
+    
+    *x = (int16_t)((raw[0] << 8) | raw[1]);
+    *y = (int16_t)((raw[2] << 8) | raw[3]);
+    *z = (int16_t)((raw[4] << 8) | raw[5]);
+
 }
 

@@ -224,6 +224,7 @@ static void usart2_setup(void)
     // MSP: PA9 (TX), PA10 (RX) -> AF4
     gpio_set_af(GPIOA, GPIO_AF4, GPIO9 | GPIO10);
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_OD , GPIO_OSPEED_2MHZ , GPIO9 | GPIO10);
 
     // Config: 921600 baud, 8N1
     usart_set_baudrate(USART2, 921600);
@@ -271,6 +272,8 @@ static void tmag5273_write_reg(uint8_t reg, uint8_t value)
     uint8_t data[2] = {reg, value};
     i2c_transfer7(I2C1, TMAG5273_I2C_ADDR, data, 2, NULL, 0);
 }
+
+
 
 /**
  * Read a single register from TMAG5273
@@ -357,6 +360,18 @@ static bool tmag5273_init_fast_angle(void)
         (TMAG5273_OP_CONTINUOUS << TMAG5273_OPERATING_MODE_SHIFT));
     
     return true;
+}
+
+static void tmag5273_read_xyz_fast(int16_t *x, int16_t *y,int16_t*z)
+{
+    uint8_t raw[6];
+    
+    /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
+    tmag5273_read_regs(0x12, raw, 6);
+    
+    *x = (int16_t)((raw[0] << 8) | raw[1]);
+    *y = (int16_t)((raw[2] << 8) | raw[3]);
+    *z = (int16_t)((raw[4] << 8) | raw[5]);
 }
 
 /**
@@ -520,7 +535,6 @@ int main(void)
     // delay_ms(100); 
     for (volatile int i = 0; i < 500000; i++); // startup delay in case of failed flash
 
-
     clock_setup();
     systick_setup();
     usart2_setup();
@@ -559,7 +573,6 @@ int main(void)
         tmag5273_write_reg(TMAG5273_CONV_STATUS, 0x10);
     }
     
-
     tmag_data_t sensor_data;
 
     print_str("TMAG5273 Ready\r\n");
@@ -578,11 +591,16 @@ int main(void)
 
     while (1) {
         // Read all sensor data
-        tmag5273_read_xyt(&sensor_data);
+        int16_t x;
+        int16_t y;
+        int16_t z; 
+
+        tmag5273_read_xyz_fast(&x, &y, &z);
         
-        magx = sensor_data.x_raw;
-        magy = sensor_data.y_raw;
-        magtemp = sensor_data.temp_degc;
+        magx = x;
+        magy = y;
+        magz = z;
+        //magtemp = sensor_data.temp_degc;
         
         // Compute corrected angle using lookup table
         // angleLUT_get_angle returns radians (0 to 2π), convert to degrees (0 to 360)
