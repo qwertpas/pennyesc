@@ -1,5 +1,9 @@
 # PennyESC, a tiny and cheap brushless motor controller
 
+## Current state of the project:
+Works and spins a 1104 motor with closed loop speed and position control! Can daisy chain a few on the same UART bus by using open drain output.
+
+
 ## Nov 14
 Finished layout and placed order with JLCPCB! Gerber, BOM, and CPL files in pennyesc/production/
 
