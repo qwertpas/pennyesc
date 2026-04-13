@@ -25,5 +25,5 @@ production/backups
 .Spotlight-V100
 .Trashes
 
-.history/
-pennyesc-backups/
+.history
+pennyesc-backups
