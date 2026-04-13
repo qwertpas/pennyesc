@@ -22,7 +22,7 @@
 #include <assert.h>
 // ============================================================================ 
 //Change this for every ESC you flash, maximum value of 15
-#define ESC_ADDRESS ESC0
+#define ESC_ADDRESS ESC1
 
 //WARNING: STATUS AND CMD fields for response and command packets can only be 4 bits wide
 #if ESC_ADDRESS > 0xF
