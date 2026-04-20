@@ -5,11 +5,11 @@
 
 | ESP32-S3 | STM32L011 (PennyESC) |
 |----------|----------------------|
-| GPIO 13 (RX) | PA9 (USART2 TX) |
-| GPIO 12 (TX) | PA10 (USART2 RX) |
+| GPIO 12 (RX) | PA9 (USART2 TX) |
+| GPIO 13 (TX) | PA10 (USART2 RX) |
 | GPIO 11 | GND |
 
-Both devices use **921600 baud, 8N1** between them.
+The main control firmware uses **921600 baud, 8N1** between them.
 
 ## 2. Flash Firmware
 
@@ -26,6 +26,47 @@ pio run -t upload
 cd esp32s3demo
 pio run -t upload
 ```
+
+**UART bootloader path:**
+
+```bash
+cd pennyesc_libopencm3
+pio run -e pennyesc_uart -t upload
+
+cd ../esp32s3demo
+pio run -e bootbridge -t upload --upload-port /dev/cu.usbmodem101
+
+cd ..
+pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
+```
+
+Use `pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_recover` if the app is not running and you need the reset window.
+
+See [`UART_UPDATE.md`](UART_UPDATE.md) for the reusable setup.
+
+## ESP32 Library
+
+ESP32 sketches can use [`Lib/pennyesc_arduino.h`](Lib/pennyesc_arduino.h) directly:
+
+```cpp
+#include "pennyesc_arduino.h"
+
+PennyEsc esc(0);
+
+void setup() {
+    Serial.begin(115200);
+    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_UPDATE);
+}
+
+void loop() {
+    PennyEscStatus status;
+    if (esc.getStatus(status)) {
+        Serial.println(status.positionRad());
+    }
+}
+```
+
+The same header also provides `esc.setDuty(...)`, `esc.setPositionRad(...)`, `esc.pollEncoder(...)`, and `PennyEscBridge` for the USB boot/update bridge.
 
 ## 3. Spin the Motor
 
@@ -317,4 +358,3 @@ pio run -t upload  # Uses default environment (main.c)
 - [`pennyesc_libopencm3/src/angleLUT.c`](pennyesc_libopencm3/src/angleLUT.c) - Generated angle correction LUT
 - [`pennyesc_libopencm3/data/octant_centroid.py`](pennyesc_libopencm3/data/octant_centroid.py) - LUT generation script
 - [`esp32s3demo/src/main.cpp`](esp32s3demo/src/main.cpp) - ESP32 host controller with serial CLI
-

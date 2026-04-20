@@ -7,7 +7,7 @@ static String input_line;
 
 static void print_help()
 {
-    Serial.println("# magpoll");
+    Serial.println("# magpoll2");
     Serial.println("# commands: e<esc>, ?, h");
 }
 
@@ -31,7 +31,19 @@ static void handle_line(String line)
     }
 
     if (cmd == '?') {
-        Serial.printf("# esc=%u baud=%lu\n", esc.address(), (unsigned long)esc.baud());
+        PennyEscStatus status;
+        if (esc.getStatus(status)) {
+            Serial.printf(
+                "# esc=%u baud=%lu mode=%u flags=0x%02X faults=0x%02X\n",
+                esc.address(),
+                (unsigned long)esc.baud(),
+                status.mode,
+                status.flags,
+                status.faults
+            );
+        } else {
+            Serial.printf("# esc=%u baud=%lu timeout\n", esc.address(), (unsigned long)esc.baud());
+        }
         return;
     }
 
@@ -55,12 +67,12 @@ void setup()
 void loop()
 {
     static uint32_t last_poll_us = 0u;
-    PennyEscEncoderData data;
+    PennyEscStatus status;
 
     if ((uint32_t)(micros() - last_poll_us) >= 2000u) {
         last_poll_us = micros();
-        if (esc.pollEncoder(data)) {
-            Serial.printf("%u,%d,%d,%d\n", esc.address(), data.x, data.y, data.z);
+        if (esc.getStatus(status)) {
+            Serial.printf("%u,%d,%d,%d\n", esc.address(), status.x, status.y, status.z);
         }
     }
 

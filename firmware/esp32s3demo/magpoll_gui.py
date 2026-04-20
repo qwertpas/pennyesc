@@ -115,7 +115,7 @@ class Window:
         self.x_vals = deque(maxlen=MAX_POINTS)
         self.y_vals = deque(maxlen=MAX_POINTS)
         self.z_vals = deque(maxlen=MAX_POINTS)
-        self.selected_esc = 1
+        self.selected_esc = 0
         self.paused = False
         self.last_status = "waiting for data"
         self.last_values = (0, 0, 0)

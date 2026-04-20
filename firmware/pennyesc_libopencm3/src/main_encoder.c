@@ -14,6 +14,10 @@
 #include <stdbool.h>
 #include <string.h>
 #include "mct8316z.h"
+#if defined(PNY_UART_UPDATE)
+#include "pennyesc_uart_update.h"
+#include "pennyesc_protocol.h"
+#endif
 #include "tmag5273.h"
 #include "angleLUT.h"
 
@@ -22,7 +26,7 @@
 #include <assert.h>
 // ============================================================================ 
 //Change this for every ESC you flash, maximum value of 15
-#define ESC_ADDRESS ESC1
+#define ESC_ADDRESS ESC0
 
 //WARNING: STATUS AND CMD fields for response and command packets can only be 4 bits wide
 #if ESC_ADDRESS > 0xF
@@ -240,13 +244,13 @@ static uint8_t crc8_calculate(const uint8_t *data, uint8_t len)
  * UART Setup
  * ============================================================================ */
 
-static void usart2_setup(void)
+static void usart2_setup(uint32_t baud)
 {
     gpio_set_af(GPIOA, GPIO_AF4, GPIO9 | GPIO10);
     gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9 | GPIO10);
     gpio_set_output_options(GPIOA, GPIO_OTYPE_OD , GPIO_OSPEED_2MHZ , GPIO9 | GPIO10);
 
-    usart_set_baudrate(USART2, BAUD_RATE);
+    usart_set_baudrate(USART2, baud);
     usart_set_databits(USART2, 8);
     usart_set_stopbits(USART2, USART_STOPBITS_1);
     usart_set_mode(USART2, USART_MODE_TX_RX);
@@ -603,6 +607,47 @@ static void process_command(void)
     send_response();
 }
 
+#if defined(PNY_UART_UPDATE)
+static void fill_update_status(pny_status_payload_t *payload)
+{
+    float angle = current_angle_rad;
+
+    while (angle < 0.0f) {
+        angle += 6.2831853f;
+    }
+    while (angle >= 6.2831853f) {
+        angle -= 6.2831853f;
+    }
+
+    payload->mode = (current_duty != 0) ? PNY_MODE_RUN : PNY_MODE_IDLE;
+    payload->flags = PNY_FLAG_SENSOR_OK;
+    if (target_position_set && direction == 0) {
+        payload->flags |= PNY_FLAG_POSITION_REACHED;
+    }
+    payload->faults = 0u;
+    payload->x = sensor_x;
+    payload->y = sensor_y;
+    payload->z = sensor_z;
+    payload->angle_turn16 = (uint16_t)((angle * 65536.0f) / 6.2831853f);
+    payload->position_crad = absolute_position_crad;
+    payload->velocity_crads = velocity_crads;
+    payload->duty = current_duty;
+}
+
+static uint8_t prepare_update_boot(void)
+{
+    commanded_duty = 0;
+    current_duty = 0;
+    target_position_set = false;
+    direction = 0;
+    timer_set_oc_value(TIM2, TIM_OC4, 0);
+    gpio_clear(HALLA_PORT, HALLA_PIN);
+    gpio_clear(HALLB_PORT, HALLB_PIN);
+    gpio_clear(HALLC_PORT, HALLC_PIN);
+    return PNY_RESULT_OK;
+}
+#endif
+
 static void uart_poll(void)
 {
     /* Check for inter-byte timeout (reset incomplete packets) */
@@ -619,6 +664,18 @@ static void uart_poll(void)
         dma_rx_tail = (dma_rx_tail + 1) % DMA_RX_BUF_SIZE;
         uart_bytes_rx++;  /* Count every byte received */
         rx_last_byte_time = system_millis;
+
+#if defined(PNY_UART_UPDATE)
+        if (pennyesc_uart_update_feed_byte(
+                b,
+                ESC_ADDRESS,
+                system_millis,
+                fill_update_status,
+                prepare_update_boot)) {
+            rx_idx = 0;
+            continue;
+        }
+#endif
         
         /* Resync: START_BYTE always starts a new packet (handles mid-packet corruption) */
         if (b == START_BYTE) {
@@ -690,28 +747,19 @@ static void check_timeout(void)
 /* ============================================================================
  * Main
  * ============================================================================ */
-
-#define UID_BASE 0x1FF80050
-
-
 int main(void)
 {
-    /* Startup delay for flash recovery */
-    for (volatile int i = 0; i < 500000; i++);
-
-    uint32_t uid0 = *(uint32_t*)UID_BASE;
-    uint32_t uid1 = *(uint32_t*)(UID_BASE + 4);
-    uint32_t uid2 = *(uint32_t*)(UID_BASE + 8);
-    //(void*)*0x1FF80058 in Watch Window to read uid2 as hex
-    //highest byte of uid2 in hexadecimal format is the identifier DD 
-    //ex. 0xDD0000 
-    //or read uid2 as decimal, then convert to hexadecimal format to read DD
-
-
     clock_setup();
     systick_setup();
+    __asm__("cpsie i");
+#if defined(PNY_UART_UPDATE)
+    usart2_setup(PNY_UART_UPDATE_BOOT_BAUD);
+    pennyesc_uart_update_boot_window(&system_millis, ESC_ADDRESS);
+    usart2_setup(pennyesc_uart_update_app_baud(BAUD_RATE));
+#else
+    usart2_setup(BAUD_RATE);
+#endif
     crc8_init();
-    usart2_setup();
     dma1_ch5_setup();  /* DMA for UART RX circular buffer */
     i2c1_setup();
     tim2_pwm_setup();
@@ -743,7 +791,6 @@ int main(void)
     last_valid_cmd_time = system_millis;
     
     /* Enable interrupts and start 10kHz timer */
-    __asm__("cpsie i");
     tim21_setup();
 
     uint32_t last_time_us = 0;
@@ -751,6 +798,9 @@ int main(void)
     while (1) {
         /* Handle UART commands */
         uart_poll();
+#if defined(PNY_UART_UPDATE)
+        pennyesc_uart_update_poll(system_millis);
+#endif
         
         /* Check communication timeout */
         check_timeout();

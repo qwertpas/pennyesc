@@ -25,6 +25,70 @@
 #define OPERATING_MODE_SHIFT    0
 #define OP_CONTINUOUS           0x2
 
+#define I2C_WAIT_LIMIT          40000u
+#define I2C1_TIMING_VALUE       0x00100109u
+
+static void i2c1_recover(void)
+{
+    i2c_send_stop(I2C1);
+    i2c_clear_stop(I2C1);
+    I2C_ICR(I2C1) = I2C_ICR_STOPCF | I2C_ICR_NACKCF | I2C_ICR_BERRCF | I2C_ICR_ARLOCF | I2C_ICR_OVRCF;
+    i2c_peripheral_disable(I2C1);
+    I2C_TIMINGR(I2C1) = I2C1_TIMING_VALUE;
+    i2c_peripheral_enable(I2C1);
+}
+
+static bool wait_isr(uint32_t mask)
+{
+    uint32_t limit = I2C_WAIT_LIMIT;
+    while (limit-- > 0u) {
+        uint32_t isr = I2C_ISR(I2C1);
+        if ((isr & mask) != 0u) {
+            return true;
+        }
+        if ((isr & I2C_ISR_NACKF) != 0u) {
+            return false;
+        }
+    }
+    return false;
+}
+
+static bool transfer_regs(uint8_t start_reg, uint8_t *data, uint8_t len)
+{
+    i2c_set_7bit_address(I2C1, TMAG5273_I2C_ADDR);
+    i2c_set_write_transfer_dir(I2C1);
+    i2c_set_bytes_to_transfer(I2C1, 1u);
+    i2c_disable_autoend(I2C1);
+    i2c_send_start(I2C1);
+
+    if (!wait_isr(I2C_ISR_TXIS)) {
+        i2c1_recover();
+        return false;
+    }
+    i2c_send_data(I2C1, start_reg);
+
+    if (!wait_isr(I2C_ISR_TC)) {
+        i2c1_recover();
+        return false;
+    }
+
+    i2c_set_7bit_address(I2C1, TMAG5273_I2C_ADDR);
+    i2c_set_read_transfer_dir(I2C1);
+    i2c_set_bytes_to_transfer(I2C1, len);
+    i2c_send_start(I2C1);
+    i2c_enable_autoend(I2C1);
+
+    for (uint8_t i = 0; i < len; i++) {
+        if (!wait_isr(I2C_ISR_RXNE)) {
+            i2c1_recover();
+            return false;
+        }
+        data[i] = i2c_get_data(I2C1);
+    }
+
+    return true;
+}
+
 void tmag5273_write_reg(uint8_t reg, uint8_t value)
 {
     uint8_t data[2] = {reg, value};
@@ -36,11 +100,6 @@ uint8_t tmag5273_read_reg(uint8_t reg)
     uint8_t value;
     i2c_transfer7(I2C1, TMAG5273_I2C_ADDR, &reg, 1, &value, 1);
     return value;
-}
-
-static void read_regs(uint8_t start_reg, uint8_t *data, uint8_t len)
-{
-    i2c_transfer7(I2C1, TMAG5273_I2C_ADDR, &start_reg, 1, data, len);
 }
 
 bool tmag5273_init(void)
@@ -79,24 +138,29 @@ void tmag5273_clear_por(void)
     }
 }
 
-void tmag5273_read_xyt(tmag_data_t *out)
+bool tmag5273_read_xyt(tmag_data_t *out)
 {
     uint8_t raw[6];
-    read_regs(REG_T_MSB_RESULT, raw, 6);
+    if (!transfer_regs(REG_T_MSB_RESULT, raw, 6)) {
+        return false;
+    }
     
     int16_t t_raw = (raw[0] << 8) | raw[1];
     out->temp_degc = 25.0f + ((t_raw - 17500) / 60.0f);
     out->x_raw = (int16_t)((raw[2] << 8) | raw[3]);
     out->y_raw = (int16_t)((raw[4] << 8) | raw[5]);
     out->z_raw = 0;
+    return true;
 }
 
-void tmag5273_read_all(tmag_data_t *out)
+bool tmag5273_read_all(tmag_data_t *out)
 {
     uint8_t raw[8];
     
     /* Burst read: T_MSB, T_LSB, X_MSB, X_LSB, Y_MSB, Y_LSB */
-    read_regs(REG_T_MSB_RESULT, raw, 8);
+    if (!transfer_regs(REG_T_MSB_RESULT, raw, 8)) {
+        return false;
+    }
     
     /* Temperature: 25°C + (raw - 17500) / 60 */
     int16_t t_raw = (raw[0] << 8) | raw[1];
@@ -106,41 +170,48 @@ void tmag5273_read_all(tmag_data_t *out)
     out->x_raw = (int16_t)((raw[2] << 8) | raw[3]);
     out->y_raw = (int16_t)((raw[4] << 8) | raw[5]);
     out->z_raw = (int16_t)((raw[6] << 8) | raw[7]);
-
+    return true;
 }
 
 /* Fast read: X and Y only (4 bytes instead of 6, no float math) */
-void tmag5273_read_xy_fast(int16_t *x, int16_t *y)
+bool tmag5273_read_xy_fast(int16_t *x, int16_t *y)
 {
     uint8_t raw[4];
     
     /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
-    read_regs(0x12, raw, 4);
+    if (!transfer_regs(0x12, raw, 4)) {
+        return false;
+    }
     
     *x = (int16_t)((raw[0] << 8) | raw[1]);
     *y = (int16_t)((raw[2] << 8) | raw[3]);
+    return true;
 }
 
-void tmag5273_read_z_fast(int16_t *z)
+bool tmag5273_read_z_fast(int16_t *z)
 {
     uint8_t raw[2];
     
     /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
-    read_regs(0x16, raw, 2);
+    if (!transfer_regs(0x16, raw, 2)) {
+        return false;
+    }
     
     *z = (int16_t)((raw[0] << 8) | raw[1]);
+    return true;
 }
 
-void tmag5273_read_xyz_fast(int16_t *x, int16_t *y,int16_t*z)
+bool tmag5273_read_xyz_fast(int16_t *x, int16_t *y, int16_t *z)
 {
     uint8_t raw[6];
     
     /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
-    read_regs(0x12, raw, 6);
+    if (!transfer_regs(0x12, raw, 6)) {
+        return false;
+    }
     
     *x = (int16_t)((raw[0] << 8) | raw[1]);
     *y = (int16_t)((raw[2] << 8) | raw[3]);
     *z = (int16_t)((raw[4] << 8) | raw[5]);
-
+    return true;
 }
-

@@ -32,17 +32,17 @@ void tmag5273_clear_por(void);
  * Read X, Y magnetic field and temperature
  * @param out Pointer to structure to fill with sensor data
  */
-void tmag5273_read_xyt(tmag_data_t *out);
+bool tmag5273_read_xyt(tmag_data_t *out);
 
 /**
  * Fast read: X and Y only (skips temperature, no float math)
  * ~30% faster than tmag5273_read_xyt
  */
-void tmag5273_read_xy_fast(int16_t *x, int16_t *y);
-void tmag5273_read_z_fast(int16_t *z);
-void tmag5273_read_xyz_fast(int16_t *x, int16_t *y,int16_t*z);
+bool tmag5273_read_xy_fast(int16_t *x, int16_t *y);
+bool tmag5273_read_z_fast(int16_t *z);
+bool tmag5273_read_xyz_fast(int16_t *x, int16_t *y, int16_t *z);
 
-void tmag5273_read_all(tmag_data_t * out);
+bool tmag5273_read_all(tmag_data_t *out);
 
 
 /**
@@ -56,4 +56,3 @@ uint8_t tmag5273_read_reg(uint8_t reg);
 void tmag5273_write_reg(uint8_t reg, uint8_t value);
 
 #endif /* TMAG5273_H */
-
