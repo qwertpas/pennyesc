@@ -63,6 +63,7 @@ DEFAULT_CHUNK_SIZE = 48
 BRIDGE_IDLE_S = 2.7
 MAX_FIT_ERROR_DEG = 8.0
 MAX_SWEEP_DELTA_DEG = 12.5
+HOST_FRAME_BYTE_GAP_S = 0.0005
 
 
 class CalibrationError(RuntimeError):
@@ -389,7 +390,15 @@ def solve_legacy_csv(path: Path) -> SolvedCalibration:
 
 class EspBridge:
     def __init__(self, port: str, baudrate: int = 115200) -> None:
-        self.serial = serial.Serial(port=port, baudrate=baudrate, timeout=0.05, write_timeout=1.0)
+        self.port_name = port
+        self.baudrate = baudrate
+        self.serial = self._open_serial()
+
+    def _open_serial(self) -> serial.Serial:
+        port = serial.Serial(port=self.port_name, baudrate=self.baudrate, timeout=0.01, write_timeout=1.0)
+        port.dtr = False
+        port.rts = False
+        return port
 
     def close(self) -> None:
         if self.serial.is_open:
@@ -400,6 +409,28 @@ class EspBridge:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    def reset_bridge(self) -> None:
+        self.close()
+
+        try:
+            pulse = serial.Serial(port=self.port_name, baudrate=1200, timeout=0.2, write_timeout=0.2)
+            pulse.close()
+        except serial.SerialException:
+            pass
+
+        deadline = time.monotonic() + 8.0
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            time.sleep(0.4)
+            try:
+                self.serial = self._open_serial()
+                time.sleep(1.5)
+                return
+            except serial.SerialException as exc:
+                last_error = exc
+
+        raise TimeoutError(f"boot bridge reset failed: {last_error}")
 
     def _read_line_until(self, predicate: Callable[[str], bool], timeout: float) -> str:
         deadline = time.monotonic() + timeout
@@ -412,18 +443,30 @@ class EspBridge:
                 return text
         raise TimeoutError("bridge shell did not respond")
 
-    def sync_shell(self, timeout: float = 6.0) -> None:
+    def _try_sync_shell(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.serial.reset_input_buffer()
             self.serial.write(b"\n")
             self.serial.write(b"ping\n")
             self.serial.flush()
-            try:
-                self._read_line_until(lambda text: text == "pong", timeout=0.8)
-                return
-            except TimeoutError:
-                time.sleep(0.2)
+            wait_deadline = time.monotonic() + 0.8
+            while time.monotonic() < wait_deadline:
+                line = self.serial.readline()
+                if not line:
+                    continue
+                text = line.decode("utf-8", errors="replace").strip()
+                if text == "pong":
+                    return True
+            time.sleep(0.4)
+        return False
+
+    def sync_shell(self, timeout: float = 6.0) -> None:
+        if self._try_sync_shell(timeout):
+            return
+        self.reset_bridge()
+        if self._try_sync_shell(timeout):
+            return
         raise TimeoutError("bridge shell did not respond")
 
     def enter_bridge(self, mode: str = "app") -> None:
@@ -435,8 +478,12 @@ class EspBridge:
         self._read_line_until(lambda text: text == f"# bridge={mode}", timeout=2.0)
 
     def exit_bridge(self) -> None:
-        time.sleep(BRIDGE_IDLE_S)
-        self.sync_shell(timeout=4.0)
+        self.serial.reset_input_buffer()
+        self.serial.reset_output_buffer()
+        self.serial.write(b"\n")
+        self.serial.write(b"bridge off\n")
+        self.serial.flush()
+        self._read_line_until(lambda text: text == "# bridge=off", timeout=2.0)
 
 
 class Stm32Client:
@@ -491,9 +538,12 @@ class Stm32Client:
         raise TimeoutError(f"timeout waiting for command 0x{expected_cmd:X} response")
 
     def exchange(self, cmd: int, payload: bytes = b"", timeout: float = 0.5) -> bytes:
-        self.port.reset_input_buffer()
-        self.port.write(encode_frame(self.address, cmd, payload))
-        self.port.flush()
+        frame = encode_frame(self.address, cmd, payload)
+        for index, byte in enumerate(frame):
+            self.port.write(bytes((byte,)))
+            self.port.flush()
+            if index + 1 < len(frame):
+                time.sleep(HOST_FRAME_BYTE_GAP_S)
         return self._read_frame(cmd, timeout)
 
     def exchange_retry(self, cmd: int, payload: bytes = b"", timeout: float = 0.5, attempts: int = 3) -> bytes:
@@ -508,8 +558,8 @@ class Stm32Client:
             raise last_error
         raise TimeoutError(f"timeout waiting for command 0x{cmd:X} response")
 
-    def get_status(self) -> Status:
-        payload = self.exchange_retry(CMD_GET_STATUS, timeout=0.5)
+    def get_status(self, timeout: float = 0.5, attempts: int = 3) -> Status:
+        payload = self.exchange_retry(CMD_GET_STATUS, timeout=timeout, attempts=attempts)
         return Status(*struct.unpack("<BBBBhhhHiih", payload))
 
     def set_duty(self, duty: int) -> Status:
@@ -609,7 +659,6 @@ def read_capture_points(
         points.append(point)
         if point_cb is not None:
             point_cb(point)
-        time.sleep(0.05)
     return points
 
 

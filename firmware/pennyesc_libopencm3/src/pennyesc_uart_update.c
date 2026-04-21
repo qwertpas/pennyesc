@@ -11,6 +11,7 @@ typedef struct {
 } uart_update_parser_t;
 
 static uart_update_parser_t parser;
+static const uint8_t boot_sync = 0x7Fu;
 
 static uint8_t crc8(const uint8_t *data, uint8_t len)
 {
@@ -179,8 +180,11 @@ static bool handle_frame(
 uint32_t pennyesc_uart_update_app_baud(uint32_t default_baud)
 {
 #if defined(PNY_UART_UPDATE)
-    (void)default_baud;
+#if defined(PNY_UART_UPDATE_APP_BAUD)
     return PNY_UART_UPDATE_APP_BAUD;
+#else
+    return default_baud;
+#endif
 #else
     return default_baud;
 #endif
@@ -201,6 +205,11 @@ void pennyesc_uart_update_boot_window(volatile uint32_t *now_ms, uint8_t address
         }
 
         uint8_t byte = (uint8_t)USART_RDR(USART2);
+        if (byte == boot_sync) {
+            pennyesc_boot_request(*now_ms);
+            pennyesc_boot_poll(*now_ms + 100u);
+            continue;
+        }
         if (!parser_push(byte, *now_ms, &frame, &frame_len)) {
             continue;
         }

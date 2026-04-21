@@ -9,12 +9,8 @@
 #define PNY_UART_UPDATE_BOOT_BAUD 115200u
 #endif
 
-#ifndef PNY_UART_UPDATE_APP_BAUD
-#define PNY_UART_UPDATE_APP_BAUD 115200u
-#endif
-
 #ifndef PNY_UART_UPDATE_BOOT_WINDOW_MS
-#define PNY_UART_UPDATE_BOOT_WINDOW_MS 1200u
+#define PNY_UART_UPDATE_BOOT_WINDOW_MS 5000u
 #endif
 
 typedef void (*pennyesc_uart_update_fill_status_fn)(pny_status_payload_t *payload);

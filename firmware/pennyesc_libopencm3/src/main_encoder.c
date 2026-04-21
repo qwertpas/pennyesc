@@ -147,9 +147,6 @@ volatile uint32_t isr_max_us = 0;
 volatile uint32_t isr_count = 0;
 volatile uint32_t isr_overrun_count = 0;
 volatile uint32_t isr_interval_us = 0;  /* Time between ISR calls (should be ~ISR_PERIOD_US) */
-volatile uint32_t isr_interval_min_us = 0xFFFFFFFF;
-volatile uint32_t isr_interval_max_us = 0;
-volatile uint32_t uart_rx_count = 0;
 volatile uint32_t uart_crc_errors = 0;
 volatile uint32_t uart_bytes_rx = 0;  /* Raw byte counter for debugging */
 volatile uint32_t uart_overrun_errors = 0;  /* ORE error counter */
@@ -421,8 +418,6 @@ void tim21_isr(void)
     if (last_isr_time_us != 0) {
         uint32_t interval = t0 - last_isr_time_us;
         isr_interval_us = interval;
-        if (interval < isr_interval_min_us) isr_interval_min_us = interval;
-        if (interval > isr_interval_max_us) isr_interval_max_us = interval;
     }
     last_isr_time_us = t0;
     
@@ -601,7 +596,6 @@ static void process_command(void)
     
     /* Update watchdog */
     last_valid_cmd_time = system_millis;
-    uart_rx_count++;
     
     /* Send response */
     send_response();

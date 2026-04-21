@@ -1,4 +1,5 @@
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -7,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pennycal import (  # noqa: E402
     CAL_BLOB_SIZE,
     CMD_GET_STATUS,
+    Stm32Client,
     build_blob,
     decode_frame,
     encode_frame,
@@ -16,6 +18,49 @@ from pennycal import (  # noqa: E402
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_client_keeps_late_reply_for_next_command(self) -> None:
+        class FakePort:
+            def __init__(self) -> None:
+                self.pending: list[tuple[float, bytes]] = []
+                self.reset_calls = 0
+
+            def write(self, data: bytes) -> int:
+                address, cmd, _payload = decode_frame(data)
+                frame = encode_frame(address, cmd, b"\x01")
+                delay = 0.03 if len(self.pending) == 0 else 0.0
+                self.pending.append((time.monotonic() + delay, frame))
+                return len(data)
+
+            def flush(self) -> None:
+                return None
+
+            def reset_input_buffer(self) -> None:
+                self.reset_calls += 1
+                self.pending.clear()
+
+            def read(self, n: int = 1) -> bytes:
+                if not self.pending:
+                    time.sleep(0.001)
+                    return b""
+                ready_at, frame = self.pending[0]
+                if time.monotonic() < ready_at:
+                    time.sleep(0.001)
+                    return b""
+                chunk = frame[:n]
+                rest = frame[n:]
+                if rest:
+                    self.pending[0] = (ready_at, rest)
+                else:
+                    self.pending.pop(0)
+                return chunk
+
+        port = FakePort()
+        client = Stm32Client(port, address=2)
+        with self.assertRaises(TimeoutError):
+            client.exchange(CMD_GET_STATUS, timeout=0.01)
+        self.assertEqual(client.exchange(CMD_GET_STATUS, timeout=0.08), b"\x01")
+        self.assertEqual(port.reset_calls, 0)
+
     def test_frame_roundtrip(self) -> None:
         payload = bytes(range(10))
         frame = encode_frame(3, CMD_GET_STATUS, payload)

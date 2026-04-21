@@ -27,6 +27,7 @@ enum {
     PNY_CMD_CAL_INFO = 0xA,
     PNY_CMD_ENTER_BOOT = 0xB,
     PNY_CMD_SET_ADVANCE = 0xC,
+    PNY_CMD_SET_QUIET = 0xD,
 };
 
 #define PNY_BOOT_MAGIC 0x424F4F54u

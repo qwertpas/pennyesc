@@ -13,16 +13,17 @@
 
 /* Config bit positions and values */
 #define CONV_AVG_SHIFT          2
+#define CONV_AVG_1X             0x0
 #define CONV_AVG_2X             0x1
-#define CONV_AVG_32X            0x5
 #define SLEEPTIME_SHIFT         0
 #define MAG_CH_EN_SHIFT         4
-#define MAG_CH_XYT              0x9
+#define MAG_CH_XY               0x4
 #define MAG_CH_XYZ              0x7
 #define ANGLE_EN_SHIFT          2
 #define ANGLE_OFF               0x0
 #define X_Y_RANGE_SHIFT         1
 #define OPERATING_MODE_SHIFT    0
+#define OP_STANDBY              0x0
 #define OP_CONTINUOUS           0x2
 
 #define I2C_WAIT_LIMIT          40000u
@@ -53,8 +54,10 @@ static bool wait_isr(uint32_t mask)
     return false;
 }
 
-static bool transfer_regs(uint8_t start_reg, uint8_t *data, uint8_t len)
+static bool transfer_regs(uint8_t start_reg, uint8_t *data, uint8_t len, bool trigger)
 {
+    uint8_t command = trigger ? (uint8_t)(start_reg | 0x80u) : start_reg;
+
     i2c_set_7bit_address(I2C1, TMAG5273_I2C_ADDR);
     i2c_set_write_transfer_dir(I2C1);
     i2c_set_bytes_to_transfer(I2C1, 1u);
@@ -65,7 +68,7 @@ static bool transfer_regs(uint8_t start_reg, uint8_t *data, uint8_t len)
         i2c1_recover();
         return false;
     }
-    i2c_send_data(I2C1, start_reg);
+    i2c_send_data(I2C1, command);
 
     if (!wait_isr(I2C_ISR_TC)) {
         i2c1_recover();
@@ -89,6 +92,17 @@ static bool transfer_regs(uint8_t start_reg, uint8_t *data, uint8_t len)
     return true;
 }
 
+static void write_mode_regs(uint8_t avg, uint8_t channels, uint8_t op_mode)
+{
+    tmag5273_write_reg(REG_DEVICE_CONFIG_1, avg << CONV_AVG_SHIFT);
+    tmag5273_write_reg(REG_SENSOR_CONFIG_1,
+        (0u << SLEEPTIME_SHIFT) | (channels << MAG_CH_EN_SHIFT));
+    tmag5273_write_reg(REG_SENSOR_CONFIG_2,
+        (ANGLE_OFF << ANGLE_EN_SHIFT) | (1u << X_Y_RANGE_SHIFT));
+    tmag5273_write_reg(REG_INT_CONFIG_1, 0x01u);
+    tmag5273_write_reg(REG_DEVICE_CONFIG_2, op_mode << OPERATING_MODE_SHIFT);
+}
+
 void tmag5273_write_reg(uint8_t reg, uint8_t value)
 {
     uint8_t data[2] = {reg, value};
@@ -109,25 +123,24 @@ bool tmag5273_init(void)
     if ((device_id & 0x3F) == 0) {
         return false;
     }
-    
-    /* DEVICE_CONFIG_1: 32x averaging, no CRC */
-    tmag5273_write_reg(REG_DEVICE_CONFIG_1, CONV_AVG_2X << CONV_AVG_SHIFT);
-    
-    /* SENSOR_CONFIG_1: Enable X, Y, Z channels */
-    tmag5273_write_reg(REG_SENSOR_CONFIG_1,
-        (0 << SLEEPTIME_SHIFT) | (MAG_CH_XYZ << MAG_CH_EN_SHIFT));
-    
-    /* SENSOR_CONFIG_2: No angle calc, 80mT range */
-    tmag5273_write_reg(REG_SENSOR_CONFIG_2,
-        (ANGLE_OFF << ANGLE_EN_SHIFT) | (1 << X_Y_RANGE_SHIFT));
-    
-    /* INT_CONFIG_1: Mask INT pin (not connected) */
-    tmag5273_write_reg(REG_INT_CONFIG_1, 0x01);
-    
-    /* DEVICE_CONFIG_2: Continuous measurement mode */
-    tmag5273_write_reg(REG_DEVICE_CONFIG_2, OP_CONTINUOUS << OPERATING_MODE_SHIFT);
-    
+
+    return tmag5273_set_mode(TMAG5273_MODE_FULL);
+}
+
+bool tmag5273_set_mode(tmag5273_mode_t mode)
+{
+    if (mode == TMAG5273_MODE_RUN) {
+        write_mode_regs(CONV_AVG_1X, MAG_CH_XY, OP_STANDBY);
+    } else {
+        write_mode_regs(CONV_AVG_2X, MAG_CH_XYZ, OP_CONTINUOUS);
+    }
     return true;
+}
+
+bool tmag5273_prime_run_mode(void)
+{
+    uint8_t raw[4];
+    return transfer_regs(0x12u, raw, sizeof(raw), true);
 }
 
 void tmag5273_clear_por(void)
@@ -141,7 +154,7 @@ void tmag5273_clear_por(void)
 bool tmag5273_read_xyt(tmag_data_t *out)
 {
     uint8_t raw[6];
-    if (!transfer_regs(REG_T_MSB_RESULT, raw, 6)) {
+    if (!transfer_regs(REG_T_MSB_RESULT, raw, 6, false)) {
         return false;
     }
     
@@ -158,7 +171,7 @@ bool tmag5273_read_all(tmag_data_t *out)
     uint8_t raw[8];
     
     /* Burst read: T_MSB, T_LSB, X_MSB, X_LSB, Y_MSB, Y_LSB */
-    if (!transfer_regs(REG_T_MSB_RESULT, raw, 8)) {
+    if (!transfer_regs(REG_T_MSB_RESULT, raw, 8, false)) {
         return false;
     }
     
@@ -179,7 +192,20 @@ bool tmag5273_read_xy_fast(int16_t *x, int16_t *y)
     uint8_t raw[4];
     
     /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
-    if (!transfer_regs(0x12, raw, 4)) {
+    if (!transfer_regs(0x12u, raw, 4, false)) {
+        return false;
+    }
+    
+    *x = (int16_t)((raw[0] << 8) | raw[1]);
+    *y = (int16_t)((raw[2] << 8) | raw[3]);
+    return true;
+}
+
+bool tmag5273_read_xy_fast_triggered(int16_t *x, int16_t *y)
+{
+    uint8_t raw[4];
+
+    if (!transfer_regs(0x12u, raw, 4, true)) {
         return false;
     }
     
@@ -193,7 +219,7 @@ bool tmag5273_read_z_fast(int16_t *z)
     uint8_t raw[2];
     
     /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
-    if (!transfer_regs(0x16, raw, 2)) {
+    if (!transfer_regs(0x16u, raw, 2, false)) {
         return false;
     }
     
@@ -206,7 +232,7 @@ bool tmag5273_read_xyz_fast(int16_t *x, int16_t *y, int16_t *z)
     uint8_t raw[6];
     
     /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
-    if (!transfer_regs(0x12, raw, 6)) {
+    if (!transfer_regs(0x12u, raw, 6, false)) {
         return false;
     }
     

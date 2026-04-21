@@ -2,7 +2,7 @@
 #include "esc_address.h"
 #include "pennyesc_arduino.h"
 
-static PennyEsc esc(ESC0);
+static PennyEsc esc(1);
 static String input_line;
 
 static void print_help()
@@ -21,7 +21,7 @@ static void handle_line(String line)
     char cmd = line.charAt(0);
     if (cmd == 'e' || cmd == 'E') {
         int esc_id = line.substring(1).toInt();
-        if (esc_id >= 0 && esc_id < ESC_COUNT) {
+        if (esc_id >= 0 && esc_id <= 0xF) {
             esc.setAddress((uint8_t)esc_id);
             Serial.printf("# esc=%u\n", esc.address());
         } else {
@@ -46,7 +46,7 @@ static void handle_line(String line)
 void setup()
 {
     Serial.begin(115200);
-    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_UPDATE);
+    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
     delay(100);
     print_help();
     Serial.printf("# esc=%u\n", esc.address());

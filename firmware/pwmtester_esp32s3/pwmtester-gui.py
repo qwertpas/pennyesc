@@ -13,11 +13,11 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -35,8 +35,12 @@ class PwmTesterWindow(QMainWindow):
         self._slider.setTickPosition(QSlider.TicksBelow)
         self._slider.setTickInterval(100)
 
-        self._value_label = QLabel("1500 µs")
-        self._value_label.setMinimumWidth(72)
+        self._spin = QSpinBox()
+        self._spin.setRange(1000, 2000)
+        self._spin.setValue(1500)
+        self._spin.setSuffix(" µs")
+        self._spin.setKeyboardTracking(False)
+        self._spin.setMinimumWidth(100)
 
         self._port_combo = QComboBox()
         self._port_combo.setMinimumWidth(260)
@@ -54,7 +58,7 @@ class PwmTesterWindow(QMainWindow):
 
         slider_row = QHBoxLayout()
         slider_row.addWidget(self._slider, stretch=1)
-        slider_row.addWidget(self._value_label)
+        slider_row.addWidget(self._spin)
 
         conn_box = QGroupBox("Serial")
         conn_form = QFormLayout(conn_box)
@@ -68,7 +72,8 @@ class PwmTesterWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self._slider.valueChanged.connect(self._on_slider)
-        self._on_slider(self._slider.value())
+        self._spin.valueChanged.connect(self._on_spin)
+        self._apply_pwm_value(self._slider.value(), source_slider=True)
 
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._refresh_ports_silent)
@@ -110,7 +115,7 @@ class PwmTesterWindow(QMainWindow):
             self._ser = None
             return
         self._connect_btn.setText("Disconnect")
-        self._send_pulse(self._slider.value())
+        self._send_pulse(self._spin.value())
         self._send_gpio13()
 
     def _send_line(self, line: str) -> None:
@@ -127,9 +132,22 @@ class PwmTesterWindow(QMainWindow):
     def _send_gpio13(self) -> None:
         self._send_line("D1" if self._gpio13.isChecked() else "D0")
 
-    def _on_slider(self, value: int) -> None:
-        self._value_label.setText(f"{value} µs")
+    def _apply_pwm_value(self, value: int, *, source_slider: bool) -> None:
+        if source_slider:
+            self._spin.blockSignals(True)
+            self._spin.setValue(value)
+            self._spin.blockSignals(False)
+        else:
+            self._slider.blockSignals(True)
+            self._slider.setValue(value)
+            self._slider.blockSignals(False)
         self._send_pulse(value)
+
+    def _on_slider(self, value: int) -> None:
+        self._apply_pwm_value(value, source_slider=True)
+
+    def _on_spin(self, value: int) -> None:
+        self._apply_pwm_value(value, source_slider=False)
 
     def _on_gpio13(self) -> None:
         self._send_gpio13()

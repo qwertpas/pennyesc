@@ -31,7 +31,7 @@ pio run -t upload
 
 ```bash
 cd pennyesc_libopencm3
-pio run -e pennyesc_uart -t upload
+pio run -e pennyesc_uart -t seed_upload
 
 cd ../esp32s3demo
 pio run -e bootbridge -t upload --upload-port /dev/cu.usbmodem101
@@ -40,7 +40,7 @@ cd ..
 pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
 ```
 
-Use `pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_recover` if the app is not running and you need the reset window.
+`seed_upload` now flashes one merged STM32 image over SWD and then probes the reset-to-bootloader handoff over UART three times. After that, `uart_upload` uses the existing ESP32 UART path only: the app resets into the resident bootloader, the upload is verified, and failed updates remain recoverable with a normal reset.
 
 See [`UART_UPDATE.md`](UART_UPDATE.md) for the reusable setup.
 

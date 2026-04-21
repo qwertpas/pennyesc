@@ -6,7 +6,7 @@
 #include "pennyesc_protocol.h"
 
 static const uint32_t PENNYESC_BAUD_UPDATE = 115200u;
-static const uint32_t PENNYESC_BAUD_FAST = 921600u;
+static const uint32_t PENNYESC_BAUD_FAST = 230400u;
 static const uint32_t PENNYESC_ROM_BAUD = 115200u;
 
 struct PennyEscPins {
@@ -194,48 +194,20 @@ public:
 
     bool pollEncoder(PennyEscEncoderData &data, uint32_t timeout_ms = 20u)
     {
-        uint8_t tx[3];
-        uint8_t rx[17];
-        uint8_t idx = 0u;
-        uint32_t deadline;
+        PennyEscStatus status;
 
-        tx[0] = PNY_FRAME_START;
-        tx[1] = (uint8_t)((address_ << 4) | 0x03u);
-        tx[2] = crc8(tx, 2u);
-
-        clearRx();
-        serial().write(tx, sizeof(tx));
-        serial().flush();
-
-        deadline = millis() + timeout_ms;
-        while ((int32_t)(millis() - deadline) < 0 && idx < sizeof(rx)) {
-            if (serial().available() <= 0) {
-                continue;
-            }
-            uint8_t byte = (uint8_t)serial().read();
-            if (byte == PNY_FRAME_START) {
-                idx = 0u;
-                rx[idx++] = byte;
-                continue;
-            }
-            if (idx == 0u) {
-                continue;
-            }
-            rx[idx++] = byte;
-        }
-
-        if (idx != sizeof(rx) || crc8(rx, sizeof(rx) - 1u) != rx[sizeof(rx) - 1u]) {
+        if (!getStatus(status, timeout_ms) || !status.valid || status.result != PNY_RESULT_OK) {
             data.valid = false;
             return false;
         }
 
-        data.valid = ((rx[1] >> 4) & 0x0Fu) == address_;
-        data.x = (int16_t)(rx[2] | ((int16_t)rx[3] << 8));
-        data.y = (int16_t)(rx[4] | ((int16_t)rx[5] << 8));
-        data.z = (int16_t)(rx[6] | ((int16_t)rx[7] << 8));
-        memcpy(&data.position_crad, &rx[8], sizeof(data.position_crad));
-        memcpy(&data.velocity_crads, &rx[12], sizeof(data.velocity_crads));
-        return data.valid;
+        data.valid = true;
+        data.x = status.x;
+        data.y = status.y;
+        data.z = status.z;
+        data.position_crad = status.position_crad;
+        data.velocity_crads = status.velocity_crads;
+        return true;
     }
 
     static uint8_t crc8(const uint8_t *data, size_t len)
@@ -447,8 +419,6 @@ private:
             usb_->read();
         }
         flushUartRx();
-        boot_probe_idx_ = 0u;
-        upload_switch_armed_ = false;
         bridge_mode_ = mode;
         bridge_last_activity_ms_ = millis();
 
@@ -467,54 +437,8 @@ private:
     void bridgeExit()
     {
         bridge_mode_ = 0u;
-        upload_switch_armed_ = false;
-        boot_probe_idx_ = 0u;
         beginApp();
         usb_->println("# bridge=off");
-    }
-
-    void bootProbeByte(uint8_t byte)
-    {
-        if (upload_switch_armed_ || bridge_mode_ != 2u) {
-            return;
-        }
-
-        if (boot_probe_idx_ == 0u) {
-            if (byte == PNY_FRAME_START) {
-                boot_probe_[boot_probe_idx_++] = byte;
-            }
-            return;
-        }
-
-        if (byte == PNY_FRAME_START) {
-            boot_probe_[0] = byte;
-            boot_probe_idx_ = 1u;
-            return;
-        }
-
-        if (boot_probe_idx_ >= sizeof(boot_probe_)) {
-            boot_probe_idx_ = 0u;
-            return;
-        }
-
-        boot_probe_[boot_probe_idx_++] = byte;
-        if (boot_probe_idx_ != sizeof(boot_probe_)) {
-            return;
-        }
-
-        uint32_t magic = (uint32_t)boot_probe_[3] |
-                         ((uint32_t)boot_probe_[4] << 8) |
-                         ((uint32_t)boot_probe_[5] << 16) |
-                         ((uint32_t)boot_probe_[6] << 24);
-        if (boot_probe_[2] == 4u &&
-            (boot_probe_[1] & 0x0Fu) == PNY_CMD_ENTER_BOOT &&
-            magic == PNY_BOOT_MAGIC &&
-            PennyEsc::crc8(boot_probe_, 7u) == boot_probe_[7]) {
-            upload_switch_armed_ = true;
-            upload_switch_ms_ = millis() + 160u;
-        }
-
-        boot_probe_idx_ = 0u;
     }
 
     void handleLine()
@@ -542,6 +466,10 @@ private:
         }
         if (strcmp(line_buf_, "bridge rom") == 0) {
             bridgeEnter(3u);
+            return;
+        }
+        if (strcmp(line_buf_, "bridge off") == 0) {
+            bridgeExit();
             return;
         }
         usb_->println("err");
@@ -572,20 +500,9 @@ private:
 
     void bridgePoll()
     {
-        if (upload_switch_armed_ && (int32_t)(millis() - upload_switch_ms_) >= 0) {
-            flushUartRx();
-            beginRom();
-            upload_switch_armed_ = false;
-        }
-
         while (usb_->available() > 0) {
             uint8_t byte = (uint8_t)usb_->read();
-            if (!(bridge_mode_ == 2u && upload_switch_armed_)) {
-                uart().write(&byte, 1u);
-            }
-            if (bridge_mode_ == 2u && !uart_is_rom_) {
-                bootProbeByte(byte);
-            }
+            uart().write(&byte, 1u);
             bridge_last_activity_ms_ = millis();
         }
 
@@ -594,7 +511,6 @@ private:
             usb_->write(&byte, 1u);
             bridge_last_activity_ms_ = millis();
         }
-
     }
 
     HardwareSerial &uart() const { return *uart_; }
@@ -605,13 +521,9 @@ private:
     uint32_t app_baud_ = PENNYESC_BAUD_UPDATE;
     uint8_t bridge_mode_ = 0u;
     bool uart_is_rom_ = false;
-    bool upload_switch_armed_ = false;
-    uint32_t upload_switch_ms_ = 0u;
     uint32_t bridge_last_activity_ms_ = 0u;
     char line_buf_[48];
     uint8_t line_len_ = 0u;
-    uint8_t boot_probe_[8];
-    uint8_t boot_probe_idx_ = 0u;
 };
 
 #endif

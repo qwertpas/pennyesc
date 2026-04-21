@@ -5,8 +5,12 @@ static PennyEscBridge bridge;
 
 void setup()
 {
+    PennyEscPins pins;
+    pins.rx = 13;
+    pins.tx = 12;
+
     Serial.begin(115200);
-    bridge.begin(Serial, Serial1, PennyEscPins(), PENNYESC_BAUD_UPDATE);
+    bridge.begin(Serial, Serial1, pins, PENNYESC_BAUD_FAST);
 }
 
 void loop()

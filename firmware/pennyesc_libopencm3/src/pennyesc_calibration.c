@@ -8,6 +8,7 @@
 #define PENNYESC_HALF_PAGE_BYTES (FLASH_HALF_PAGE_SIZE * sizeof(uint32_t))
 #define PENNYESC_CAL_FLASH_START (PENNYESC_FLASH_BASE + PENNYESC_FLASH_SIZE - PENNYESC_CAL_FLASH_SIZE)
 #define PENNYESC_AFFINE_SHIFT 20
+#define PENNYESC_PSEUDO_FRAC_BITS 8u
 
 typedef struct {
     uint16_t next_offset;
@@ -20,6 +21,59 @@ typedef struct {
 static const pennyesc_calibration_blob_t *active_blob;
 static bool active_valid;
 static calibration_writer_t writer;
+
+static int32_t div_round_i64(int64_t value, int32_t denom)
+{
+    if (value >= 0) {
+        return (int32_t)((value + (denom / 2)) / denom);
+    }
+    return -(int32_t)(((-value) + (denom / 2)) / denom);
+}
+
+static uint16_t blend_angle_turn16(uint16_t a, uint16_t b, uint16_t frac)
+{
+    int16_t delta = (int16_t)(b - a);
+    return (uint16_t)(a + div_round_i64((int64_t)delta * frac, (int32_t)(1u << PENNYESC_PSEUDO_FRAC_BITS)));
+}
+
+static uint8_t pseudo_lookup(int32_t x, int32_t y, uint16_t *frac_out)
+{
+    uint32_t ax = (x < 0) ? (uint32_t)(-x) : (uint32_t)x;
+    uint32_t ay = (y < 0) ? (uint32_t)(-y) : (uint32_t)y;
+    uint8_t octant;
+    uint32_t ratio;
+    uint32_t scale = (uint32_t)PNY_SEGMENT_SIZE << PENNYESC_PSEUDO_FRAC_BITS;
+
+    if (ax > ay) {
+        if (x >= 0) {
+            octant = (y >= 0) ? 0u : 7u;
+        } else {
+            octant = (y >= 0) ? 3u : 4u;
+        }
+        ratio = ax ? ((ay * scale) / ax) : 0u;
+    } else {
+        if (y >= 0) {
+            octant = (x >= 0) ? 1u : 2u;
+        } else {
+            octant = (x >= 0) ? 6u : 5u;
+        }
+        ratio = ay ? ((ax * scale) / ay) : 0u;
+    }
+
+    if (ratio >= scale) {
+        ratio = scale - 1u;
+    }
+
+    if ((octant & 1u) != 0u) {
+        ratio = (scale - 1u) - ratio;
+    }
+
+    if (frac_out != 0) {
+        *frac_out = (uint16_t)(ratio & ((1u << PENNYESC_PSEUDO_FRAC_BITS) - 1u));
+    }
+
+    return (uint8_t)((octant << PNY_LUT_BITS) | (ratio >> PENNYESC_PSEUDO_FRAC_BITS));
+}
 
 static void writer_fill_ff(void)
 {
@@ -113,36 +167,7 @@ bool pennyesc_calibration_load(void)
 
 uint8_t pennyesc_calibration_pseudo_index(int32_t x, int32_t y)
 {
-    uint32_t ax = (x < 0) ? (uint32_t)(-x) : (uint32_t)x;
-    uint32_t ay = (y < 0) ? (uint32_t)(-y) : (uint32_t)y;
-    uint8_t octant;
-    uint32_t ratio;
-
-    if (ax > ay) {
-        if (x >= 0) {
-            octant = (y >= 0) ? 0u : 7u;
-        } else {
-            octant = (y >= 0) ? 3u : 4u;
-        }
-        ratio = ax ? ((ay * PNY_SEGMENT_SIZE) / ax) : 0u;
-    } else {
-        if (y >= 0) {
-            octant = (x >= 0) ? 1u : 2u;
-        } else {
-            octant = (x >= 0) ? 6u : 5u;
-        }
-        ratio = ay ? ((ax * PNY_SEGMENT_SIZE) / ay) : 0u;
-    }
-
-    if (ratio >= PNY_SEGMENT_SIZE) {
-        ratio = PNY_SEGMENT_SIZE - 1u;
-    }
-
-    if (octant & 1u) {
-        ratio = (PNY_SEGMENT_SIZE - 1u) - ratio;
-    }
-
-    return (uint8_t)((octant << PNY_LUT_BITS) | ratio);
+    return pseudo_lookup(x, y, 0);
 }
 
 uint16_t pennyesc_calibration_angle_turn16(int16_t x, int16_t y)
@@ -154,9 +179,11 @@ uint16_t pennyesc_calibration_angle_turn16(int16_t x, int16_t y)
     const int32_t *a = active_blob->affine_q20;
     int32_t u = (int32_t)(((int64_t)x * a[0] + (int64_t)y * a[1] + a[2]) >> PENNYESC_AFFINE_SHIFT);
     int32_t v = (int32_t)(((int64_t)x * a[3] + (int64_t)y * a[4] + a[5]) >> PENNYESC_AFFINE_SHIFT);
-    uint8_t idx = pennyesc_calibration_pseudo_index(u, v);
+    uint16_t frac;
+    uint8_t idx = pseudo_lookup(u, v, &frac);
+    uint8_t next_idx = (uint8_t)((idx + 1u) & (PNY_LUT_SIZE - 1u));
 
-    return active_blob->angle_lut[idx];
+    return blend_angle_turn16(active_blob->angle_lut[idx], active_blob->angle_lut[next_idx], frac);
 }
 
 void pennyesc_calibration_writer_reset(void)

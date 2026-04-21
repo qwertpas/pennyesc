@@ -23,6 +23,7 @@ except ImportError as exc:
 
 BAUD = 115200
 MAX_POINTS = 1500
+DEFAULT_ESC = 1
 
 
 def find_serial_port(pattern: str | None) -> str:
@@ -115,7 +116,7 @@ class Window:
         self.x_vals = deque(maxlen=MAX_POINTS)
         self.y_vals = deque(maxlen=MAX_POINTS)
         self.z_vals = deque(maxlen=MAX_POINTS)
-        self.selected_esc = 0
+        self.selected_esc = DEFAULT_ESC
         self.paused = False
         self.last_status = "waiting for data"
         self.last_values = (0, 0, 0)
@@ -133,9 +134,11 @@ class Window:
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(QtWidgets.QLabel("ESC"))
         self.esc_box = QtWidgets.QComboBox()
-        for esc in range(3):
+        for esc in range(16):
             self.esc_box.addItem(str(esc), esc)
-        self.esc_box.setCurrentIndex(self.selected_esc)
+        index = self.esc_box.findData(self.selected_esc)
+        if index >= 0:
+            self.esc_box.setCurrentIndex(index)
         self.esc_box.currentIndexChanged.connect(self.change_esc)
         controls.addWidget(self.esc_box)
 
@@ -236,17 +239,32 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port")
     parser.add_argument("--baud", type=int, default=BAUD)
+    parser.add_argument("--address", type=int, default=DEFAULT_ESC)
     args = parser.parse_args()
+    if not 0 <= args.address <= 0xF:
+        raise SystemExit("ESC address must be 0-15")
 
     port = find_serial_port(args.port)
     try:
         ser = serial.Serial(port, args.baud, timeout=0.2)
+        ser.dtr = False
+        ser.rts = False
     except serial.SerialException as exc:
         raise SystemExit(str(exc))
 
+    print(
+        "magpoll_gui expects ESP32 USB serial lines as '# ...' messages and "
+        "'esc,x,y,z' samples. Flash STM32 firmware 'pennyesc_uart' and ESP32 "
+        "firmware 'esp32s3demo:magpoll2' (or 'magpoll'). 'esp32s3demo:main' "
+        "is not compatible."
+    )
     ser.reset_input_buffer()
     ser.reset_output_buffer()
     window = Window(ser, port)
+    window.selected_esc = args.address
+    index = window.esc_box.findData(args.address)
+    if index >= 0:
+        window.esc_box.setCurrentIndex(index)
     app = window.app
     app.aboutToQuit.connect(window.close)
     return app.exec()
