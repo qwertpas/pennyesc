@@ -6,7 +6,6 @@
 #include <libopencm3/stm32/i2c.h>
 #include <libopencm3/stm32/pwr.h>
 #include <libopencm3/stm32/rcc.h>
-#include <libopencm3/stm32/spi.h>
 #include <libopencm3/stm32/timer.h>
 #include <libopencm3/stm32/usart.h>
 #include <stdbool.h>
@@ -49,7 +48,7 @@
 #define STARTUP_STEP_TICKS ((ISR_FREQ_HZ * 45u) / 1000u)
 #define STARTUP_STEPS 30u
 
-#define CAL_DUTY 150
+#define CAL_DUTY 120
 #define CAL_SETTLE_MS 180u
 #define CAL_SAMPLE_INTERVAL_MS 2u
 #define CAL_SAMPLE_COUNT 16u
@@ -171,7 +170,6 @@ static void clock_setup(void)
     rcc_periph_clock_enable(RCC_GPIOB);
     rcc_periph_clock_enable(RCC_GPIOC);
     rcc_periph_clock_enable(RCC_USART2);
-    rcc_periph_clock_enable(RCC_SPI1);
     rcc_periph_clock_enable(RCC_I2C1);
     rcc_periph_clock_enable(RCC_TIM2);
     rcc_periph_clock_enable(RCC_TIM21);
@@ -1363,8 +1361,9 @@ int main(void)
 
     mct8316z_init();
     delay_ms(5);
-    mct8316z_set_pwm_mode_async_dig();
+    mct8316z_set_pwm_mode_sync_dig();
     mct8316z_set_hall_hys_high();
+    mct8316z_set_direction(false);
     mct8316z_disable_protections();
 
     sensor_ready = tmag5273_init();

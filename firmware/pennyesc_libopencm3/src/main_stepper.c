@@ -331,6 +331,22 @@ static void refresh_mct_debug_regs(void)
     mct_debug_last_ms = system_millis;
 }
 
+static void setup_mct_driver(void)
+{
+    mct8316z_set_pwm_mode_sync_dig();
+    mct8316z_set_hall_hys_high();
+    mct8316z_set_direction(false);
+    mct8316z_disable_protections();
+}
+
+static void reset_mct_driver(void)
+{
+    apply_pwm_duty(0);
+    delay_ms(2u);
+    setup_mct_driver();
+    refresh_mct_debug_regs();
+}
+
 static void auto_walk_poll(void)
 {
     if (!auto_walk) {
@@ -399,6 +415,7 @@ static void handle_set_duty(const uint8_t *payload, uint8_t len)
 
     memcpy(&duty, payload, sizeof(duty));
     auto_walk = false;
+    reset_mct_driver();
     current_duty = duty;
     apply_current_step();
     send_status_response(PNY_CMD_SET_DUTY, PNY_RESULT_OK);
@@ -420,6 +437,9 @@ static void handle_step_set(const uint8_t *payload, uint8_t len)
     }
 
     auto_walk = false;
+    if (step == current_step && current_duty != 0) {
+        reset_mct_driver();
+    }
     set_step_direct(step);
     send_status_response(PNY_CMD_STEP_SET, PNY_RESULT_OK);
 }
@@ -537,10 +557,7 @@ int main(void)
 
     mct8316z_init();
     delay_ms(5u);
-    // mct8316z_set_pwm_mode_async_dig();
-    mct8316z_set_pwm_mode_sync_dig();
-    mct8316z_set_hall_hys_high();
-    mct8316z_disable_protections();
+    setup_mct_driver();
     refresh_mct_debug_regs();
     current_duty = WALK_DUTY;
     current_step = 0;
@@ -561,7 +578,7 @@ int main(void)
             last_sensor_poll_ms = system_millis;
             refresh_sensor_xyz();
         }
-        if ((system_millis - mct_debug_last_ms) >= 1000u) {
+        if (current_duty == 0 && (system_millis - mct_debug_last_ms) >= 1000u) {
             refresh_mct_debug_regs();
         }
         auto_walk_poll();

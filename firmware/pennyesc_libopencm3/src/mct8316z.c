@@ -1,6 +1,7 @@
 #include "mct8316z.h"
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/rcc.h>
+#include <libopencm3/stm32/spi.h>
 #include <libopencm3/stm32/usart.h>
 
 /* Helper to calculate parity
@@ -18,41 +19,22 @@ static uint8_t calculate_parity(uint16_t val)
 
 static void cs_delay(void)
 {
-    for (volatile int x = 0; x < 20; x++);
-}
-
-static void bit_delay(void)
-{
-    for (volatile int x = 0; x < 8; x++);
+    for (volatile int x = 0; x < 200; x++);
 }
 
 static uint16_t mct8316z_transfer(uint16_t cmd)
 {
-    uint16_t val = 0u;
+    uint16_t val;
 
     gpio_clear(GPIOA, GPIO4);
-    bit_delay();
+    cs_delay();
 
-    for (int8_t bit = 15; bit >= 0; bit--) {
-        if ((cmd & (1u << bit)) != 0u) {
-            gpio_set(GPIOA, GPIO7);
-        } else {
-            gpio_clear(GPIOA, GPIO7);
-        }
-
-        bit_delay();
-        gpio_set(GPIOA, GPIO5);
-        bit_delay();
-
-        val <<= 1;
-        if (gpio_get(GPIOA, GPIO6) != 0u) {
-            val |= 1u;
-        }
-
-        gpio_clear(GPIOA, GPIO5);
-        bit_delay();
+    spi_send(SPI1, cmd);
+    val = spi_read(SPI1);
+    while ((SPI_SR(SPI1) & SPI_SR_BSY) != 0u) {
     }
 
+    cs_delay();
     gpio_set(GPIOA, GPIO4);
     cs_delay();
 
@@ -62,14 +44,32 @@ static uint16_t mct8316z_transfer(uint16_t cmd)
 void mct8316z_init(void)
 {
     rcc_periph_clock_enable(RCC_GPIOA);
+    rcc_periph_clock_enable(RCC_SPI1);
 
-    gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO4 | GPIO5 | GPIO7);
-    gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, GPIO4 | GPIO5 | GPIO7);
-    gpio_mode_setup(GPIOA, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, GPIO6);
-
+    spi_disable(SPI1);
+    rcc_periph_reset_pulse(RST_SPI1);
     gpio_set(GPIOA, GPIO4);
-    gpio_clear(GPIOA, GPIO5);
-    gpio_clear(GPIOA, GPIO7);
+    gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO4);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, GPIO4);
+
+    gpio_set_af(GPIOA, GPIO_AF0, GPIO5 | GPIO6 | GPIO7);
+    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO5 | GPIO7);
+    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_PULLUP, GPIO6);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, GPIO5 | GPIO7);
+
+    spi_init_master(SPI1,
+                    SPI_CR1_BAUDRATE_FPCLK_DIV_128,
+                    SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE,
+                    SPI_CR1_CPHA_CLK_TRANSITION_2,
+                    SPI_CR1_DFF_16BIT,
+                    SPI_CR1_MSBFIRST);
+    spi_enable_software_slave_management(SPI1);
+    spi_set_nss_high(SPI1);
+    spi_enable(SPI1);
+
+    while ((SPI_SR(SPI1) & SPI_SR_RXNE) != 0u) {
+        (void)SPI_DR(SPI1);
+    }
 }
 
 uint16_t mct8316z_read_reg(uint8_t addr)
