@@ -1,0 +1,21 @@
+duty=130 status=fail fail_at=55 net=455.0/550.0 step_mean=8.27 step_std=12.53 hold_mean=10.11 hold_max=39.57 rev=2 jumps=12 clip=16 reason=TimeoutError: timeout waiting for command 0x1
+duty=131 status=ok fail_at=-1 net=719.7/720.0 step_mean=10.00 step_std=9.66 hold_mean=9.89 hold_max=39.58 rev=0 jumps=10 clip=35
+duty=132 status=ok fail_at=-1 net=719.9/720.0 step_mean=10.00 step_std=9.51 hold_mean=9.39 hold_max=42.05 rev=0 jumps=10 clip=11
+duty=133 status=fail fail_at=6 net=227.4/60.0 step_mean=37.91 step_std=35.20 hold_mean=34.69 hold_max=134.18 rev=0 jumps=4 clip=0 reason=TimeoutError: timeout waiting for command 0x1
+duty=134 status=ok fail_at=-1 net=-1435.5/720.0 step_mean=-19.94 step_std=102.42 hold_mean=75.81 hold_max=179.41 rev=28 jumps=44 clip=0
+duty=135 status=ok fail_at=-1 net=174.6/720.0 step_mean=2.43 step_std=79.58 hold_mean=42.72 hold_max=178.14 rev=11 jumps=19 clip=0
+duty=136 status=ok fail_at=-1 net=3959.3/720.0 step_mean=54.99 step_std=80.19 hold_mean=63.04 hold_max=179.81 rev=2 jumps=37 clip=0
+duty=137 status=ok fail_at=-1 net=2159.1/720.0 step_mean=29.99 step_std=88.29 hold_mean=54.41 hold_max=179.56 rev=8 jumps=24 clip=0
+duty=138 status=ok fail_at=-1 net=125.4/720.0 step_mean=1.74 step_std=79.04 hold_mean=52.00 hold_max=179.82 rev=13 jumps=37 clip=0
+duty=139 status=ok fail_at=-1 net=388.9/720.0 step_mean=5.40 step_std=68.23 hold_mean=73.15 hold_max=178.95 rev=17 jumps=36 clip=0
+duty=140 status=ok fail_at=-1 net=1632.3/720.0 step_mean=22.67 step_std=76.09 hold_mean=77.76 hold_max=175.77 rev=15 jumps=42 clip=0
+duty=141 status=ok fail_at=-1 net=1908.4/720.0 step_mean=26.50 step_std=83.73 hold_mean=90.15 hold_max=178.93 rev=13 jumps=44 clip=0
+duty=142 status=ok fail_at=-1 net=756.1/720.0 step_mean=10.50 step_std=78.79 hold_mean=78.03 hold_max=179.66 rev=19 jumps=42 clip=0
+duty=143 status=ok fail_at=-1 net=-547.6/720.0 step_mean=-7.60 step_std=103.48 hold_mean=99.38 hold_max=178.21 rev=29 jumps=56 clip=0
+duty=144 status=fail fail_at=52 net=-693.9/520.0 step_mean=-13.35 step_std=82.16 hold_mean=57.49 hold_max=165.97 rev=19 jumps=33 clip=0 reason=TimeoutError: timeout waiting for command 0x1
+duty=145 status=ok fail_at=-1 net=298.8/720.0 step_mean=4.15 step_std=71.87 hold_mean=52.34 hold_max=168.02 rev=13 jumps=50 clip=0
+duty=146 status=fail fail_at=69 net=-992.4/690.0 step_mean=-14.38 step_std=79.60 hold_mean=83.29 hold_max=179.82 rev=30 jumps=48 clip=0 reason=TimeoutError: timeout waiting for command 0x1
+duty=147 status=ok fail_at=-1 net=-352.0/720.0 step_mean=-4.89 step_std=72.93 hold_mean=71.09 hold_max=178.93 rev=24 jumps=53 clip=0
+duty=148 status=ok fail_at=-1 net=742.8/720.0 step_mean=10.32 step_std=81.43 hold_mean=114.09 hold_max=179.23 rev=24 jumps=47 clip=0
+duty=149 status=ok fail_at=-1 net=483.8/720.0 step_mean=6.72 step_std=79.86 hold_mean=76.60 hold_max=179.95 rev=22 jumps=46 clip=0
+duty=150 status=ok fail_at=-1 net=957.5/720.0 step_mean=13.30 step_std=86.89 hold_mean=84.28 hold_max=179.65 rev=20 jumps=46 clip=0

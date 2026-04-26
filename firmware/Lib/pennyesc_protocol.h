@@ -28,6 +28,8 @@ enum {
     PNY_CMD_ENTER_BOOT = 0xB,
     PNY_CMD_SET_ADVANCE = 0xC,
     PNY_CMD_SET_QUIET = 0xD,
+    PNY_CMD_STEP_SET = 0xE,
+    PNY_CMD_STEP_TRANSITION = 0xF,
 };
 
 #define PNY_BOOT_MAGIC 0x424F4F54u
@@ -99,6 +101,7 @@ typedef struct __attribute__((packed)) {
     int16_t z;
     uint16_t xy_radius;
     uint16_t sample_spread;
+    int16_t duty;
 } pny_cal_point_payload_t;
 
 typedef struct __attribute__((packed)) {

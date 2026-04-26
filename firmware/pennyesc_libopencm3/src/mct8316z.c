@@ -1,5 +1,4 @@
 #include "mct8316z.h"
-#include <libopencm3/stm32/spi.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/usart.h>
@@ -17,40 +16,60 @@ static uint8_t calculate_parity(uint16_t val)
     return __builtin_parity(val);
 }
 
+static void cs_delay(void)
+{
+    for (volatile int x = 0; x < 20; x++);
+}
+
+static void bit_delay(void)
+{
+    for (volatile int x = 0; x < 8; x++);
+}
+
+static uint16_t mct8316z_transfer(uint16_t cmd)
+{
+    uint16_t val = 0u;
+
+    gpio_clear(GPIOA, GPIO4);
+    bit_delay();
+
+    for (int8_t bit = 15; bit >= 0; bit--) {
+        if ((cmd & (1u << bit)) != 0u) {
+            gpio_set(GPIOA, GPIO7);
+        } else {
+            gpio_clear(GPIOA, GPIO7);
+        }
+
+        bit_delay();
+        gpio_set(GPIOA, GPIO5);
+        bit_delay();
+
+        val <<= 1;
+        if (gpio_get(GPIOA, GPIO6) != 0u) {
+            val |= 1u;
+        }
+
+        gpio_clear(GPIOA, GPIO5);
+        bit_delay();
+    }
+
+    gpio_set(GPIOA, GPIO4);
+    cs_delay();
+
+    return val;
+}
+
 void mct8316z_init(void)
 {
-    // Enable SPI1 clock
-    rcc_periph_clock_enable(RCC_SPI1);
-    rcc_periph_clock_enable(RCC_GPIOA); // For pins
+    rcc_periph_clock_enable(RCC_GPIOA);
 
-    // MSP: PA5(SCK), PA6(MISO), PA7(MOSI) -> AF0
-    // PA4 is Software NSS (GPIO Output)
-    gpio_set_af(GPIOA, GPIO_AF0, GPIO5 | GPIO6 | GPIO7);
-    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO5 | GPIO6 | GPIO7);
+    gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO4 | GPIO5 | GPIO7);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, GPIO4 | GPIO5 | GPIO7);
+    gpio_mode_setup(GPIOA, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, GPIO6);
 
-    // Reset SPI1
-    rcc_periph_reset_pulse(RST_SPI1);
-
-    // Config: Master, CPOL=0, CPHA=1 (Falling Edge), 16-bit, MSB First
-    // Baud rate: 5MHz max. Setup was DIV_8.
-    // System clock is 32MHz. 32/8 = 4MHz. Safe.
-    spi_init_master(SPI1, 
-                    SPI_CR1_BAUDRATE_FPCLK_DIV_8, 
-                    SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE, 
-                    SPI_CR1_CPHA_CLK_TRANSITION_2, 
-                    SPI_CR1_DFF_16BIT,             
-                    SPI_CR1_MSBFIRST);
-
-    // Use Software Slave Management (SSM=1, SSI=1)
-    // This prevents the Master from detecting a Mode Fault when we pull NSS low
-    spi_enable_software_slave_management(SPI1);
-    spi_set_nss_high(SPI1);
-
-    // Configure NSS (PA4) as GPIO Output
-    gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO4);
-    gpio_set(GPIOA, GPIO4); // Set High (Idle)
-
-    spi_enable(SPI1);
+    gpio_set(GPIOA, GPIO4);
+    gpio_clear(GPIOA, GPIO5);
+    gpio_clear(GPIOA, GPIO7);
 }
 
 uint16_t mct8316z_read_reg(uint8_t addr)
@@ -66,17 +85,7 @@ uint16_t mct8316z_read_reg(uint8_t addr)
         cmd |= (1 << 8); // Set parity bit if current count is odd
     }
     
-    // Select Slave
-    gpio_clear(GPIOA, GPIO4);
-    
-    // Send and Receive
-    spi_send(SPI1, cmd);
-    uint16_t val = spi_read(SPI1);
-    
-    // Deselect Slave
-    gpio_set(GPIOA, GPIO4);
-    
-    return val;
+    return mct8316z_transfer(cmd);
 }
 
 void mct8316z_write_reg(uint8_t addr, uint8_t data)
@@ -92,15 +101,7 @@ void mct8316z_write_reg(uint8_t addr, uint8_t data)
         cmd |= (1 << 8); // Set parity bit if current count is odd
     }
     
-    // Select Slave
-    gpio_clear(GPIOA, GPIO4);
-    
-    // Send and Receive
-    spi_send(SPI1, cmd);
-    spi_read(SPI1); // Read dummy byte to clear RX buffer
-    
-    // Deselect Slave
-    gpio_set(GPIOA, GPIO4);
+    mct8316z_transfer(cmd);
 }
 
 void mct8316z_clear_faults(void)
@@ -123,36 +124,70 @@ void mct8316z_clear_faults(void)
     for (volatile int x = 0; x < 1000; x++);
 }
 
-void mct8316z_set_pwm_mode_async_dig(void)
+static void mct8316z_set_pwm_mode(uint8_t mode_bits)
 {
-    // 0. Unlock Registers (just in case)
-    // Write 011b (0x3) to CONTROL1 (Reg 0x03) bits 2-0
-    // Read-Modify-Write is safer to preserve reserved bits, but we know Reset is 0x00.
-    // Let's just write 0x03.
     mct8316z_write_reg(MCT8316Z_REG_CONTROL1, 0x03);
-    
-    // Delay to ensure unlock processes
     for (volatile int x = 0; x < 1000; x++);
 
-    // 1. Clear any latched faults from power-on (NPOR, etc.)
-    mct8316z_clear_faults();
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL2A,
+                       MCT8316Z_CONTROL2A_RESERVED |
+                       MCT8316Z_SDO_MODE_PUSH_PULL |
+                       (mode_bits & 0x06u) |
+                       MCT8316Z_CLR_FLT);
+    for (volatile int x = 0; x < 1000; x++);
 
-    // 2. Read current CONTROL2A (Reg 0x04)
-    uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
-    uint8_t current_data = (uint8_t)(val & 0xFF);
-
-    // 3. Modify PWM_MODE bits (Bits 2-1)
-    // Asynchronous rectification with digital Hall = 1h (01b)
-    // Clear bits 2-1
-    current_data &= ~(0x06); 
-    // Set bit 1
-    current_data |= MCT8316Z_PWM_MODE_ASYNC_DIG;
-    
-    // 4. Write back
-    mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, current_data);
-    
-    // 5. Clear faults again after configuration (belt and suspenders)
     mct8316z_clear_faults();
+}
+
+void mct8316z_set_pwm_mode_async_dig(void)
+{
+    mct8316z_set_pwm_mode(MCT8316Z_PWM_MODE_ASYNC_DIG);
+}
+
+void mct8316z_set_pwm_mode_sync_dig(void)
+{
+    mct8316z_set_pwm_mode(MCT8316Z_PWM_MODE_SYNC_DIG);
+}
+
+void mct8316z_set_hall_hys_high(void)
+{
+    uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL7);
+    uint8_t data = (uint8_t)(val & 0xFF);
+
+    data |= MCT8316Z_HALL_HYS_HIGH;
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL7, data);
+}
+
+void mct8316z_set_direction(bool reverse)
+{
+    uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL7);
+    uint8_t data = (uint8_t)(val & 0xFF);
+
+    if (reverse) {
+        data |= MCT8316Z_DIR_REVERSE;
+    } else {
+        data &= (uint8_t)~MCT8316Z_DIR_REVERSE;
+    }
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL7, data);
+}
+
+void mct8316z_disable_motor_lock(void)
+{
+    uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL8);
+    uint8_t data = (uint8_t)(val & 0xFF);
+
+    data &= ~(MCT8316Z_MTR_LOCK_MODE_MASK | MCT8316Z_MTR_LOCK_TDET_MASK);
+    data |= MCT8316Z_MTR_LOCK_DISABLED;
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL8, data);
+}
+
+void mct8316z_set_ilim_recir_coast(void)
+{
+    uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL5);
+    uint8_t data = (uint8_t)(val & 0xFF);
+
+    data |= MCT8316Z_ILIM_RECIR_COAST;
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL5, data);
 }
 
 // Local print helpers
@@ -203,26 +238,20 @@ void mct8316z_print_all_regs(void)
 
 void mct8316z_disable_protections(void)
 {
-    // Registers must be unlocked first (done in set_pwm_mode_async_dig)
-    
-    // CONTROL4 (0x06): Set OCP_MODE to disabled (bits 1-0 = 11b)
-    // This disables overcurrent protection
-    uint16_t val = mct8316z_read_reg(MCT8316Z_REG_CONTROL4);
-    uint8_t data = (uint8_t)(val & 0xFF);
-    data &= ~MCT8316Z_OCP_MODE_MASK;          // Clear OCP_MODE bits
-    data |= MCT8316Z_OCP_MODE_DISABLED;       // Set to disabled (0x03)
-    mct8316z_write_reg(MCT8316Z_REG_CONTROL4, data);
-    
-    for (volatile int x = 0; x < 1000; x++);  // Small delay
-    
-    // CONTROL8 (0x0A): Set MTR_LOCK_MODE to disabled (bits 1-0 = 11b)
-    // Also set MTR_LOCK_TDET to 5000ms (bits 3-2 = 11b) as extra safety
-    val = mct8316z_read_reg(MCT8316Z_REG_CONTROL8);
-    data = (uint8_t)(val & 0xFF);
-    data &= ~(MCT8316Z_MTR_LOCK_MODE_MASK | MCT8316Z_MTR_LOCK_TDET_MASK);  // Clear both fields
-    data |= MCT8316Z_MTR_LOCK_DISABLED;       // Disable motor lock detection
-    data |= MCT8316Z_MTR_LOCK_TDET_5000MS;    // Set longest detection time anyway
-    mct8316z_write_reg(MCT8316Z_REG_CONTROL8, data);
-    
-    for (volatile int x = 0; x < 1000; x++);  // Small delay
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL1, 0x03);
+    for (volatile int x = 0; x < 1000; x++);
+
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL3, MCT8316Z_CONTROL3_NO_REPORTS);
+    for (volatile int x = 0; x < 1000; x++);
+
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL4, 0x10 | MCT8316Z_OCP_MODE_DISABLED);
+    for (volatile int x = 0; x < 1000; x++);
+
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL8,
+                       MCT8316Z_MTR_LOCK_RETRY_5000MS |
+                       MCT8316Z_MTR_LOCK_TDET_5000MS |
+                       MCT8316Z_MTR_LOCK_DISABLED);
+    for (volatile int x = 0; x < 1000; x++);
+
+    mct8316z_clear_faults();
 }

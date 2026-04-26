@@ -1,0 +1,15 @@
+duty=10 status=ok fail_at=-1 net=378.3/720.0 step_mean=5.25 step_std=96.47 hold_mean=148.89 hold_max=179.30 rev=36 jumps=62 clip=0
+duty=20 status=ok fail_at=-1 net=852.5/720.0 step_mean=11.84 step_std=101.69 hold_mean=147.86 hold_max=179.67 rev=34 jumps=61 clip=0
+duty=30 status=ok fail_at=-1 net=75.3/720.0 step_mean=1.05 step_std=85.35 hold_mean=105.49 hold_max=179.41 rev=34 jumps=59 clip=0
+duty=40 status=ok fail_at=-1 net=366.9/720.0 step_mean=5.10 step_std=95.33 hold_mean=57.82 hold_max=179.32 rev=27 jumps=37 clip=0
+duty=50 status=fail fail_at=18 net=362.0/180.0 step_mean=20.11 step_std=96.65 hold_mean=42.59 hold_max=179.04 rev=6 jumps=6 clip=0 reason=TimeoutError: timeout waiting for command 0x1
+duty=60 status=ok fail_at=-1 net=2166.8/720.0 step_mean=30.09 step_std=96.04 hold_mean=42.41 hold_max=179.40 rev=15 jumps=24 clip=0
+duty=70 status=ok fail_at=-1 net=-721.5/720.0 step_mean=-10.02 step_std=100.80 hold_mean=40.56 hold_max=179.97 rev=23 jumps=24 clip=0
+duty=80 status=fail fail_at=14 net=182.1/140.0 step_mean=13.01 step_std=105.65 hold_mean=24.90 hold_max=174.64 rev=2 jumps=5 clip=0 reason=TimeoutError: timeout waiting for command 0x1
+duty=90 status=ok fail_at=-1 net=-361.1/720.0 step_mean=-5.01 step_std=101.99 hold_mean=43.24 hold_max=179.91 rev=17 jumps=24 clip=0
+duty=100 status=fail fail_at=61 net=202.3/610.0 step_mean=3.32 step_std=65.91 hold_mean=39.45 hold_max=163.15 rev=8 jumps=26 clip=0 reason=TimeoutError: timeout waiting for command 0x1
+duty=110 status=ok fail_at=-1 net=720.1/720.0 step_mean=10.00 step_std=8.45 hold_mean=8.73 hold_max=37.65 rev=0 jumps=8 clip=0
+duty=120 status=ok fail_at=-1 net=720.0/720.0 step_mean=10.00 step_std=7.66 hold_mean=8.81 hold_max=39.96 rev=0 jumps=6 clip=0
+duty=130 status=ok fail_at=-1 net=720.1/720.0 step_mean=10.00 step_std=7.55 hold_mean=8.29 hold_max=29.24 rev=0 jumps=8 clip=0
+duty=140 status=fail fail_at=-1 net=0.0/720.0 step_mean=0.00 step_std=0.00 hold_mean=0.00 hold_max=0.00 rev=0 jumps=0 clip=0 reason=TimeoutError: timeout waiting for command 0x3
+duty=150 status=ok fail_at=-1 net=-109.0/720.0 step_mean=-1.51 step_std=107.81 hold_mean=151.35 hold_max=179.98 rev=36 jumps=63 clip=0

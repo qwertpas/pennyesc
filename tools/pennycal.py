@@ -107,6 +107,7 @@ class CapturePoint:
     z: int
     xy_radius: int
     sample_spread: int
+    duty: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -480,8 +481,7 @@ class EspBridge:
     def exit_bridge(self) -> None:
         self.serial.reset_input_buffer()
         self.serial.reset_output_buffer()
-        self.serial.write(b"\n")
-        self.serial.write(b"bridge off\n")
+        self.serial.write(b"!#bridge off\n")
         self.serial.flush()
         self._read_line_until(lambda text: text == "# bridge=off", timeout=2.0)
 
@@ -584,12 +584,12 @@ class Stm32Client:
 
     def cal_read_point(self, index: int, timeout: float = 2.0) -> CapturePoint:
         payload = self.exchange_retry(CMD_CAL_READ_POINT, struct.pack("<B", index), timeout=timeout)
-        result, point_index, step_index, sweep_dir, x, y, z, xy_radius, sample_spread = struct.unpack(
-            "<BBBBhhhHH", payload
+        result, point_index, step_index, sweep_dir, x, y, z, xy_radius, sample_spread, duty = struct.unpack(
+            "<BBBBhhhHHh", payload
         )
         if result != RESULT_OK:
             raise CalibrationError(f"read point {index} failed with result {result}")
-        return CapturePoint(point_index, step_index, sweep_dir, x, y, z, xy_radius, sample_spread)
+        return CapturePoint(point_index, step_index, sweep_dir, x, y, z, xy_radius, sample_spread, duty)
 
     def cal_write_blob(self, offset: int, chunk: bytes) -> tuple[int, int]:
         payload = self.exchange_retry(CMD_CAL_WRITE_BLOB, struct.pack("<H", offset) + chunk, timeout=0.5)
@@ -756,8 +756,9 @@ def reduce_capture_points(points: Sequence[CapturePoint]) -> list[CapturePoint]:
         zs = np.zeros((CAL_ROTATIONS_PER_DIR, CAL_POINTS_PER_SWEEP), dtype=np.int64)
         radii = np.zeros((CAL_ROTATIONS_PER_DIR, CAL_POINTS_PER_SWEEP), dtype=np.int64)
         spreads = np.zeros((CAL_ROTATIONS_PER_DIR, CAL_POINTS_PER_SWEEP), dtype=np.int64)
+        duties = np.zeros((CAL_ROTATIONS_PER_DIR, CAL_POINTS_PER_SWEEP), dtype=np.int64)
         seen = np.zeros((CAL_ROTATIONS_PER_DIR, CAL_POINTS_PER_SWEEP), dtype=bool)
-        data[sweep_dir] = (xs, ys, zs, radii, spreads, seen)
+        data[sweep_dir] = (xs, ys, zs, radii, spreads, duties, seen)
 
     for point in ordered:
         if not 0 <= point.step_index < CAL_POINTS_PER_SWEEP:
@@ -766,17 +767,18 @@ def reduce_capture_points(points: Sequence[CapturePoint]) -> list[CapturePoint]:
         if point.sweep_dir != sweep_dir:
             raise CalibrationError("capture direction mismatch")
         rotation = cal_capture_rotation(point.index)
-        xs, ys, zs, radii, spreads, seen = data[sweep_dir]
+        xs, ys, zs, radii, spreads, duties, seen = data[sweep_dir]
         xs[rotation, point.step_index] = point.x
         ys[rotation, point.step_index] = point.y
         zs[rotation, point.step_index] = point.z
         radii[rotation, point.step_index] = point.xy_radius
         spreads[rotation, point.step_index] = point.sample_spread
+        duties[rotation, point.step_index] = point.duty
         seen[rotation, point.step_index] = True
 
     reduced: list[CapturePoint] = []
     for sweep_dir in (0, 1):
-        xs, ys, zs, radii, spreads, seen = data[sweep_dir]
+        xs, ys, zs, radii, spreads, duties, seen = data[sweep_dir]
         if not np.all(seen):
             raise CalibrationError("missing sweep samples")
 
@@ -797,6 +799,7 @@ def reduce_capture_points(points: Sequence[CapturePoint]) -> list[CapturePoint]:
             zs[rotation] = np.roll(zs[rotation], best_shift)
             radii[rotation] = np.roll(radii[rotation], best_shift)
             spreads[rotation] = np.roll(spreads[rotation], best_shift)
+            duties[rotation] = np.roll(duties[rotation], best_shift)
             ref_x = np.mean(xs[: rotation + 1], axis=0)
             ref_y = np.mean(ys[: rotation + 1], axis=0)
 
@@ -805,6 +808,7 @@ def reduce_capture_points(points: Sequence[CapturePoint]) -> list[CapturePoint]:
         avg_z = np.rint(np.mean(zs, axis=0)).astype(np.int64)
         avg_radius = np.rint(np.mean(radii, axis=0)).astype(np.int64)
         avg_spread = np.rint(np.mean(spreads, axis=0)).astype(np.int64)
+        avg_duty = np.rint(np.mean(duties, axis=0)).astype(np.int64)
 
         if sweep_dir == 0:
             for step in range(CAL_POINTS_PER_SWEEP):
@@ -818,6 +822,7 @@ def reduce_capture_points(points: Sequence[CapturePoint]) -> list[CapturePoint]:
                         z=int(avg_z[step]),
                         xy_radius=int(avg_radius[step]),
                         sample_spread=int(avg_spread[step]),
+                        duty=int(avg_duty[step]),
                     )
                 )
         else:
@@ -833,6 +838,7 @@ def reduce_capture_points(points: Sequence[CapturePoint]) -> list[CapturePoint]:
                         z=int(avg_z[step]),
                         xy_radius=int(avg_radius[step]),
                         sample_spread=int(avg_spread[step]),
+                        duty=int(avg_duty[step]),
                     )
                 )
     return reduced

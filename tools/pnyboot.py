@@ -21,8 +21,12 @@ ROM_READ_MEMORY = 0x11
 ROM_GO = 0x21
 ROM_WRITE_MEMORY = 0x31
 ROM_EXTENDED_ERASE = 0x44
-BRIDGE_IDLE_S = 3.0
-APP_SYNC_RETRIES = 10
+SHELL_SYNC_S = 1.0
+TARGET_STATUS_TIMEOUT_S = 0.25
+APP_READY_UPLOAD_S = 8.0
+APP_READY_RECOVER_S = 6.0
+APP_READY_RETRY_S = 0.1
+BOOT_HANDOFF_S = 1.5
 BOOT_WINDOW_S = 8.0
 APP_DISCOVERY_TIMEOUT_S = 0.15
 APP_QUIET_MS = 15000
@@ -135,6 +139,7 @@ class BootBridge:
     def __init__(self, port: str, baudrate: int = 115200) -> None:
         self.port_name = port
         self.baudrate = baudrate
+        self.command_prefix = ""
         self.serial = self._open_serial()
 
     def _open_serial(self) -> serial.Serial:
@@ -162,24 +167,38 @@ class BootBridge:
             return line.decode("utf-8", errors="replace").strip()
         return None
 
-    def _try_sync_shell(self, timeout: float) -> bool:
+    def _try_sync_shell(self, timeout: float) -> str | None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            self.serial.reset_input_buffer()
+            self.serial.write(b"!#ping\n")
+            self.serial.flush()
+
+            wait_deadline = time.monotonic() + 0.25
+            while time.monotonic() < wait_deadline:
+                line = self._read_line(0.05)
+                if line is None:
+                    continue
+                if line == "pong":
+                    self.command_prefix = "!#"
+                    return "!#"
+
             self.serial.reset_input_buffer()
             self.serial.write(b"\n")
             self.serial.write(b"ping\n")
             self.serial.flush()
 
-            wait_deadline = time.monotonic() + 0.8
+            wait_deadline = time.monotonic() + 0.25
             while time.monotonic() < wait_deadline:
-                line = self._read_line(0.2)
+                line = self._read_line(0.05)
                 if line is None:
                     continue
                 if line == "pong":
-                    return True
-            time.sleep(0.4)
+                    self.command_prefix = ""
+                    return ""
+            time.sleep(0.05)
 
-        return False
+        return None
 
     def reset_bridge(self) -> None:
         self.close()
@@ -196,30 +215,33 @@ class BootBridge:
             time.sleep(0.4)
             try:
                 self.serial = self._open_serial()
-                time.sleep(1.5)
+                time.sleep(0.2)
+                self.command_prefix = ""
                 return
             except serial.SerialException as exc:
                 last_error = exc
 
         raise BootError(f"boot bridge reset failed: {last_error}")
 
-    def sync_shell(self, timeout: float = 6.0) -> None:
-        if self._try_sync_shell(timeout):
+    def sync_shell(self, timeout: float = 6.0, allow_reset: bool = True) -> None:
+        if self._try_sync_shell(timeout) is not None:
             return
 
-        self.reset_bridge()
-        if self._try_sync_shell(timeout):
-            return
+        if allow_reset:
+            self.reset_bridge()
+            if self._try_sync_shell(timeout) is not None:
+                return
 
-        raise BootError("boot bridge shell did not respond")
+        raise BootError("bridge shell unavailable")
 
-    def _enter_bridge(self, mode: str, sync: bool) -> None:
+    def _enter_bridge(self, mode: str, sync: bool, timeout: float, allow_reset: bool) -> None:
         expected = f"# bridge={mode}"
         if sync:
-            self.sync_shell()
+            self.sync_shell(timeout=timeout, allow_reset=allow_reset)
         self.serial.reset_input_buffer()
         self.serial.reset_output_buffer()
-        self.serial.write(f"bridge {mode}\n".encode("utf-8"))
+        prefix = self.command_prefix
+        self.serial.write(f"{prefix}bridge {mode}\n".encode("utf-8"))
         self.serial.flush()
 
         deadline = time.monotonic() + 2.0
@@ -228,14 +250,15 @@ class BootBridge:
             if line is None:
                 continue
             if line == expected:
+                self.command_prefix = "" if mode == "off" else "!#"
                 return
         raise BootError(f"bridge did not enter {mode} mode")
 
-    def enter_bridge(self, mode: str) -> None:
-        self._enter_bridge(mode, sync=True)
+    def enter_bridge(self, mode: str, timeout: float = 6.0, allow_reset: bool = True) -> None:
+        self._enter_bridge(mode, sync=True, timeout=timeout, allow_reset=allow_reset)
 
     def switch_bridge(self, mode: str) -> None:
-        self._enter_bridge(mode, sync=False)
+        self._enter_bridge(mode, sync=False, timeout=0.0, allow_reset=False)
 
 
 def app_command(port: serial.Serial, address: int, cmd: int, payload: bytes = b"", timeout: float = 0.8) -> int:
@@ -245,10 +268,10 @@ def app_command(port: serial.Serial, address: int, cmd: int, payload: bytes = b"
     return read_app_result(port, cmd, address, timeout)
 
 
-def find_devices(bridge: BootBridge) -> list[int]:
+def find_devices(bridge: BootBridge, allow_reset: bool = False) -> list[int]:
     found: list[int] = []
 
-    bridge.enter_bridge("app")
+    bridge.enter_bridge("handoff", timeout=SHELL_SYNC_S, allow_reset=allow_reset)
     for address in range(16):
         try:
             bridge.serial.reset_input_buffer()
@@ -262,8 +285,8 @@ def find_devices(bridge: BootBridge) -> list[int]:
     return found
 
 
-def quiet_other_devices(bridge: BootBridge, target_address: int) -> list[int]:
-    quieted = [address for address in find_devices(bridge) if address != target_address]
+def quiet_other_devices(bridge: BootBridge, target_address: int, allow_reset: bool = False) -> list[int]:
+    quieted = [address for address in find_devices(bridge, allow_reset=allow_reset) if address != target_address]
 
     for address in quieted:
         result = app_command(
@@ -408,13 +431,27 @@ def verify_image(boot: Stm32Bootloader, base: int, expected: bytes) -> None:
         progress.update(index, total)
 
 
-def wait_for_app_status(port: str, address: int) -> bytes:
+def request_app_status(bridge: BootBridge, address: int, timeout: float) -> bytes:
+    bridge.serial.reset_input_buffer()
+    bridge.serial.write(encode_frame(address, CMD_GET_STATUS))
+    bridge.serial.flush()
+    try:
+        return read_app_frame(bridge.serial, CMD_GET_STATUS, address, timeout=timeout)
+    except TimeoutError as exc:
+        raise BootError(f"target address {address} not found") from exc
+
+
+def wait_for_app_status(
+    port: str,
+    address: int,
+    *,
+    shell_timeout: float = SHELL_SYNC_S,
+    allow_reset: bool = False,
+    status_timeout: float = TARGET_STATUS_TIMEOUT_S,
+) -> bytes:
     with BootBridge(port) as bridge:
-        bridge.enter_bridge("app")
-        payload = encode_frame(address, CMD_GET_STATUS)
-        bridge.serial.write(payload)
-        bridge.serial.flush()
-        return read_app_frame(bridge.serial, CMD_GET_STATUS, address, timeout=1.5)
+        bridge.enter_bridge("handoff", timeout=shell_timeout, allow_reset=allow_reset)
+        return request_app_status(bridge, address, status_timeout)
 
 
 def prompt_bootloader_reset() -> None:
@@ -422,8 +459,8 @@ def prompt_bootloader_reset() -> None:
 
 
 def open_bootloader_from_reset(bridge: BootBridge) -> Stm32Bootloader:
-    quiet_other_devices(bridge, -1)
-    bridge.enter_bridge("upload")
+    quiet_other_devices(bridge, -1, allow_reset=True)
+    bridge.enter_bridge("upload", allow_reset=True)
     prompt_bootloader_reset()
     boot = Stm32Bootloader(bridge.serial)
     boot.sync(retries=int(BOOT_WINDOW_S / 0.05), delay=0.05)
@@ -431,47 +468,30 @@ def open_bootloader_from_reset(bridge: BootBridge) -> Stm32Bootloader:
 
 
 def open_bootloader_from_app(bridge: BootBridge, address: int) -> Stm32Bootloader:
-    quieted = quiet_other_devices(bridge, address)
+    quieted = quiet_other_devices(bridge, address, allow_reset=False)
     if quieted:
         print(f"quiet devices: {quieted}", flush=True)
 
-    bridge.enter_bridge("app")
+    bridge.enter_bridge("handoff", timeout=SHELL_SYNC_S, allow_reset=False)
+    request_app_status(bridge, address, TARGET_STATUS_TIMEOUT_S)
     send_enter_boot_frames(bridge.serial, address)
     try:
-        read_boot_ack(bridge.serial, address)
+        read_boot_ack(bridge.serial, address, timeout=0.1)
     except TimeoutError:
         pass
 
-    bridge.reset_bridge()
-    bridge.enter_bridge("upload")
+    bridge.switch_bridge("upload")
     boot = Stm32Bootloader(bridge.serial)
-    deadline = time.monotonic() + BOOT_WINDOW_S
+    deadline = time.monotonic() + BOOT_HANDOFF_S
 
     while time.monotonic() < deadline:
-        send_enter_boot_frames(bridge.serial, address)
-        try:
-            read_boot_ack(bridge.serial, address, timeout=0.05)
-        except TimeoutError:
-            pass
-
         try:
             boot.sync(retries=2, delay=0.05)
             return boot
         except (BootError, TimeoutError):
             time.sleep(0.05)
 
-    raise BootError("bootloader did not answer after app handoff")
-
-
-def open_bootloader_resident(bridge: BootBridge, address: int) -> Stm32Bootloader:
-    quieted = quiet_other_devices(bridge, address)
-    bridge.enter_bridge("upload")
-    if quieted:
-        print(f"quiet devices: {quieted}", flush=True)
-
-    boot = Stm32Bootloader(bridge.serial)
-    boot.sync(retries=int(BOOT_WINDOW_S / 0.05), delay=0.05)
-    return boot
+    raise BootError("normal upload path unavailable, use uart_recover")
 
 
 def enter_rom(port: str, address: int) -> None:
@@ -480,18 +500,65 @@ def enter_rom(port: str, address: int) -> None:
         print("bootloader: synced")
 
 
-def wait_for_app_ready(port: str, address: int) -> bytes:
-    time.sleep(BRIDGE_IDLE_S)
-    last_error: Exception | None = None
-    for _ in range(APP_SYNC_RETRIES):
-        try:
-            return wait_for_app_status(port, address)
-        except Exception as exc:
-            last_error = exc
-            time.sleep(0.3)
+def wait_for_app_ready(
+    port: str,
+    address: int,
+    *,
+    timeout_s: float,
+    retry_delay: float,
+    shell_timeout: float,
+    allow_reset: bool,
+    status_timeout: float,
+) -> bytes:
+    deadline = time.monotonic() + timeout_s
+    with BootBridge(port) as bridge:
+        bridge.enter_bridge("handoff", timeout=shell_timeout, allow_reset=allow_reset)
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                return request_app_status(bridge, address, status_timeout)
+            except Exception as exc:
+                last_error = exc
+                if time.monotonic() + retry_delay >= deadline:
+                    break
+                time.sleep(retry_delay)
     if last_error is None:
         raise BootError("app status unavailable")
     raise BootError(f"app status unavailable: {last_error}")
+
+
+def wait_for_app_ready_bridge(
+    bridge: BootBridge,
+    address: int,
+    *,
+    timeout_s: float,
+    retry_delay: float,
+    status_timeout: float,
+) -> bytes:
+    deadline = time.monotonic() + timeout_s
+    last_error: Exception | None = None
+    bridge.switch_bridge("handoff")
+    while time.monotonic() < deadline:
+        try:
+            return request_app_status(bridge, address, status_timeout)
+        except Exception as exc:
+            last_error = exc
+            if time.monotonic() + retry_delay >= deadline:
+                break
+            time.sleep(retry_delay)
+    if last_error is None:
+        raise BootError("app status unavailable")
+    raise BootError(f"app status unavailable: {last_error}")
+
+
+def check_connection(port: str, address: int) -> bytes:
+    return wait_for_app_status(
+        port,
+        address,
+        shell_timeout=SHELL_SYNC_S,
+        allow_reset=False,
+        status_timeout=TARGET_STATUS_TIMEOUT_S,
+    )
 
 
 def probe_path(port: str, address: int, rounds: int) -> None:
@@ -500,7 +567,15 @@ def probe_path(port: str, address: int, rounds: int) -> None:
 
     for index in range(1, rounds + 1):
         print(f"probe round {index}: waiting for app", flush=True)
-        wait_for_app_ready(port, address)
+        wait_for_app_ready(
+            port,
+            address,
+            timeout_s=APP_READY_RECOVER_S,
+            retry_delay=0.3,
+            shell_timeout=6.0,
+            allow_reset=True,
+            status_timeout=1.5,
+        )
         print(f"probe round {index}: app ready", flush=True)
 
         with BootBridge(port) as bridge:
@@ -516,7 +591,15 @@ def probe_path(port: str, address: int, rounds: int) -> None:
             boot.go(FLASH_BASE)
 
         print(f"probe round {index}: waiting for app resume", flush=True)
-        wait_for_app_ready(port, address)
+        wait_for_app_ready(
+            port,
+            address,
+            timeout_s=APP_READY_RECOVER_S,
+            retry_delay=0.3,
+            shell_timeout=6.0,
+            allow_reset=True,
+            status_timeout=1.5,
+        )
         print(f"probe round {index}: app resumed", flush=True)
 
 
@@ -541,16 +624,21 @@ def upload_image(port: str, image_path: Path, address: int) -> None:
     image, padded, pages = load_image(image_path)
 
     with BootBridge(port) as bridge:
-        try:
-            boot = open_bootloader_from_app(bridge, address)
-        except (BootError, TimeoutError):
-            print("bootloader: app path unavailable, trying resident bootloader", flush=True)
-            boot = open_bootloader_resident(bridge, address)
+        boot = open_bootloader_from_app(bridge, address)
         print("bootloader: synced")
         program_image(boot, padded, pages)
         boot.go(FLASH_BASE)
 
-    wait_for_app_ready(port, address)
+    wait_for_app_ready(
+        port,
+        address,
+        timeout_s=APP_READY_UPLOAD_S,
+        retry_delay=APP_READY_RETRY_S,
+        shell_timeout=SHELL_SYNC_S,
+        allow_reset=True,
+        status_timeout=TARGET_STATUS_TIMEOUT_S,
+    )
+
     print(f"verify ok image_len={len(image)}")
 
 
@@ -563,25 +651,38 @@ def recover_image(port: str, image_path: Path, address: int) -> None:
         program_image(boot, padded, pages)
         boot.go(FLASH_BASE)
 
-    wait_for_app_ready(port, address)
+    wait_for_app_ready(
+        port,
+        address,
+        timeout_s=APP_READY_RECOVER_S,
+        retry_delay=0.3,
+        shell_timeout=6.0,
+        allow_reset=True,
+        status_timeout=1.5,
+    )
+
     print(f"verify ok image_len={len(image)}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("upload", "recover", "enter", "probe", "status"))
+    parser.add_argument("command", choices=("upload", "recover", "check", "enter", "probe", "status"))
     parser.add_argument("--port", default="/dev/cu.usbmodem101")
     parser.add_argument("--image", type=Path)
     parser.add_argument("--address", type=int, default=0)
     parser.add_argument("--rounds", type=int, default=3)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
         if args.command == "enter":
             enter_rom(args.port, args.address)
             return 0
         if args.command == "status":
-            payload = wait_for_app_ready(args.port, args.address)
+            payload = check_connection(args.port, args.address)
+            print(payload.hex(), flush=True)
+            return 0
+        if args.command == "check":
+            payload = check_connection(args.port, args.address)
             print(payload.hex(), flush=True)
             return 0
         if args.command == "probe":

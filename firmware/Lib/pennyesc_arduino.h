@@ -371,6 +371,8 @@ public:
     {
         if (bridge_mode_ == 0u) {
             shellPoll();
+        } else if (bridge_mode_ == 2u) {
+            rawBridgePoll();
         } else {
             bridgePoll();
         }
@@ -410,7 +412,7 @@ private:
 
     void printHelp()
     {
-        usb_->println("commands: help ping bridge app bridge upload bridge rom");
+        usb_->println("commands: help ping bridge app bridge handoff bridge upload bridge rom");
     }
 
     void bridgeEnter(uint8_t mode)
@@ -422,7 +424,10 @@ private:
         bridge_mode_ = mode;
         bridge_last_activity_ms_ = millis();
 
-        if (mode == 3u) {
+        if (mode == 4u) {
+            beginApp();
+            usb_->println("# bridge=handoff");
+        } else if (mode == 3u) {
             beginRom();
             usb_->println("# bridge=rom");
         } else if (mode == 2u) {
@@ -441,34 +446,36 @@ private:
         usb_->println("# bridge=off");
     }
 
-    void handleLine()
+    void handleLine(const char *line)
     {
-        line_buf_[line_len_] = '\0';
-
-        if (line_len_ == 0u) {
+        if (line == 0 || line[0] == '\0') {
             return;
         }
-        if (strcmp(line_buf_, "help") == 0) {
+        if (strcmp(line, "help") == 0) {
             printHelp();
             return;
         }
-        if (strcmp(line_buf_, "ping") == 0) {
+        if (strcmp(line, "ping") == 0) {
             usb_->println("pong");
             return;
         }
-        if (strcmp(line_buf_, "bridge app") == 0) {
+        if (strcmp(line, "bridge app") == 0) {
             bridgeEnter(1u);
             return;
         }
-        if (strcmp(line_buf_, "bridge upload") == 0) {
+        if (strcmp(line, "bridge handoff") == 0) {
+            bridgeEnter(4u);
+            return;
+        }
+        if (strcmp(line, "bridge upload") == 0) {
             bridgeEnter(2u);
             return;
         }
-        if (strcmp(line_buf_, "bridge rom") == 0) {
+        if (strcmp(line, "bridge rom") == 0) {
             bridgeEnter(3u);
             return;
         }
-        if (strcmp(line_buf_, "bridge off") == 0) {
+        if (strcmp(line, "bridge off") == 0) {
             bridgeExit();
             return;
         }
@@ -488,7 +495,8 @@ private:
                 continue;
             }
             if (ch == '\n') {
-                handleLine();
+                line_buf_[line_len_] = '\0';
+                handleLine(line_buf_);
                 line_len_ = 0u;
                 continue;
             }
@@ -498,7 +506,95 @@ private:
         }
     }
 
+    void flushBridgeEscape()
+    {
+        if (line_len_ == 0u) {
+            return;
+        }
+        uart().write((const uint8_t *)line_buf_, line_len_);
+        bridge_last_activity_ms_ = millis();
+        bridge_escape_ms_ = 0u;
+        line_len_ = 0u;
+    }
+
+    bool handleBridgeEscape()
+    {
+        line_buf_[line_len_] = '\0';
+        if (line_len_ < 2u || line_buf_[0] != '!' || line_buf_[1] != '#') {
+            return false;
+        }
+        handleLine(line_buf_ + 2u);
+        return true;
+    }
+
     void bridgePoll()
+    {
+        while (usb_->available() > 0) {
+            int value = usb_->read();
+            if (value < 0) {
+                break;
+            }
+
+            char ch = (char)value;
+            if (line_len_ == 0u) {
+                if (ch == '!') {
+                    line_buf_[line_len_++] = ch;
+                    bridge_escape_ms_ = millis();
+                    continue;
+                }
+                uint8_t byte = (uint8_t)ch;
+                uart().write(&byte, 1u);
+                bridge_last_activity_ms_ = millis();
+                continue;
+            }
+
+            if (line_len_ == 1u && line_buf_[0] == '!' && ch != '#') {
+                flushBridgeEscape();
+                uint8_t byte = (uint8_t)ch;
+                uart().write(&byte, 1u);
+                bridge_last_activity_ms_ = millis();
+                continue;
+            }
+
+            if (ch == '\r') {
+                continue;
+            }
+            if (ch == '\n') {
+                if (!handleBridgeEscape()) {
+                    flushBridgeEscape();
+                    uint8_t byte = '\n';
+                    uart().write(&byte, 1u);
+                    bridge_last_activity_ms_ = millis();
+                } else {
+                    bridge_escape_ms_ = 0u;
+                }
+                line_len_ = 0u;
+                continue;
+            }
+            if (ch >= 0x20 && ch <= 0x7E && line_len_ + 1u < sizeof(line_buf_)) {
+                line_buf_[line_len_++] = ch;
+                bridge_escape_ms_ = millis();
+                continue;
+            }
+
+            flushBridgeEscape();
+            uint8_t byte = (uint8_t)ch;
+            uart().write(&byte, 1u);
+            bridge_last_activity_ms_ = millis();
+        }
+
+        if (line_len_ != 0u && (millis() - bridge_escape_ms_) > 2u) {
+            flushBridgeEscape();
+        }
+
+        while (uart().available() > 0) {
+            uint8_t byte = (uint8_t)uart().read();
+            usb_->write(&byte, 1u);
+            bridge_last_activity_ms_ = millis();
+        }
+    }
+
+    void rawBridgePoll()
     {
         while (usb_->available() > 0) {
             uint8_t byte = (uint8_t)usb_->read();
@@ -522,6 +618,7 @@ private:
     uint8_t bridge_mode_ = 0u;
     bool uart_is_rom_ = false;
     uint32_t bridge_last_activity_ms_ = 0u;
+    uint32_t bridge_escape_ms_ = 0u;
     char line_buf_[48];
     uint8_t line_len_ = 0u;
 };

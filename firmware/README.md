@@ -37,10 +37,11 @@ cd ../esp32s3demo
 pio run -e bootbridge -t upload --upload-port /dev/cu.usbmodem101
 
 cd ..
-pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
+BRIDGE_PORT=/dev/cu.usbmodem1301 ESC_ADDRESS=3 \
+python3.11 -m platformio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
 ```
 
-`seed_upload` now flashes one merged STM32 image over SWD and then probes the reset-to-bootloader handoff over UART three times. After that, `uart_upload` uses the existing ESP32 UART path only: the app resets into the resident bootloader, the upload is verified, and failed updates remain recoverable with a normal reset.
+`uart_upload` now checks the bridge port, bridge shell, and target address before it starts a build. If the normal app-to-bootloader handoff is unavailable, it fails quickly and leaves recovery to `uart_recover`.
 
 See [`UART_UPDATE.md`](UART_UPDATE.md) for the reusable setup.
 

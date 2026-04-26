@@ -359,6 +359,7 @@ def capture_to_rows(points: Sequence[Any], total_per_dir: int | None = None) -> 
                 "z": int(point.z),
                 "xy_radius": int(point.xy_radius),
                 "sample_spread": int(point.sample_spread),
+                "duty": int(point.duty),
             }
         )
     return rows

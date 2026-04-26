@@ -34,19 +34,31 @@ From then on, update over the ESP32 bridge:
 
 ```bash
 cd /Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3
-pio run -e pennyesc_uart -t uart_upload
-pio run -e encoder_uart -t uart_upload
+BRIDGE_PORT=/dev/cu.usbmodem1301 ESC_ADDRESS=3 \
+python3.11 -m platformio run -d /Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
 ```
 
-`uart_upload` builds the selected env and runs `tools/pnyboot.py upload` with that env's image.
+`uart_check` runs the strict preflight only:
+
+```bash
+BRIDGE_PORT=/dev/cu.usbmodem1301 ESC_ADDRESS=3 \
+python3.11 -m platformio run -d /Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_check
+```
+
+`uart_upload` preflights the selected port and target before it starts a build, then runs `tools/pnyboot.py upload` with that env's image.
 
 `uart_upload` now uses a resident bootloader at `0x08000000`. The app only acknowledges `enter boot`, resets, and the resident bootloader handles erase, write, verify, and jump into the relocated app at `0x08000580`.
 
-This removes the old destructive handoff into STM32 system memory, so a failed UART update no longer kills the update path.
+Normal `uart_upload` is strict: it does not try the slow recovery path. If the target is not connected or the handoff fails, it exits quickly.
 
 ## Recovery upload
 
 `uart_recover` talks to the same resident bootloader. If the app is dead or half-flashed, reset or power-cycle the STM32 when prompted and the uploader will reconnect without SWD.
+
+```bash
+BRIDGE_PORT=/dev/cu.usbmodem1301 ESC_ADDRESS=3 \
+python3.11 -m platformio run -d /Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_recover
+```
 
 ## Add it to a new STM32 env
 
@@ -104,4 +116,4 @@ pennyesc_uart_update_poll(system_millis);
 
 For STM32L011, do not rely on jumping from the app into system memory. The safe path here is: app acknowledges the request, resets, and the resident bootloader takes over.
 
-If `seed_upload` reports that the app never becomes ready, you are usually still running a non-`*_uart` STM32 build at `921600` baud or the SWD flash step never actually took. Do not trust the UART path until `seed_upload` completes successfully.
+If `seed_upload` reports that the app never becomes ready, you are usually still running a non-`*_uart` STM32 build at `230400` baud or the SWD flash step never actually took. Do not trust the UART path until `seed_upload` completes successfully.

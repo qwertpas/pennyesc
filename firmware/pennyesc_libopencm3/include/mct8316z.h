@@ -22,7 +22,11 @@
 /* Control Register Bit Definitions */
 /* Control 2A (0x04) */
 #define MCT8316Z_PWM_MODE_ASYNC_DIG   (1 << 1)
+#define MCT8316Z_PWM_MODE_SYNC_DIG    (3 << 1)
 #define MCT8316Z_CLR_FLT              (1 << 0)
+#define MCT8316Z_CONTROL2A_RESERVED   (2 << 6)
+#define MCT8316Z_SDO_MODE_PUSH_PULL   (1 << 5)
+#define MCT8316Z_CONTROL3_NO_REPORTS  0x42
 
 /* Control 4 (0x06) - OCP Settings */
 #define MCT8316Z_DRV_OFF              (1 << 7)  /* 1 = Driver disabled */
@@ -43,9 +47,19 @@
 #define MCT8316Z_MTR_LOCK_TDET_500MS  (1 << 2)
 #define MCT8316Z_MTR_LOCK_TDET_1000MS (2 << 2)
 #define MCT8316Z_MTR_LOCK_TDET_5000MS (3 << 2)
+#define MCT8316Z_MTR_LOCK_RETRY_5000MS (1 << 4)
+
+/* Control 7 (0x09) */
+#define MCT8316Z_HALL_HYS_HIGH        (1 << 4)
+#define MCT8316Z_DIR_REVERSE          (1 << 0)
 
 /* Control 3 */
+#define MCT8316Z_OTW_REP              (1 << 0)
+#define MCT8316Z_SPI_FLT_REP          (1 << 1)
 #define MCT8316Z_OVP_EN               (1 << 2)
+
+/* Control 5 (0x07) */
+#define MCT8316Z_ILIM_RECIR_COAST     (1 << 6)
 
 /* Function Prototypes */
 void mct8316z_init(void);
@@ -53,7 +67,12 @@ uint16_t mct8316z_read_reg(uint8_t addr);
 void mct8316z_write_reg(uint8_t addr, uint8_t data);
 void mct8316z_print_all_regs(void);
 void mct8316z_set_pwm_mode_async_dig(void);
+void mct8316z_set_pwm_mode_sync_dig(void);
 void mct8316z_clear_faults(void);
-void mct8316z_disable_protections(void);  /* Disable OCP and motor lock for debugging */
+void mct8316z_set_hall_hys_high(void);
+void mct8316z_set_direction(bool reverse);
+void mct8316z_disable_motor_lock(void);
+void mct8316z_set_ilim_recir_coast(void);
+void mct8316z_disable_protections(void);
 
 #endif /* MCT8316Z_H */

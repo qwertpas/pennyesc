@@ -35,21 +35,21 @@
 #define DUTY_LIMIT PWM_PERIOD
 #define DEFAULT_POSITION_DUTY 150
 #define POSITION_DEADBAND_CRAD 6
-#define ADVANCE_DEG 40
+#define ADVANCE_DEG 90
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
+#define COMM_CENTER_OFFSET_DEG 30
+#define STARTUP_DUTY 150
 
 #define ISR_FREQ_HZ 4000
 #define ISR_PERIOD_US (1000000u / ISR_FREQ_HZ)
 #define ISR_TIMER_PERIOD ((1000000u / ISR_FREQ_HZ) - 1u)
 #define VEL_UPDATE_SAMPLES (ISR_FREQ_HZ / 1000u)
+#define SENSOR_RUN_SAMPLE_TICKS 2u
+#define STARTUP_STEP_TICKS ((ISR_FREQ_HZ * 45u) / 1000u)
+#define STARTUP_STEPS 30u
 
-#define TMAG_RUN_DELAY_US 113u
-#define OBS_ALPHA_NUM 3
-#define OBS_ALPHA_SHIFT 3
-#define OBS_BETA_SHIFT 4
-
-#define CAL_DUTY 100
+#define CAL_DUTY 150
 #define CAL_SETTLE_MS 180u
 #define CAL_SAMPLE_INTERVAL_MS 2u
 #define CAL_SAMPLE_COUNT 16u
@@ -121,6 +121,9 @@ static volatile int16_t commanded_duty;
 static volatile int16_t current_duty;
 static volatile int8_t current_direction;
 static volatile int16_t current_advance_deg = ADVANCE_DEG;
+static volatile uint8_t startup_steps_left;
+static volatile uint16_t startup_tick_counter;
+static volatile int8_t startup_step = -1;
 static volatile uint32_t pending_reset_ms;
 
 static volatile uint32_t isr_duration_us;
@@ -134,9 +137,6 @@ static volatile uint32_t looptime_us;
 static volatile int32_t debug_position;
 static volatile int32_t debug_velocity;
 static volatile int debug_comm_step;
-static volatile int32_t observer_angle_turn32;
-static volatile int32_t observer_velocity_turn32_per_s;
-static volatile bool observer_ready;
 
 static calibration_state_t cal_state;
 
@@ -230,46 +230,6 @@ static int32_t turn32_to_crad(int32_t turn32)
 static int32_t crad_to_turn32(int32_t crad)
 {
     return div_round_i64((int64_t)crad * 65536, 628);
-}
-
-static void observer_invalidate(void)
-{
-    observer_ready = false;
-    observer_angle_turn32 = 0;
-    observer_velocity_turn32_per_s = 0;
-}
-
-static void observer_predict_tick(void)
-{
-    if (!observer_ready) {
-        return;
-    }
-    observer_angle_turn32 += div_round_i64((int64_t)observer_velocity_turn32_per_s * ISR_PERIOD_US, 1000000);
-}
-
-static void observer_update(uint16_t angle_turn16)
-{
-    if (!observer_ready) {
-        observer_angle_turn32 = angle_turn16;
-        observer_velocity_turn32_per_s = 0;
-        observer_ready = true;
-        return;
-    }
-
-    int32_t delayed =
-        observer_angle_turn32 - div_round_i64((int64_t)observer_velocity_turn32_per_s * TMAG_RUN_DELAY_US, 1000000);
-    int32_t error = (int16_t)(angle_turn16 - (uint16_t)delayed);
-
-    observer_angle_turn32 += div_round_i64((int64_t)error * OBS_ALPHA_NUM, 1 << OBS_ALPHA_SHIFT);
-    observer_velocity_turn32_per_s += div_round_i64((int64_t)error * ISR_FREQ_HZ, 1 << OBS_BETA_SHIFT);
-}
-
-static uint16_t observer_angle_turn16(void)
-{
-    if (!observer_ready) {
-        return current_angle_turn16;
-    }
-    return (uint16_t)observer_angle_turn32;
 }
 
 static uint16_t approx_hypot_u16(uint32_t x, uint32_t y)
@@ -449,6 +409,11 @@ static void apply_pwm_duty(int16_t duty)
     timer_set_oc_value(TIM2, TIM_OC4, pwm);
 }
 
+static bool step_valid(int8_t step)
+{
+    return step >= -1 && step <= 5;
+}
+
 static void update_position_from_angle(uint16_t angle_turn16)
 {
     if (!position_initialized) {
@@ -473,22 +438,6 @@ static bool sensor_set_full_mode(void)
         return false;
     }
     sensor_run_mode = false;
-    return true;
-}
-
-static bool sensor_set_run_mode(void)
-{
-    if (sensor_run_mode) {
-        return true;
-    }
-    if (!tmag5273_set_mode(TMAG5273_MODE_RUN)) {
-        return false;
-    }
-    if (!tmag5273_prime_run_mode()) {
-        return false;
-    }
-    delay_ms(1u);
-    sensor_run_mode = true;
     return true;
 }
 
@@ -519,40 +468,6 @@ static void refresh_sensor_xyz(bool update_position)
     }
 }
 
-static void refresh_sensor_xy(bool update_position)
-{
-    int16_t x;
-    int16_t y;
-
-    if (!tmag5273_read_xy_fast_triggered(&x, &y)) {
-        sensor_ready = false;
-        current_angle_turn16 = 0;
-        target_position_set = false;
-        commanded_duty = 0;
-        timer_disable_counter(TIM21);
-        current_mode = PNY_MODE_IDLE;
-        observer_invalidate();
-        stop_motor_outputs();
-        return;
-    }
-    sensor_ready = true;
-    sensor_x = x;
-    sensor_y = y;
-    sensor_z = 0;
-
-    if (pennyesc_calibration_valid()) {
-        uint16_t angle = pennyesc_calibration_angle_turn16(x, y);
-        current_angle_turn16 = angle;
-        if (update_position) {
-            update_position_from_angle(angle);
-        }
-        observer_update(angle);
-    } else {
-        current_angle_turn16 = 0;
-        observer_invalidate();
-    }
-}
-
 static void stop_motor_outputs(void)
 {
     apply_pwm_duty(0);
@@ -570,22 +485,40 @@ static uint16_t advance_turn16(void)
     return (uint16_t)(((uint32_t)advance * 65536u + 180u) / 360u);
 }
 
+static uint16_t comm_center_turn16(void)
+{
+    return (uint16_t)(((uint32_t)COMM_CENTER_OFFSET_DEG * 65536u + 180u) / 360u);
+}
+
 static int mechanical_angle_to_step(uint16_t angle_turn16, int direction)
 {
     int32_t electrical = (int32_t)((uint32_t)angle_turn16 * POLE_PAIRS);
-    if (direction < 0) {
-        electrical = -electrical;
-    }
-    if (direction != 0) {
+    electrical += comm_center_turn16();
+    if (direction > 0) {
         electrical += advance_turn16();
+    } else if (direction < 0) {
+        electrical -= advance_turn16();
     }
     return (int)(((uint16_t)electrical * 6u) >> 16);
+}
+
+static int16_t startup_duty(int16_t duty)
+{
+    if (duty > 0 && duty < STARTUP_DUTY) {
+        return STARTUP_DUTY;
+    }
+    if (duty < 0 && duty > -STARTUP_DUTY) {
+        return -STARTUP_DUTY;
+    }
+    return duty;
 }
 
 static void run_stop(void)
 {
     timer_disable_counter(TIM21);
-    observer_invalidate();
+    startup_steps_left = 0;
+    startup_tick_counter = 0;
+    startup_step = -1;
     if (current_mode == PNY_MODE_RUN) {
         current_mode = PNY_MODE_IDLE;
     }
@@ -608,19 +541,61 @@ static uint8_t run_ready(void)
 
 static void run_begin(void)
 {
-    observer_invalidate();
     if (!sensor_set_full_mode()) {
         sensor_ready = false;
         current_mode = PNY_MODE_IDLE;
         stop_motor_outputs();
         return;
     }
-    refresh_sensor_xyz(true);
+    refresh_sensor_xyz(false);
     if (!sensor_ready) {
         current_mode = PNY_MODE_IDLE;
         stop_motor_outputs();
         return;
     }
+    update_position_from_angle(current_angle_turn16);
+
+    int16_t duty = commanded_duty;
+    int8_t direction = 0;
+    if (target_position_set) {
+        int32_t error = target_position_turn32 - absolute_position_turn32;
+        int32_t deadband = crad_to_turn32(POSITION_DEADBAND_CRAD);
+        int16_t drive = commanded_duty;
+        if (drive < 0) {
+            drive = (int16_t)(-drive);
+        }
+        if (drive == 0) {
+            drive = DEFAULT_POSITION_DUTY;
+        }
+        if (error > deadband) {
+            duty = drive;
+            direction = 1;
+        } else if (error < -deadband) {
+            duty = (int16_t)(-drive);
+            direction = -1;
+        } else {
+            duty = 0;
+        }
+    } else if (duty > 0) {
+        direction = 1;
+    } else if (duty < 0) {
+        direction = -1;
+    }
+
+    if (duty != 0 && direction != 0) {
+        current_duty = duty;
+        if (direction != current_direction) {
+            mct8316z_set_direction(direction < 0);
+        }
+        current_direction = direction;
+        startup_steps_left = STARTUP_STEPS;
+        startup_tick_counter = 0;
+        startup_step = (direction > 0) ? 0 : 5;
+        debug_comm_step = startup_step;
+        set_hall_outputs(debug_comm_step);
+        apply_pwm_duty(startup_duty(duty));
+    }
+
     current_mode = PNY_MODE_RUN;
     timer_set_counter(TIM21, 0);
     timer_enable_counter(TIM21);
@@ -706,6 +681,7 @@ static void calibration_finish_point(void)
     point->sample_spread = approx_hypot_u16(
         (uint32_t)(cal_state.max_x - cal_state.min_x),
         (uint32_t)(cal_state.max_y - cal_state.min_y));
+    point->duty = CAL_DUTY;
 
     cal_state.index++;
     if (cal_state.index >= cal_state.total_points) {
@@ -809,10 +785,24 @@ void tim21_isr(void)
 {
     uint32_t t0 = get_time_us();
     static uint8_t vel_counter;
+    static uint8_t sensor_counter;
 
     timer_clear_flag(TIM21, TIM_SR_UIF);
 
-    refresh_sensor_xyz(true);
+    sensor_counter++;
+    if (sensor_counter >= SENSOR_RUN_SAMPLE_TICKS) {
+        sensor_counter = 0;
+        refresh_sensor_xyz(false);
+        if (!sensor_ready) {
+            target_position_set = false;
+            commanded_duty = 0;
+            timer_disable_counter(TIM21);
+            current_mode = PNY_MODE_IDLE;
+            stop_motor_outputs();
+            return;
+        }
+        update_position_from_angle(current_angle_turn16);
+    }
 
     vel_counter++;
     if (vel_counter >= VEL_UPDATE_SAMPLES) {
@@ -852,6 +842,9 @@ void tim21_isr(void)
     }
 
     current_duty = duty;
+    if (direction != current_direction) {
+        mct8316z_set_direction(direction < 0);
+    }
     current_direction = direction;
 
     if (duty == 0) {
@@ -862,9 +855,21 @@ void tim21_isr(void)
         }
         debug_comm_step = -1;
     } else {
-        apply_pwm_duty(duty);
-        debug_comm_step = mechanical_angle_to_step(current_angle_turn16, direction);
+        if (startup_steps_left != 0u) {
+            if (startup_tick_counter == 0u) {
+                int8_t delta = (direction > 0) ? -1 : 1;
+                startup_step = (int8_t)((startup_step + delta + 6) % 6);
+                startup_tick_counter = STARTUP_STEP_TICKS;
+                startup_steps_left--;
+            } else {
+                startup_tick_counter--;
+            }
+            debug_comm_step = startup_step;
+        } else {
+            debug_comm_step = mechanical_angle_to_step(current_angle_turn16, direction);
+        }
         set_hall_outputs(debug_comm_step);
+        apply_pwm_duty((startup_steps_left != 0u) ? startup_duty(duty) : duty);
     }
 
     isr_duration_us = get_time_us() - t0;
@@ -1014,6 +1019,78 @@ static void handle_set_quiet(const uint8_t *payload, uint8_t len)
     uart_quiet_until_ms = system_millis + hold_ms;
 }
 
+static void apply_debug_step(int8_t step)
+{
+    target_position_set = false;
+    commanded_duty = 0;
+    timer_disable_counter(TIM21);
+
+    if (step < 0) {
+        current_duty = 0;
+        current_direction = 0;
+        current_mode = PNY_MODE_IDLE;
+        debug_comm_step = -1;
+        stop_motor_outputs();
+        refresh_sensor_xyz(false);
+        return;
+    }
+
+    current_mode = PNY_MODE_RUN;
+    current_duty = CAL_DUTY;
+    current_direction = 0;
+    debug_comm_step = step;
+    set_hall_outputs(step);
+    apply_pwm_duty(CAL_DUTY);
+    delay_ms(2u);
+    refresh_sensor_xyz(false);
+    update_position_from_angle(current_angle_turn16);
+}
+
+static void handle_step_set(const uint8_t *payload, uint8_t len)
+{
+    int8_t step;
+
+    if (len != 1u) {
+        send_status_response(PNY_CMD_STEP_SET, PNY_RESULT_BAD_ARG);
+        return;
+    }
+
+    memcpy(&step, payload, sizeof(step));
+    if (!step_valid(step)) {
+        send_status_response(PNY_CMD_STEP_SET, PNY_RESULT_RANGE);
+        return;
+    }
+
+    apply_debug_step(step);
+    send_status_response(PNY_CMD_STEP_SET, PNY_RESULT_OK);
+}
+
+static void handle_step_transition(const uint8_t *payload, uint8_t len)
+{
+    int8_t step;
+    uint16_t blank_ms;
+
+    if (len != 3u) {
+        send_status_response(PNY_CMD_STEP_TRANSITION, PNY_RESULT_BAD_ARG);
+        return;
+    }
+
+    memcpy(&step, payload, sizeof(step));
+    memcpy(&blank_ms, &payload[1], sizeof(blank_ms));
+    if (!step_valid(step)) {
+        send_status_response(PNY_CMD_STEP_TRANSITION, PNY_RESULT_RANGE);
+        return;
+    }
+
+    apply_pwm_duty(0);
+    clear_hall_outputs();
+    if (blank_ms != 0u) {
+        delay_ms(blank_ms);
+    }
+    apply_debug_step(step);
+    send_status_response(PNY_CMD_STEP_TRANSITION, PNY_RESULT_OK);
+}
+
 static void handle_cal_start(const uint8_t *payload, uint8_t len)
 {
     pny_cal_start_payload_t out;
@@ -1134,6 +1211,10 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
     }
 
     switch (cmd) {
+    case PNY_CMD_GET_STATUS:
+        refresh_sensor_xyz(false);
+        send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);
+        break;
     case PNY_CMD_SET_DUTY:
         handle_set_duty(payload, len);
         break;
@@ -1145,6 +1226,12 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
         break;
     case PNY_CMD_SET_QUIET:
         handle_set_quiet(payload, len);
+        break;
+    case PNY_CMD_STEP_SET:
+        handle_step_set(payload, len);
+        break;
+    case PNY_CMD_STEP_TRANSITION:
+        handle_step_transition(payload, len);
         break;
     case PNY_CMD_CAL_START:
         handle_cal_start(payload, len);
@@ -1277,7 +1364,8 @@ int main(void)
     mct8316z_init();
     delay_ms(5);
     mct8316z_set_pwm_mode_async_dig();
-    mct8316z_write_reg(0x0A, 0x03);
+    mct8316z_set_hall_hys_high();
+    mct8316z_disable_protections();
 
     sensor_ready = tmag5273_init();
     if (sensor_ready) {

@@ -164,10 +164,35 @@ def uart_upload_action(source=None, target=None, env=None, **_kwargs):
     del target
     del env
 
+    uart_check_action()
     build_env(app_env, extra_env={"PLATFORMIO_BUILD_FLAGS": f"-DPNY_ESC_ADDRESS={build_address}"})
     ensure_binary(app_image, app_elf)
     run_checked(
-        [python, str(tool), "upload", "--port", bridge_port, "--address", target_address, "--image", app_image],
+        [python, "-u", str(tool), "upload", "--port", bridge_port, "--address", target_address, "--image", app_image],
+        project_dir,
+    )
+
+
+def uart_check_action(source=None, target=None, env=None, **_kwargs):
+    del source
+    del target
+    del env
+
+    run_checked(
+        [python, "-u", str(tool), "check", "--port", bridge_port, "--address", target_address],
+        project_dir,
+    )
+
+
+def uart_recover_action(source=None, target=None, env=None, **_kwargs):
+    del source
+    del target
+    del env
+
+    build_env(app_env, extra_env={"PLATFORMIO_BUILD_FLAGS": f"-DPNY_ESC_ADDRESS={build_address}"})
+    ensure_binary(app_image, app_elf)
+    run_checked(
+        [python, "-u", str(tool), "recover", "--port", bridge_port, "--address", target_address, "--image", app_image],
         project_dir,
     )
 
@@ -220,6 +245,22 @@ env.AddCustomTarget(
     actions=[uart_upload_action],
     title="UART Upload",
     description="Upload firmware through the ESP32 bridge",
+)
+
+env.AddCustomTarget(
+    name="uart_check",
+    dependencies=[],
+    actions=[uart_check_action],
+    title="UART Check",
+    description="Check that the ESP32 bridge and target ESC are reachable",
+)
+
+env.AddCustomTarget(
+    name="uart_recover",
+    dependencies=[],
+    actions=[uart_recover_action],
+    title="UART Recover",
+    description="Recover firmware through the ESP32 bridge after a bad app flash",
 )
 
 env.AddCustomTarget(

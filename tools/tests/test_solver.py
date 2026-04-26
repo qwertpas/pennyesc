@@ -36,13 +36,13 @@ class SolverTests(unittest.TestCase):
             angle = 2.0 * math.pi * step / CAL_POINTS_PER_SWEEP
             x = int(round(radius * math.cos(angle)))
             y = int(round(radius * math.sin(angle)))
-            points.append(CapturePoint(step, step, 0, x, y, 0, 0, 0))
+            points.append(CapturePoint(step, step, 0, x, y, 0, 0, 0, 0))
 
         for step in range(CAL_POINTS_PER_SWEEP):
             angle = 2.0 * math.pi * step / CAL_POINTS_PER_SWEEP + math.radians(15.0)
             x = int(round(radius * math.cos(angle)))
             y = int(round(radius * math.sin(angle)))
-            points.append(CapturePoint(CAL_POINTS_PER_SWEEP + step, step, 1, x, y, 0, 0, 0))
+            points.append(CapturePoint(CAL_POINTS_PER_SWEEP + step, step, 1, x, y, 0, 0, 0, 0))
 
         with self.assertRaises(CalibrationError):
             solve_capture(points)
