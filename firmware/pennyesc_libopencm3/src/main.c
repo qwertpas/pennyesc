@@ -38,15 +38,12 @@
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
 #define COMM_CENTER_OFFSET_DEG 30
-#define STARTUP_DUTY 150
 
 #define ISR_FREQ_HZ 4000
 #define ISR_PERIOD_US (1000000u / ISR_FREQ_HZ)
 #define ISR_TIMER_PERIOD ((1000000u / ISR_FREQ_HZ) - 1u)
 #define VEL_UPDATE_SAMPLES (ISR_FREQ_HZ / 1000u)
 #define SENSOR_RUN_SAMPLE_TICKS 2u
-#define STARTUP_STEP_TICKS ((ISR_FREQ_HZ * 45u) / 1000u)
-#define STARTUP_STEPS 30u
 
 #define CAL_DUTY 120
 #define CAL_SETTLE_MS 180u
@@ -120,9 +117,6 @@ static volatile int16_t commanded_duty;
 static volatile int16_t current_duty;
 static volatile int8_t current_direction;
 static volatile int16_t current_advance_deg = ADVANCE_DEG;
-static volatile uint8_t startup_steps_left;
-static volatile uint16_t startup_tick_counter;
-static volatile int8_t startup_step = -1;
 static volatile uint32_t pending_reset_ms;
 
 static volatile uint32_t isr_duration_us;
@@ -500,23 +494,9 @@ static int mechanical_angle_to_step(uint16_t angle_turn16, int direction)
     return (int)(((uint16_t)electrical * 6u) >> 16);
 }
 
-static int16_t startup_duty(int16_t duty)
-{
-    if (duty > 0 && duty < STARTUP_DUTY) {
-        return STARTUP_DUTY;
-    }
-    if (duty < 0 && duty > -STARTUP_DUTY) {
-        return -STARTUP_DUTY;
-    }
-    return duty;
-}
-
 static void run_stop(void)
 {
     timer_disable_counter(TIM21);
-    startup_steps_left = 0;
-    startup_tick_counter = 0;
-    startup_step = -1;
     if (current_mode == PNY_MODE_RUN) {
         current_mode = PNY_MODE_IDLE;
     }
@@ -586,12 +566,9 @@ static void run_begin(void)
             mct8316z_set_direction(direction < 0);
         }
         current_direction = direction;
-        startup_steps_left = STARTUP_STEPS;
-        startup_tick_counter = 0;
-        startup_step = (direction > 0) ? 0 : 5;
-        debug_comm_step = startup_step;
+        debug_comm_step = mechanical_angle_to_step(current_angle_turn16, direction);
         set_hall_outputs(debug_comm_step);
-        apply_pwm_duty(startup_duty(duty));
+        apply_pwm_duty(duty);
     }
 
     current_mode = PNY_MODE_RUN;
@@ -853,21 +830,9 @@ void tim21_isr(void)
         }
         debug_comm_step = -1;
     } else {
-        if (startup_steps_left != 0u) {
-            if (startup_tick_counter == 0u) {
-                int8_t delta = (direction > 0) ? -1 : 1;
-                startup_step = (int8_t)((startup_step + delta + 6) % 6);
-                startup_tick_counter = STARTUP_STEP_TICKS;
-                startup_steps_left--;
-            } else {
-                startup_tick_counter--;
-            }
-            debug_comm_step = startup_step;
-        } else {
-            debug_comm_step = mechanical_angle_to_step(current_angle_turn16, direction);
-        }
+        debug_comm_step = mechanical_angle_to_step(current_angle_turn16, direction);
         set_hall_outputs(debug_comm_step);
-        apply_pwm_duty((startup_steps_left != 0u) ? startup_duty(duty) : duty);
+        apply_pwm_duty(duty);
     }
 
     isr_duration_us = get_time_us() - t0;
