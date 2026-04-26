@@ -130,7 +130,7 @@ bool tmag5273_init(void)
 bool tmag5273_set_mode(tmag5273_mode_t mode)
 {
     if (mode == TMAG5273_MODE_RUN) {
-        write_mode_regs(CONV_AVG_1X, MAG_CH_XY, OP_STANDBY);
+        write_mode_regs(CONV_AVG_1X, MAG_CH_XYZ, OP_CONTINUOUS);
     } else {
         write_mode_regs(CONV_AVG_2X, MAG_CH_XYZ, OP_CONTINUOUS);
     }

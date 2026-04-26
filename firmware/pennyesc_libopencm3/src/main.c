@@ -38,12 +38,12 @@
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
 #define COMM_CENTER_OFFSET_DEG 30
+#define COMM_CENTER_TURN16 ((uint16_t)(((uint32_t)COMM_CENTER_OFFSET_DEG * 65536u + 180u) / 360u))
 
-#define ISR_FREQ_HZ 4000
+#define ISR_FREQ_HZ 10000
 #define ISR_PERIOD_US (1000000u / ISR_FREQ_HZ)
 #define ISR_TIMER_PERIOD ((1000000u / ISR_FREQ_HZ) - 1u)
 #define VEL_UPDATE_SAMPLES (ISR_FREQ_HZ / 1000u)
-#define SENSOR_RUN_SAMPLE_TICKS 2u
 
 #define CAL_DUTY 120
 #define CAL_SETTLE_MS 180u
@@ -117,6 +117,7 @@ static volatile int16_t commanded_duty;
 static volatile int16_t current_duty;
 static volatile int8_t current_direction;
 static volatile int16_t current_advance_deg = ADVANCE_DEG;
+static volatile uint16_t current_advance_turn16 = (uint16_t)(((uint32_t)ADVANCE_DEG * 65536u + 180u) / 360u);
 static volatile uint32_t pending_reset_ms;
 
 static volatile uint32_t isr_duration_us;
@@ -371,9 +372,8 @@ static void clear_hall_outputs(void)
     gpio_clear(HALLC_PORT, HALLC_PIN);
 }
 
-static void set_hall_outputs(int step)
+static void set_hall_outputs_raw(uint8_t step)
 {
-    step = ((step % 6) + 6) % 6;
     const uint8_t *pattern = hall_pattern[step];
     if (pattern[0]) {
         gpio_set(HALLA_PORT, HALLA_PIN);
@@ -390,6 +390,11 @@ static void set_hall_outputs(int step)
     } else {
         gpio_clear(HALLC_PORT, HALLC_PIN);
     }
+}
+
+static void set_hall_outputs(int step)
+{
+    set_hall_outputs_raw((uint8_t)(((step % 6) + 6) % 6));
 }
 
 static void apply_pwm_duty(int16_t duty)
@@ -433,6 +438,18 @@ static bool sensor_set_full_mode(void)
     return true;
 }
 
+static bool sensor_set_run_mode(void)
+{
+    if (sensor_run_mode) {
+        return true;
+    }
+    if (!tmag5273_set_mode(TMAG5273_MODE_RUN)) {
+        return false;
+    }
+    sensor_run_mode = true;
+    return true;
+}
+
 static void refresh_sensor_xyz(bool update_position)
 {
     int16_t x;
@@ -460,6 +477,29 @@ static void refresh_sensor_xyz(bool update_position)
     }
 }
 
+static bool refresh_sensor_xy(bool update_position)
+{
+    int16_t x;
+    int16_t y;
+
+    if (!tmag5273_read_xy_fast(&x, &y)) {
+        sensor_ready = false;
+        current_angle_turn16 = 0;
+        return false;
+    }
+    sensor_ready = true;
+    sensor_x = x;
+    sensor_y = y;
+    sensor_z = 0;
+
+    uint16_t angle = pennyesc_calibration_angle_turn16(x, y);
+    current_angle_turn16 = angle;
+    if (update_position) {
+        update_position_from_angle(angle);
+    }
+    return true;
+}
+
 static void stop_motor_outputs(void)
 {
     apply_pwm_duty(0);
@@ -468,28 +508,23 @@ static void stop_motor_outputs(void)
     current_direction = 0;
 }
 
-static uint16_t advance_turn16(void)
+static uint16_t advance_deg_to_turn16(int16_t advance_deg)
 {
-    int32_t advance = current_advance_deg;
+    int32_t advance = advance_deg;
     if (advance < 0) {
         advance += 360;
     }
     return (uint16_t)(((uint32_t)advance * 65536u + 180u) / 360u);
 }
 
-static uint16_t comm_center_turn16(void)
-{
-    return (uint16_t)(((uint32_t)COMM_CENTER_OFFSET_DEG * 65536u + 180u) / 360u);
-}
-
 static int mechanical_angle_to_step(uint16_t angle_turn16, int direction)
 {
     int32_t electrical = (int32_t)((uint32_t)angle_turn16 * POLE_PAIRS);
-    electrical += comm_center_turn16();
+    electrical += COMM_CENTER_TURN16;
     if (direction > 0) {
-        electrical += advance_turn16();
+        electrical += current_advance_turn16;
     } else if (direction < 0) {
-        electrical -= advance_turn16();
+        electrical -= current_advance_turn16;
     }
     return (int)(((uint16_t)electrical * 6u) >> 16);
 }
@@ -519,14 +554,13 @@ static uint8_t run_ready(void)
 
 static void run_begin(void)
 {
-    if (!sensor_set_full_mode()) {
+    if (!sensor_set_run_mode()) {
         sensor_ready = false;
         current_mode = PNY_MODE_IDLE;
         stop_motor_outputs();
         return;
     }
-    refresh_sensor_xyz(false);
-    if (!sensor_ready) {
+    if (!refresh_sensor_xy(false)) {
         current_mode = PNY_MODE_IDLE;
         stop_motor_outputs();
         return;
@@ -567,7 +601,7 @@ static void run_begin(void)
         }
         current_direction = direction;
         debug_comm_step = mechanical_angle_to_step(current_angle_turn16, direction);
-        set_hall_outputs(debug_comm_step);
+        set_hall_outputs_raw((uint8_t)debug_comm_step);
         apply_pwm_duty(duty);
     }
 
@@ -758,31 +792,25 @@ static void calibration_poll(void)
 
 void tim21_isr(void)
 {
-    uint32_t t0 = get_time_us();
     static uint8_t vel_counter;
-    static uint8_t sensor_counter;
 
     timer_clear_flag(TIM21, TIM_SR_UIF);
 
-    sensor_counter++;
-    if (sensor_counter >= SENSOR_RUN_SAMPLE_TICKS) {
-        sensor_counter = 0;
-        refresh_sensor_xyz(false);
-        if (!sensor_ready) {
-            target_position_set = false;
-            commanded_duty = 0;
-            timer_disable_counter(TIM21);
-            current_mode = PNY_MODE_IDLE;
-            stop_motor_outputs();
-            return;
-        }
-        update_position_from_angle(current_angle_turn16);
+    if (!refresh_sensor_xy(true)) {
+        target_position_set = false;
+        commanded_duty = 0;
+        timer_disable_counter(TIM21);
+        current_mode = PNY_MODE_IDLE;
+        stop_motor_outputs();
+        return;
     }
 
     vel_counter++;
     if (vel_counter >= VEL_UPDATE_SAMPLES) {
         velocity_turn32_per_s = (absolute_position_turn32 - last_position_turn32) * 1000;
         last_position_turn32 = absolute_position_turn32;
+        debug_position = turn32_to_crad(absolute_position_turn32);
+        debug_velocity = turn32_to_crad(velocity_turn32_per_s);
         vel_counter = 0;
     }
 
@@ -831,21 +859,19 @@ void tim21_isr(void)
         debug_comm_step = -1;
     } else {
         debug_comm_step = mechanical_angle_to_step(current_angle_turn16, direction);
-        set_hall_outputs(debug_comm_step);
+        set_hall_outputs_raw((uint8_t)debug_comm_step);
         apply_pwm_duty(duty);
     }
 
-    isr_duration_us = get_time_us() - t0;
+    isr_duration_us = timer_get_counter(TIM21);
     if (isr_duration_us > isr_max_us) {
         isr_max_us = isr_duration_us;
     }
-    if (isr_duration_us > ISR_PERIOD_US) {
+    if ((TIM_SR(TIM21) & TIM_SR_UIF) != 0u) {
         isr_overrun_count++;
     }
     isr_count++;
 
-    debug_position = turn32_to_crad(absolute_position_turn32);
-    debug_velocity = turn32_to_crad(velocity_turn32_per_s);
 }
 
 static void parser_reset(void)
@@ -955,6 +981,7 @@ static void handle_set_advance(const uint8_t *payload, uint8_t len)
     }
 
     current_advance_deg = advance_deg;
+    current_advance_turn16 = advance_deg_to_turn16(advance_deg);
     send_status_response(PNY_CMD_SET_ADVANCE, PNY_RESULT_OK);
 }
 
