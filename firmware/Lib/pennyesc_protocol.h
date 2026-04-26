@@ -77,6 +77,7 @@ typedef struct __attribute__((packed)) {
     int32_t position_crad;
     int32_t velocity_crads;
     int16_t duty;
+    uint16_t mct_fault_count;
 } pny_status_payload_t;
 
 typedef struct __attribute__((packed)) {

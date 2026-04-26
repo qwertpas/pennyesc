@@ -83,6 +83,7 @@ class Status:
     position_crad: int
     velocity_crads: int
     duty: int
+    mct_fault_count: int
 
     @property
     def calibrated(self) -> bool:
@@ -560,19 +561,19 @@ class Stm32Client:
 
     def get_status(self, timeout: float = 0.5, attempts: int = 3) -> Status:
         payload = self.exchange_retry(CMD_GET_STATUS, timeout=timeout, attempts=attempts)
-        return Status(*struct.unpack("<BBBBhhhHiih", payload))
+        return Status(*struct.unpack("<BBBBhhhHiihH", payload))
 
     def set_duty(self, duty: int) -> Status:
         payload = self.exchange_retry(CMD_SET_DUTY, struct.pack("<h", duty), timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiih", payload))
+        return Status(*struct.unpack("<BBBBhhhHiihH", payload))
 
     def set_advance_deg(self, advance_deg: int) -> Status:
         payload = self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg), timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiih", payload))
+        return Status(*struct.unpack("<BBBBhhhHiihH", payload))
 
     def set_position(self, position_crad: int) -> Status:
         payload = self.exchange_retry(CMD_SET_POSITION, struct.pack("<i", position_crad), timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiih", payload))
+        return Status(*struct.unpack("<BBBBhhhHiihH", payload))
 
     def cal_start(self, sweep_dir: int) -> tuple[int, int]:
         payload = self.exchange_retry(CMD_CAL_START, struct.pack("<B", sweep_dir), timeout=0.5)
@@ -621,7 +622,7 @@ class Stm32Client:
 
 def print_status(status: Status) -> None:
     print(
-        "mode=%d flags=0x%02X faults=0x%02X raw=(%d,%d,%d) angle_turn16=%d pos_crad=%d vel_crads=%d duty=%d"
+        "mode=%d flags=0x%02X faults=0x%02X raw=(%d,%d,%d) angle_turn16=%d pos_crad=%d vel_crads=%d duty=%d mct_faults=%d"
         % (
             status.mode,
             status.flags,
@@ -633,6 +634,7 @@ def print_status(status: Status) -> None:
             status.position_crad,
             status.velocity_crads,
             status.duty,
+            status.mct_fault_count,
         )
     )
 

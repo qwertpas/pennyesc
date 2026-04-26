@@ -42,6 +42,7 @@ class Status:
     position_crad: int
     velocity_crads: int
     duty: int
+    mct_fault_count: int
 
     @property
     def step(self) -> int:
@@ -108,17 +109,17 @@ class StepperClient:
         return self._read_frame(cmd, timeout=timeout)
 
     def get_status(self) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiih", self.exchange(CMD_GET_STATUS)))
+        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_GET_STATUS)))
 
     def set_duty(self, duty: int) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiih", self.exchange(CMD_SET_DUTY, struct.pack("<h", duty))))
+        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_SET_DUTY, struct.pack("<h", duty))))
 
     def set_step(self, step: int) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiih", self.exchange(CMD_STEP_SET, struct.pack("<b", step))))
+        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_STEP_SET, struct.pack("<b", step))))
 
     def transition_step(self, step: int, blank_ms: int) -> Status:
         payload = struct.pack("<bH", step, blank_ms)
-        return Status(*struct.unpack("<BBBBhhhHiih", self.exchange(CMD_STEP_TRANSITION, payload, timeout=1.0)))
+        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_STEP_TRANSITION, payload, timeout=1.0)))
 
 
 def parse_step(value: str) -> int:
@@ -133,7 +134,7 @@ def parse_step(value: str) -> int:
 
 def print_status(status: Status) -> None:
     print(
-        "mode=%d flags=0x%02X faults=0x%02X step=%d transitions=%d raw=(%d,%d,%d) duty=%d"
+        "mode=%d flags=0x%02X faults=0x%02X step=%d transitions=%d raw=(%d,%d,%d) duty=%d mct_faults=%d"
         % (
             status.mode,
             status.flags,
@@ -144,6 +145,7 @@ def print_status(status: Status) -> None:
             status.y,
             status.z,
             status.duty,
+            status.mct_fault_count,
         )
     )
 

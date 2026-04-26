@@ -45,7 +45,7 @@
 #define ISR_TIMER_PERIOD ((1000000u / ISR_FREQ_HZ) - 1u)
 #define VEL_UPDATE_SAMPLES (ISR_FREQ_HZ / 1000u)
 
-#define CAL_DUTY 120
+#define CAL_DUTY 100
 #define CAL_SETTLE_MS 180u
 #define CAL_SAMPLE_INTERVAL_MS 2u
 #define CAL_SAMPLE_COUNT 16u
@@ -54,6 +54,11 @@
 #define UART_APP_BAUD 230400u
 
 #define FRAME_BUF_SIZE (PNY_FRAME_MAX_PAYLOAD + 4u)
+#define MCT_IC_STATUS_NPOR (1u << 3)
+#define MCT_EXPECTED_CONTROL2A (MCT8316Z_CONTROL2A_RESERVED | MCT8316Z_SDO_MODE_PUSH_PULL | MCT8316Z_PWM_MODE_SYNC_DIG)
+#define MCT_EXPECTED_CONTROL3 MCT8316Z_CONTROL3_NO_REPORTS
+#define MCT_EXPECTED_CONTROL4 (0x10u | MCT8316Z_OCP_MODE_DISABLED)
+#define MCT_EXPECTED_CONTROL8 (MCT8316Z_MTR_LOCK_RETRY_5000MS | MCT8316Z_MTR_LOCK_TDET_5000MS | MCT8316Z_MTR_LOCK_DISABLED)
 
 #define HALLA_PORT GPIOC
 #define HALLA_PIN GPIO14
@@ -124,6 +129,7 @@ static volatile uint32_t isr_duration_us;
 static volatile uint32_t isr_max_us;
 static volatile uint32_t isr_count;
 static volatile uint32_t isr_overrun_count;
+static volatile uint16_t mct_fault_count;
 static volatile uint32_t uart_crc_errors;
 static volatile uint32_t uart_bytes_rx;
 static volatile uint32_t uart_overrun_errors;
@@ -552,6 +558,69 @@ static uint8_t run_ready(void)
     return PNY_RESULT_OK;
 }
 
+static void mct_apply_config(bool reverse)
+{
+    mct8316z_set_pwm_mode_sync_dig();
+    mct8316z_set_hall_hys_high();
+    mct8316z_set_direction(reverse);
+    mct8316z_disable_protections();
+}
+
+static bool mct_config_ok(bool reverse)
+{
+    uint8_t ic_status = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_IC_STATUS);
+    uint8_t control2a = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
+    uint8_t control3 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL3);
+    uint8_t control4 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL4);
+    uint8_t control7 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL7);
+    uint8_t control8 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL8);
+    uint8_t expected_control7 = MCT8316Z_HALL_HYS_HIGH;
+    if (reverse) {
+        expected_control7 |= MCT8316Z_DIR_REVERSE;
+    }
+
+    return (ic_status & MCT_IC_STATUS_NPOR) != 0u &&
+           control2a == MCT_EXPECTED_CONTROL2A &&
+           control3 == MCT_EXPECTED_CONTROL3 &&
+           control4 == MCT_EXPECTED_CONTROL4 &&
+           (control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) == expected_control7 &&
+           control8 == MCT_EXPECTED_CONTROL8;
+}
+
+static void mct_recover_if_needed(bool reverse)
+{
+    if (mct_config_ok(reverse)) {
+        return;
+    }
+
+    bool restart_timer = current_mode == PNY_MODE_RUN;
+    if (restart_timer) {
+        timer_disable_counter(TIM21);
+    }
+    apply_pwm_duty(0);
+    delay_ms(2);
+
+    if (mct_config_ok(reverse)) {
+        if (restart_timer) {
+            timer_set_counter(TIM21, 0);
+            timer_enable_counter(TIM21);
+        }
+        return;
+    }
+
+    if (mct_fault_count != UINT16_MAX) {
+        mct_fault_count++;
+    }
+
+    mct_apply_config(reverse);
+    delay_ms(2);
+
+    if (restart_timer) {
+        timer_set_counter(TIM21, 0);
+        timer_enable_counter(TIM21);
+    }
+}
+
 static void run_begin(void)
 {
     if (!sensor_set_run_mode()) {
@@ -595,6 +664,7 @@ static void run_begin(void)
     }
 
     if (duty != 0 && direction != 0) {
+        mct_recover_if_needed(direction < 0);
         current_duty = duty;
         if (direction != current_direction) {
             mct8316z_set_direction(direction < 0);
@@ -623,6 +693,7 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->position_crad = turn32_to_crad(absolute_position_turn32);
     payload->velocity_crads = turn32_to_crad(velocity_turn32_per_s);
     payload->duty = current_duty;
+    payload->mct_fault_count = mct_fault_count;
 }
 
 static void fill_update_status(pny_status_payload_t *payload)
@@ -924,6 +995,9 @@ static void handle_set_duty(const uint8_t *payload, uint8_t len)
         send_status_response(PNY_CMD_SET_DUTY, result);
         return;
     }
+    if (was_running) {
+        mct_recover_if_needed(duty < 0);
+    }
     current_mode = PNY_MODE_RUN;
     send_status_response(PNY_CMD_SET_DUTY, PNY_RESULT_OK);
     if (!was_running) {
@@ -958,6 +1032,9 @@ static void handle_set_position(const uint8_t *payload, uint8_t len)
         target_position_turn32 = old_target_position_turn32;
         send_status_response(PNY_CMD_SET_POSITION, result);
         return;
+    }
+    if (was_running) {
+        mct_recover_if_needed(current_direction < 0);
     }
     current_mode = PNY_MODE_RUN;
     send_status_response(PNY_CMD_SET_POSITION, PNY_RESULT_OK);
@@ -1353,10 +1430,7 @@ int main(void)
 
     mct8316z_init();
     delay_ms(5);
-    mct8316z_set_pwm_mode_sync_dig();
-    mct8316z_set_hall_hys_high();
-    mct8316z_set_direction(false);
-    mct8316z_disable_protections();
+    mct_apply_config(false);
 
     sensor_ready = tmag5273_init();
     if (sensor_ready) {

@@ -78,7 +78,7 @@ DYNAMIC_STATUS_ATTEMPTS = 6
 
 def format_status(status) -> str:
     return (
-        "mode=%d flags=0x%02X faults=0x%02X raw=(%d,%d,%d) angle_turn16=%d pos_crad=%d vel_crads=%d duty=%d"
+        "mode=%d flags=0x%02X faults=0x%02X raw=(%d,%d,%d) angle_turn16=%d pos_crad=%d vel_crads=%d duty=%d mct_faults=%d"
         % (
             status.mode,
             status.flags,
@@ -90,6 +90,7 @@ def format_status(status) -> str:
             status.position_crad,
             status.velocity_crads,
             status.duty,
+            status.mct_fault_count,
         )
     )
 
@@ -1357,7 +1358,12 @@ class Window:
             self.raw_last_status = f"error: {exc}"
             self.update_raw_status_label()
         else:
-            self.raw_last_status = "mode=%d flags=0x%02X faults=0x%02X" % (status.mode, status.flags, status.faults)
+            self.raw_last_status = "mode=%d flags=0x%02X faults=0x%02X mct_faults=%d" % (
+                status.mode,
+                status.flags,
+                status.faults,
+                status.mct_fault_count,
+            )
             self.raw_last_values = (status.x, status.y, status.z)
             if not self.raw_paused:
                 self.append_raw_sample(status)
