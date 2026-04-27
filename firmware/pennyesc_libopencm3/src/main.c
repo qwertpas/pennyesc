@@ -437,7 +437,7 @@ static bool sensor_set_full_mode(void)
     if (!sensor_run_mode) {
         return true;
     }
-    if (!tmag5273_set_mode(TMAG5273_MODE_FULL)) {
+    if (!tmag5273_set_mode(TMAG5273_MODE_FULL_XYZ)) {
         return false;
     }
     sensor_run_mode = false;
@@ -449,7 +449,7 @@ static bool sensor_set_run_mode(void)
     if (sensor_run_mode) {
         return true;
     }
-    if (!tmag5273_set_mode(TMAG5273_MODE_RUN)) {
+    if (!tmag5273_set_mode(TMAG5273_MODE_FAST_XY)) {
         return false;
     }
     sensor_run_mode = true;
@@ -736,6 +736,7 @@ static void calibration_begin_sample_window(void)
 static void calibration_arm_point(uint8_t point_index)
 {
     uint8_t step = cal_point_step_index(point_index, cal_state.sweep_dir);
+    mct_recover_if_needed(false);
     set_hall_outputs(step % 6u);
     apply_pwm_duty(CAL_DUTY);
     calibration_begin_sample_window();
@@ -864,6 +865,8 @@ static void calibration_poll(void)
 void tim21_isr(void)
 {
     static uint8_t vel_counter;
+    static int16_t last_output_duty = INT16_MIN;
+    static int last_output_step = -2;
 
     timer_clear_flag(TIM21, TIM_SR_UIF);
 
@@ -923,15 +926,24 @@ void tim21_isr(void)
 
     if (duty == 0) {
         stop_motor_outputs();
+        last_output_duty = INT16_MIN;
+        last_output_step = -2;
         if (!target_position_set) {
             timer_disable_counter(TIM21);
             current_mode = PNY_MODE_IDLE;
         }
         debug_comm_step = -1;
     } else {
-        debug_comm_step = mechanical_angle_to_step(current_angle_turn16, direction);
-        set_hall_outputs_raw((uint8_t)debug_comm_step);
-        apply_pwm_duty(duty);
+        int step = mechanical_angle_to_step(current_angle_turn16, direction);
+        debug_comm_step = step;
+        if (step != last_output_step) {
+            set_hall_outputs_raw((uint8_t)step);
+            last_output_step = step;
+        }
+        if (duty != last_output_duty) {
+            apply_pwm_duty(duty);
+            last_output_duty = duty;
+        }
     }
 
     isr_duration_us = timer_get_counter(TIM21);
@@ -1106,6 +1118,7 @@ static void apply_debug_step(int8_t step)
     current_duty = CAL_DUTY;
     current_direction = 0;
     debug_comm_step = step;
+    mct_recover_if_needed(false);
     set_hall_outputs(step);
     apply_pwm_duty(CAL_DUTY);
     delay_ms(2u);

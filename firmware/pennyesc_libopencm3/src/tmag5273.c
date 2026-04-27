@@ -124,13 +124,13 @@ bool tmag5273_init(void)
         return false;
     }
 
-    return tmag5273_set_mode(TMAG5273_MODE_FULL);
+    return tmag5273_set_mode(TMAG5273_MODE_FULL_XYZ);
 }
 
 bool tmag5273_set_mode(tmag5273_mode_t mode)
 {
-    if (mode == TMAG5273_MODE_RUN) {
-        write_mode_regs(CONV_AVG_1X, MAG_CH_XYZ, OP_CONTINUOUS);
+    if (mode == TMAG5273_MODE_FAST_XY) {
+        write_mode_regs(CONV_AVG_1X, MAG_CH_XY, OP_CONTINUOUS);
     } else {
         write_mode_regs(CONV_AVG_2X, MAG_CH_XYZ, OP_CONTINUOUS);
     }

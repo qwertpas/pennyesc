@@ -16,12 +16,12 @@ typedef struct {
 } tmag_data_t;
 
 typedef enum {
-    TMAG5273_MODE_FULL = 0,
-    TMAG5273_MODE_RUN = 1,
+    TMAG5273_MODE_FULL_XYZ = 0,
+    TMAG5273_MODE_FAST_XY = 1,
 } tmag5273_mode_t;
 
 /**
- * Initialize TMAG5273 in full-rate XYZ mode used by idle and calibration paths.
+ * Initialize TMAG5273 in full XYZ mode used by idle and calibration paths.
  * @return true on success, false if communication failed
  */
 bool tmag5273_init(void);
