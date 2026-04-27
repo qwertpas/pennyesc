@@ -28,3 +28,6 @@ production/backups
 .history
 pennyesc-backups
 firmware/dynamic_metrics/
+
+__pycache__/
+*.py[cod]
