@@ -17,7 +17,7 @@
 #define CONV_AVG_2X             0x1
 #define SLEEPTIME_SHIFT         0
 #define MAG_CH_EN_SHIFT         4
-#define MAG_CH_XY               0x4
+#define MAG_CH_XY               0x3
 #define MAG_CH_XYZ              0x7
 #define ANGLE_EN_SHIFT          2
 #define ANGLE_OFF               0x0
@@ -129,8 +129,8 @@ bool tmag5273_init(void)
 
 bool tmag5273_set_mode(tmag5273_mode_t mode)
 {
-    if (mode == TMAG5273_MODE_RUN_XYZ) {
-        write_mode_regs(CONV_AVG_1X, MAG_CH_XYZ, OP_CONTINUOUS);
+    if (mode == TMAG5273_MODE_FAST_XY) {
+        write_mode_regs(CONV_AVG_1X, MAG_CH_XY, OP_CONTINUOUS);
     } else {
         write_mode_regs(CONV_AVG_2X, MAG_CH_XYZ, OP_CONTINUOUS);
     }

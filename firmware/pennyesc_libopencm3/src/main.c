@@ -504,7 +504,7 @@ static bool sensor_set_run_mode(void)
     if (sensor_run_mode) {
         return true;
     }
-    if (!tmag5273_set_mode(TMAG5273_MODE_RUN_XYZ)) {
+    if (!tmag5273_set_mode(TMAG5273_MODE_FAST_XY)) {
         return false;
     }
     sensor_run_mode = true;
