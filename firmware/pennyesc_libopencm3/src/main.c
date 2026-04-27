@@ -37,6 +37,9 @@
 #define ADVANCE_DEG 90
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
+#define OBSERVER_LEAD_US 250
+#define OBSERVER_LEAD_MIN_US -1000
+#define OBSERVER_LEAD_MAX_US 1000
 #define COMM_CENTER_OFFSET_DEG 30
 #define COMM_CENTER_TURN16 ((uint16_t)(((uint32_t)COMM_CENTER_OFFSET_DEG * 65536u + 180u) / 360u))
 
@@ -54,6 +57,8 @@
 #define UART_APP_BAUD 230400u
 
 #define FRAME_BUF_SIZE (PNY_FRAME_MAX_PAYLOAD + 4u)
+#define CAPTURE_MAX_SAMPLES 160u
+#define CAPTURE_MAX_DURATION_MS 2000u
 #define MCT_IC_STATUS_NPOR (1u << 3)
 #define MCT_EXPECTED_CONTROL2A (MCT8316Z_CONTROL2A_RESERVED | MCT8316Z_SDO_MODE_PUSH_PULL | MCT8316Z_PWM_MODE_SYNC_DIG)
 #define MCT_EXPECTED_CONTROL3 MCT8316Z_CONTROL3_NO_REPORTS
@@ -100,6 +105,24 @@ typedef struct {
     pny_cal_point_payload_t points[PNY_CAL_POINTS_PER_SWEEP];
 } calibration_state_t;
 
+typedef struct {
+    volatile bool active;
+    volatile bool done;
+    volatile uint16_t duration_ms;
+    volatile uint16_t elapsed_ms;
+    volatile uint16_t sample_hz;
+    volatile uint16_t sample_period_ms;
+    volatile uint16_t sample_ticks;
+    volatile uint16_t sample_count;
+    volatile uint16_t missed_count;
+    volatile int16_t start_rpm;
+    volatile int16_t last_rpm;
+    volatile int16_t peak_rpm;
+    volatile int32_t accel_rpm_s;
+    volatile bool have_start;
+    volatile pny_capture_sample_t samples[CAPTURE_MAX_SAMPLES];
+} capture_state_t;
+
 static volatile uint32_t system_millis;
 
 static volatile int16_t sensor_x;
@@ -123,6 +146,7 @@ static volatile int16_t current_duty;
 static volatile int8_t current_direction;
 static volatile int16_t current_advance_deg = ADVANCE_DEG;
 static volatile uint16_t current_advance_turn16 = (uint16_t)(((uint32_t)ADVANCE_DEG * 65536u + 180u) / 360u);
+static volatile int16_t observer_lead_us = OBSERVER_LEAD_US;
 static volatile uint32_t pending_reset_ms;
 
 static volatile uint32_t isr_duration_us;
@@ -139,6 +163,7 @@ static volatile int32_t debug_velocity;
 static volatile int debug_comm_step;
 
 static calibration_state_t cal_state;
+static capture_state_t capture_state;
 
 static uint8_t frame_buf[FRAME_BUF_SIZE];
 static uint8_t frame_idx;
@@ -229,6 +254,18 @@ static int32_t turn32_to_crad(int32_t turn32)
 static int32_t crad_to_turn32(int32_t crad)
 {
     return div_round_i64((int64_t)crad * 65536, 628);
+}
+
+static int16_t turn32_per_s_to_rpm(int32_t turn32_per_s)
+{
+    int32_t rpm = (turn32_per_s * 15) / 16384;
+    if (rpm > INT16_MAX) {
+        return INT16_MAX;
+    }
+    if (rpm < INT16_MIN) {
+        return INT16_MIN;
+    }
+    return (int16_t)rpm;
 }
 
 static uint16_t approx_hypot_u16(uint32_t x, uint32_t y)
@@ -449,7 +486,7 @@ static bool sensor_set_run_mode(void)
     if (sensor_run_mode) {
         return true;
     }
-    if (!tmag5273_set_mode(TMAG5273_MODE_FAST_XY)) {
+    if (!tmag5273_set_mode(TMAG5273_MODE_RUN_XYZ)) {
         return false;
     }
     sensor_run_mode = true;
@@ -523,9 +560,16 @@ static uint16_t advance_deg_to_turn16(int16_t advance_deg)
     return (uint16_t)(((uint32_t)advance * 65536u + 180u) / 360u);
 }
 
+static uint16_t observer_angle_turn16(uint16_t angle_turn16)
+{
+    int32_t offset = ((velocity_turn32_per_s / 1000) * observer_lead_us) / 1000;
+    return (uint16_t)(angle_turn16 + offset);
+}
+
 static int mechanical_angle_to_step(uint16_t angle_turn16, int direction)
 {
-    int32_t electrical = (int32_t)((uint32_t)angle_turn16 * POLE_PAIRS);
+    uint16_t estimated_angle = observer_angle_turn16(angle_turn16);
+    int32_t electrical = (int32_t)((uint32_t)estimated_angle * POLE_PAIRS);
     electrical += COMM_CENTER_TURN16;
     if (direction > 0) {
         electrical += current_advance_turn16;
@@ -537,6 +581,7 @@ static int mechanical_angle_to_step(uint16_t angle_turn16, int direction)
 
 static void run_stop(void)
 {
+    capture_state.active = false;
     timer_disable_counter(TIM21);
     if (current_mode == PNY_MODE_RUN) {
         current_mode = PNY_MODE_IDLE;
@@ -566,7 +611,7 @@ static void mct_apply_config(bool reverse)
     mct8316z_disable_protections();
 }
 
-static bool mct_config_ok(bool reverse)
+static bool mct_config_ok(bool reverse, bool check_direction)
 {
     uint8_t ic_status = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_IC_STATUS);
     uint8_t control2a = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
@@ -583,13 +628,18 @@ static bool mct_config_ok(bool reverse)
            control2a == MCT_EXPECTED_CONTROL2A &&
            control3 == MCT_EXPECTED_CONTROL3 &&
            control4 == MCT_EXPECTED_CONTROL4 &&
-           (control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) == expected_control7 &&
+           (control7 & MCT8316Z_HALL_HYS_HIGH) == MCT8316Z_HALL_HYS_HIGH &&
+           (!check_direction || (control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) == expected_control7) &&
            control8 == MCT_EXPECTED_CONTROL8;
 }
 
 static void mct_recover_if_needed(bool reverse)
 {
-    if (mct_config_ok(reverse)) {
+    if (mct_config_ok(reverse, true)) {
+        return;
+    }
+    if (mct_config_ok(reverse, false)) {
+        mct8316z_set_direction(reverse);
         return;
     }
 
@@ -600,7 +650,8 @@ static void mct_recover_if_needed(bool reverse)
     apply_pwm_duty(0);
     delay_ms(2);
 
-    if (mct_config_ok(reverse)) {
+    if (mct_config_ok(reverse, false)) {
+        mct8316z_set_direction(reverse);
         if (restart_timer) {
             timer_set_counter(TIM21, 0);
             timer_enable_counter(TIM21);
@@ -635,6 +686,9 @@ static void run_begin(void)
         return;
     }
     update_position_from_angle(current_angle_turn16);
+    last_position_turn32 = absolute_position_turn32;
+    velocity_turn32_per_s = 0;
+    debug_velocity = 0;
 
     int16_t duty = commanded_duty;
     int8_t direction = 0;
@@ -862,6 +916,49 @@ static void calibration_poll(void)
     }
 }
 
+static void capture_tick_1ms(void)
+{
+    if (!capture_state.active) {
+        return;
+    }
+
+    int16_t rpm = turn32_per_s_to_rpm(velocity_turn32_per_s);
+    capture_state.elapsed_ms++;
+    capture_state.last_rpm = rpm;
+    if (!capture_state.have_start) {
+        capture_state.have_start = true;
+        capture_state.start_rpm = rpm;
+        capture_state.peak_rpm = rpm;
+    }
+    if (abs_u32(rpm) > abs_u32(capture_state.peak_rpm)) {
+        capture_state.peak_rpm = rpm;
+    }
+
+    capture_state.sample_ticks++;
+    if (capture_state.sample_ticks >= capture_state.sample_period_ms) {
+        capture_state.sample_ticks = 0;
+        uint16_t index = capture_state.sample_count;
+        if (index < CAPTURE_MAX_SAMPLES) {
+            capture_state.samples[index].angle_turn16 = current_angle_turn16;
+            capture_state.samples[index].rpm = rpm;
+            capture_state.sample_count = (uint16_t)(index + 1u);
+        } else if (capture_state.missed_count != UINT16_MAX) {
+            capture_state.missed_count++;
+        }
+    }
+
+    if (capture_state.elapsed_ms >= capture_state.duration_ms) {
+        int32_t elapsed = capture_state.elapsed_ms;
+        if (elapsed > 0) {
+            capture_state.accel_rpm_s = ((int32_t)(capture_state.last_rpm - capture_state.start_rpm) * 1000) / elapsed;
+        }
+        capture_state.active = false;
+        capture_state.done = true;
+        target_position_set = false;
+        commanded_duty = 0;
+    }
+}
+
 void tim21_isr(void)
 {
     static uint8_t vel_counter;
@@ -886,6 +983,7 @@ void tim21_isr(void)
         debug_position = turn32_to_crad(absolute_position_turn32);
         debug_velocity = turn32_to_crad(velocity_turn32_per_s);
         vel_counter = 0;
+        capture_tick_1ms();
     }
 
     int16_t duty = commanded_duty;
@@ -1281,6 +1379,170 @@ static void handle_cal_info(void)
     send_frame(PNY_CMD_CAL_INFO, &out, sizeof(out));
 }
 
+static void fill_capture_status(pny_capture_status_payload_t *out, uint8_t result)
+{
+    out->subcmd = PNY_EXT_CAPTURE_STATUS;
+    out->result = result;
+    out->active = capture_state.active ? 1u : 0u;
+    out->done = capture_state.done ? 1u : 0u;
+    out->sample_hz = capture_state.sample_hz;
+    out->duration_ms = capture_state.duration_ms;
+    out->elapsed_ms = capture_state.elapsed_ms;
+    out->sample_count = capture_state.sample_count;
+    out->missed_count = capture_state.missed_count;
+    out->start_rpm = capture_state.start_rpm;
+    out->last_rpm = capture_state.last_rpm;
+    out->peak_rpm = capture_state.peak_rpm;
+    out->accel_rpm_s = capture_state.accel_rpm_s;
+    out->mct_fault_count = mct_fault_count;
+}
+
+static void send_capture_status(uint8_t result)
+{
+    pny_capture_status_payload_t out;
+    fill_capture_status(&out, result);
+    send_frame(PNY_CMD_EXT, &out, sizeof(out));
+}
+
+static void handle_capture_start(const uint8_t *payload, uint8_t len)
+{
+    if (len != sizeof(pny_capture_start_payload_t)) {
+        send_capture_status(PNY_RESULT_BAD_ARG);
+        return;
+    }
+
+    pny_capture_start_payload_t in;
+    memcpy(&in, payload, sizeof(in));
+    if (in.duration_ms == 0u || in.duration_ms > CAPTURE_MAX_DURATION_MS ||
+        (in.sample_hz != 250u && in.sample_hz != 500u && in.sample_hz != 1000u) ||
+        in.advance_deg < ADVANCE_MIN_DEG || in.advance_deg > ADVANCE_MAX_DEG ||
+        in.duty == 0 || in.duty > DUTY_LIMIT || in.duty < -DUTY_LIMIT) {
+        send_capture_status(PNY_RESULT_RANGE);
+        return;
+    }
+
+    if (current_mode == PNY_MODE_CAL) {
+        send_capture_status(PNY_RESULT_BUSY);
+        return;
+    }
+    if (current_mode == PNY_MODE_RUN) {
+        run_stop();
+    }
+
+    uint8_t result = run_ready();
+    if (result != PNY_RESULT_OK) {
+        send_capture_status(result);
+        return;
+    }
+
+    current_advance_deg = in.advance_deg;
+    current_advance_turn16 = advance_deg_to_turn16(in.advance_deg);
+    target_position_set = false;
+    commanded_duty = in.duty;
+
+    memset(&capture_state, 0, sizeof(capture_state));
+    capture_state.sample_hz = in.sample_hz;
+    capture_state.duration_ms = in.duration_ms;
+    capture_state.sample_period_ms = (uint16_t)(1000u / in.sample_hz);
+    capture_state.active = true;
+
+    run_begin();
+    if (current_mode != PNY_MODE_RUN) {
+        capture_state.active = false;
+        capture_state.done = true;
+        commanded_duty = 0;
+        send_capture_status(PNY_RESULT_BAD_STATE);
+        return;
+    }
+
+    send_capture_status(PNY_RESULT_OK);
+}
+
+static void handle_capture_read(const uint8_t *payload, uint8_t len)
+{
+    pny_capture_read_payload_t out;
+    memset(&out, 0, sizeof(out));
+    out.subcmd = PNY_EXT_CAPTURE_READ;
+
+    if (len != 4u || payload[0] != PNY_EXT_CAPTURE_READ || payload[3] > 14u) {
+        out.result = PNY_RESULT_BAD_ARG;
+        send_frame(PNY_CMD_EXT, &out, 5u);
+        return;
+    }
+    if (capture_state.active) {
+        out.result = PNY_RESULT_BUSY;
+        send_frame(PNY_CMD_EXT, &out, 5u);
+        return;
+    }
+
+    uint16_t offset;
+    memcpy(&offset, &payload[1], sizeof(offset));
+    if (offset > capture_state.sample_count) {
+        out.result = PNY_RESULT_RANGE;
+        send_frame(PNY_CMD_EXT, &out, 5u);
+        return;
+    }
+
+    uint8_t want = payload[3];
+    uint16_t available = (uint16_t)(capture_state.sample_count - offset);
+    if (want > available) {
+        want = (uint8_t)available;
+    }
+
+    out.result = PNY_RESULT_OK;
+    out.offset = offset;
+    out.count = want;
+    for (uint8_t i = 0; i < want; i++) {
+        out.samples[i].angle_turn16 = capture_state.samples[offset + i].angle_turn16;
+        out.samples[i].rpm = capture_state.samples[offset + i].rpm;
+    }
+    send_frame(PNY_CMD_EXT, &out, (uint8_t)(5u + (want * sizeof(pny_capture_sample_t))));
+}
+
+static void handle_set_observer(const uint8_t *payload, uint8_t len)
+{
+    if (len != sizeof(pny_observer_payload_t)) {
+        send_capture_status(PNY_RESULT_BAD_ARG);
+        return;
+    }
+
+    pny_observer_payload_t in;
+    memcpy(&in, payload, sizeof(in));
+    if (in.lead_us < OBSERVER_LEAD_MIN_US || in.lead_us > OBSERVER_LEAD_MAX_US) {
+        send_capture_status(PNY_RESULT_RANGE);
+        return;
+    }
+
+    observer_lead_us = in.lead_us;
+    send_capture_status(PNY_RESULT_OK);
+}
+
+static void handle_ext(const uint8_t *payload, uint8_t len)
+{
+    if (len == 0u) {
+        send_capture_status(PNY_RESULT_BAD_ARG);
+        return;
+    }
+
+    switch (payload[0]) {
+    case PNY_EXT_CAPTURE_START:
+        handle_capture_start(payload, len);
+        break;
+    case PNY_EXT_CAPTURE_STATUS:
+        send_capture_status(PNY_RESULT_OK);
+        break;
+    case PNY_EXT_CAPTURE_READ:
+        handle_capture_read(payload, len);
+        break;
+    case PNY_EXT_SET_OBSERVER:
+        handle_set_observer(payload, len);
+        break;
+    default:
+        send_capture_status(PNY_RESULT_BAD_ARG);
+        break;
+    }
+}
+
 static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
 {
     uint8_t address = header >> 4;
@@ -1291,6 +1553,9 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
     }
 
     switch (cmd) {
+    case PNY_CMD_EXT:
+        handle_ext(payload, len);
+        break;
     case PNY_CMD_GET_STATUS:
         refresh_sensor_xyz(false);
         send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);

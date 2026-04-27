@@ -15,6 +15,7 @@
 #define PNY_CAL_TOTAL_POINTS (PNY_CAL_POINTS_PER_SWEEP * PNY_CAL_SWEEP_COUNT)
 
 enum {
+    PNY_CMD_EXT = 0x0,
     PNY_CMD_GET_STATUS = 0x1,
     PNY_CMD_SET_POSITION = 0x2,
     PNY_CMD_SET_DUTY = 0x3,
@@ -30,6 +31,13 @@ enum {
     PNY_CMD_SET_QUIET = 0xD,
     PNY_CMD_STEP_SET = 0xE,
     PNY_CMD_STEP_TRANSITION = 0xF,
+};
+
+enum {
+    PNY_EXT_CAPTURE_START = 0x1,
+    PNY_EXT_CAPTURE_STATUS = 0x2,
+    PNY_EXT_CAPTURE_READ = 0x3,
+    PNY_EXT_SET_OBSERVER = 0x4,
 };
 
 #define PNY_BOOT_MAGIC 0x424F4F54u
@@ -121,5 +129,48 @@ typedef struct __attribute__((packed)) {
     uint16_t blob_size;
     uint32_t blob_crc32;
 } pny_cal_info_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t subcmd;
+    int16_t duty;
+    int16_t advance_deg;
+    uint16_t duration_ms;
+    uint16_t sample_hz;
+} pny_capture_start_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint16_t angle_turn16;
+    int16_t rpm;
+} pny_capture_sample_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t subcmd;
+    uint8_t result;
+    uint8_t active;
+    uint8_t done;
+    uint16_t sample_hz;
+    uint16_t duration_ms;
+    uint16_t elapsed_ms;
+    uint16_t sample_count;
+    uint16_t missed_count;
+    int16_t start_rpm;
+    int16_t last_rpm;
+    int16_t peak_rpm;
+    int32_t accel_rpm_s;
+    uint16_t mct_fault_count;
+} pny_capture_status_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t subcmd;
+    uint8_t result;
+    uint16_t offset;
+    uint8_t count;
+    pny_capture_sample_t samples[14];
+} pny_capture_read_payload_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t subcmd;
+    int16_t lead_us;
+} pny_observer_payload_t;
 
 #endif

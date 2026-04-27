@@ -17,7 +17,7 @@ typedef struct {
 
 typedef enum {
     TMAG5273_MODE_FULL_XYZ = 0,
-    TMAG5273_MODE_FAST_XY = 1,
+    TMAG5273_MODE_RUN_XYZ = 1,
 } tmag5273_mode_t;
 
 /**
