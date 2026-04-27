@@ -40,6 +40,13 @@ enum {
     PNY_EXT_SET_OBSERVER = 0x4,
 };
 
+enum {
+    PNY_OBSERVER_RAW = 0,
+    PNY_OBSERVER_LP2 = 1,
+    PNY_OBSERVER_LP4 = 2,
+    PNY_OBSERVER_LP8 = 3,
+};
+
 #define PNY_BOOT_MAGIC 0x424F4F54u
 
 enum {
@@ -171,6 +178,7 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint8_t subcmd;
     int16_t lead_us;
+    uint8_t mode;
 } pny_observer_payload_t;
 
 #endif

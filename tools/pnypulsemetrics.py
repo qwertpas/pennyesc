@@ -17,7 +17,7 @@ if str(TOOLS_DIR) not in sys.path:
 
 from pennycal import EspBridge  # noqa: E402
 from pnystep import CaptureSample, StepperClient  # noqa: E402
-from pnyproto import RESULT_OK  # noqa: E402
+from pnyproto import OBSERVER_LP4, RESULT_OK  # noqa: E402
 
 ADVANCES = [30, 50, 70, 90, 110, 130, 150]
 DIRECTIONS = [1, -1]
@@ -29,6 +29,7 @@ class PulseSummary:
     direction: int
     advance_deg: int
     observer_lead_us: int
+    observer_mode: int
     repeat: int
     baseline_duty: int
     pulse_duty: int
@@ -165,7 +166,7 @@ def run_pulse(
     rows: list[dict] = []
     try:
         start_faults = client.get_status().mct_fault_count
-        client.set_observer(args.observer_lead_us)
+        client.set_observer(args.observer_lead_us, args.observer_mode)
         client.set_advance(args.baseline_advance)
         client.set_duty(baseline_duty)
         time.sleep(args.baseline_ms / 1000.0)
@@ -206,6 +207,7 @@ def run_pulse(
         direction=direction,
         advance_deg=advance_deg,
         observer_lead_us=args.observer_lead_us,
+        observer_mode=args.observer_mode,
         repeat=repeat,
         baseline_duty=args.baseline_duty,
         pulse_duty=args.pulse_duty,
@@ -247,6 +249,7 @@ def run_pulse(
                 "test": "pulse",
                 "advance_deg": advance_deg,
                 "observer_lead_us": args.observer_lead_us,
+                "observer_mode": args.observer_mode,
                 "repeat": repeat,
                 "t_ms": "%.3f" % sample.t_ms,
                 "angle_turn16": sample.angle_turn16,
@@ -266,7 +269,7 @@ def run_reversal(
     rows: list[dict] = []
     try:
         start_faults = client.get_status().mct_fault_count
-        client.set_observer(args.observer_lead_us)
+        client.set_observer(args.observer_lead_us, args.observer_mode)
         client.set_advance(args.baseline_advance)
         client.set_duty(args.baseline_duty)
         time.sleep(args.baseline_ms / 1000.0)
@@ -308,6 +311,7 @@ def run_reversal(
         direction=-1,
         advance_deg=args.baseline_advance,
         observer_lead_us=args.observer_lead_us,
+        observer_mode=args.observer_mode,
         repeat=repeat,
         baseline_duty=args.baseline_duty,
         pulse_duty=-args.baseline_duty,
@@ -349,6 +353,7 @@ def run_reversal(
                 "test": "reversal",
                 "advance_deg": args.baseline_advance,
                 "observer_lead_us": args.observer_lead_us,
+                "observer_mode": args.observer_mode,
                 "repeat": repeat,
                 "t_ms": "%.3f" % sample.t_ms,
                 "angle_turn16": sample.angle_turn16,
@@ -384,14 +389,15 @@ def write_report(path: Path, summaries: list[PulseSummary]) -> None:
     ]
     pulse_rows = [row for row in valid if row.test == "pulse"]
     reversal_rows = [row for row in valid if row.test == "reversal"]
-    groups = sorted({(row.observer_lead_us, row.advance_deg, row.pulse_duty) for row in pulse_rows})
+    groups = sorted({(row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty) for row in pulse_rows})
     balanced = []
-    for lead, advance, pulse_duty in groups:
+    for mode, lead, advance, pulse_duty in groups:
         dir_rows = []
         for direction in DIRECTIONS:
             rows = [
                 row for row in pulse_rows
                 if row.direction == direction
+                and row.observer_mode == mode
                 and row.observer_lead_us == lead
                 and row.advance_deg == advance
                 and row.pulse_duty == pulse_duty
@@ -407,49 +413,49 @@ def write_report(path: Path, summaries: list[PulseSummary]) -> None:
                     )
                 )
         if len(dir_rows) == 2:
-            balanced.append((min(row[1] for row in dir_rows), lead, advance, pulse_duty, dir_rows))
+            balanced.append((min(row[1] for row in dir_rows), mode, lead, advance, pulse_duty, dir_rows))
     if balanced:
         lines += ["", "## Balanced Score"]
-        for score, lead, advance, pulse_duty, dir_rows in sorted(balanced, reverse=True):
+        for score, mode, lead, advance, pulse_duty, dir_rows in sorted(balanced, reverse=True):
             parts = " ".join(
                 f"dir={direction:+d} gain50={gain:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
                 for direction, gain, final, rip, count in dir_rows
             )
-            lines.append(f"lead={lead} advance={advance} pulse={pulse_duty} score={score:.1f} {parts}")
+            lines.append(f"mode={mode} lead={lead} advance={advance} pulse={pulse_duty} score={score:.1f} {parts}")
 
     if pulse_rows:
         lines += ["", "## Balanced By Pulse Duty"]
         for pulse_duty in sorted({row.pulse_duty for row in pulse_rows}):
-            rows = [row for row in balanced if row[3] == pulse_duty]
+            rows = [row for row in balanced if row[4] == pulse_duty]
             if rows:
-                score, lead, advance, _, dir_rows = sorted(rows, reverse=True)[0]
+                score, mode, lead, advance, _, dir_rows = sorted(rows, reverse=True)[0]
                 parts = " ".join(
                     f"dir={direction:+d} gain50={gain:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
                     for direction, gain, final, rip, count in dir_rows
                 )
-                lines.append(f"pulse={pulse_duty} best_lead={lead} advance={advance} score={score:.1f} {parts}")
+                lines.append(f"pulse={pulse_duty} best_mode={mode} best_lead={lead} advance={advance} score={score:.1f} {parts}")
 
         lead_scores = []
-        for lead in sorted({row.observer_lead_us for row in pulse_rows}):
+        for mode, lead in sorted({(row.observer_mode, row.observer_lead_us) for row in pulse_rows}):
             duty_scores = []
             for pulse_duty in sorted({row.pulse_duty for row in pulse_rows}):
-                candidates = [row for row in balanced if row[1] == lead and row[3] == pulse_duty]
+                candidates = [row for row in balanced if row[1] == mode and row[2] == lead and row[4] == pulse_duty]
                 if candidates:
                     duty_scores.append(max(row[0] for row in candidates))
             if duty_scores:
-                lead_scores.append((min(duty_scores), statistics.fmean(duty_scores), lead, len(duty_scores)))
+                lead_scores.append((min(duty_scores), statistics.fmean(duty_scores), mode, lead, len(duty_scores)))
         if lead_scores:
             lines += ["", "## Overall Lead Score"]
-            for worst, mean, lead, count in sorted(lead_scores, reverse=True):
-                lines.append(f"lead={lead} worst_duty_score={worst:.1f} mean_duty_score={mean:.1f} duties={count}")
+            for worst, mean, mode, lead, count in sorted(lead_scores, reverse=True):
+                lines.append(f"mode={mode} lead={lead} worst_duty_score={worst:.1f} mean_duty_score={mean:.1f} duties={count}")
 
     for direction in DIRECTIONS:
         rows = [row for row in pulse_rows if row.direction == direction]
-        grouped: dict[tuple[int, int, int], list[PulseSummary]] = {}
+        grouped: dict[tuple[int, int, int, int], list[PulseSummary]] = {}
         for row in rows:
-            grouped.setdefault((row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
+            grouped.setdefault((row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
         ranked = []
-        for (lead, advance, pulse_duty), items in grouped.items():
+        for (mode, lead, advance, pulse_duty), items in grouped.items():
             ranked.append(
                 (
                     statistics.fmean(row.gain_0_50_rpm for row in items),
@@ -458,25 +464,26 @@ def write_report(path: Path, summaries: list[PulseSummary]) -> None:
                     statistics.fmean(row.start_rpm for row in items),
                     statistics.fmean(row.ripple_120_220 for row in items),
                     statistics.fmean(row.final_rpm for row in items),
+                    mode,
                     lead,
                     advance,
                     pulse_duty,
                     len(items),
                 )
             )
-        for gain, gain_std, accel, start, rip, final, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
+        for gain, gain_std, accel, start, rip, final, mode, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
             lines.append(
-                f"dir={direction:+d} lead={lead} advance={advance} pulse={pulse_duty} gain50={gain:.1f} std={gain_std:.1f} accel50={accel:.1f} start={start:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
+                f"dir={direction:+d} mode={mode} lead={lead} advance={advance} pulse={pulse_duty} gain50={gain:.1f} std={gain_std:.1f} accel50={accel:.1f} start={start:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
             )
 
     lines += ["", "## Best Acceleration 0-50ms"]
     for direction in DIRECTIONS:
         rows = [row for row in pulse_rows if row.direction == direction]
-        grouped: dict[tuple[int, int, int], list[PulseSummary]] = {}
+        grouped: dict[tuple[int, int, int, int], list[PulseSummary]] = {}
         for row in rows:
-            grouped.setdefault((row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
+            grouped.setdefault((row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
         ranked = []
-        for (lead, advance, pulse_duty), items in grouped.items():
+        for (mode, lead, advance, pulse_duty), items in grouped.items():
             ranked.append(
                 (
                     statistics.fmean(row.accel_0_50_rpm_s for row in items),
@@ -485,25 +492,26 @@ def write_report(path: Path, summaries: list[PulseSummary]) -> None:
                     statistics.fmean(row.start_rpm for row in items),
                     statistics.fmean(row.ripple_120_220 for row in items),
                     statistics.fmean(row.final_rpm for row in items),
+                    mode,
                     lead,
                     advance,
                     pulse_duty,
                     len(items),
                 )
             )
-        for accel, accel_std, gain, start, rip, final, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
+        for accel, accel_std, gain, start, rip, final, mode, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
             lines.append(
-                f"dir={direction:+d} lead={lead} advance={advance} pulse={pulse_duty} accel50={accel:.1f} std={accel_std:.1f} gain50={gain:.1f} start={start:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
+                f"dir={direction:+d} mode={mode} lead={lead} advance={advance} pulse={pulse_duty} accel50={accel:.1f} std={accel_std:.1f} gain50={gain:.1f} start={start:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
             )
 
     lines += ["", "## Best Acceleration 20-120ms"]
     for direction in DIRECTIONS:
         rows = [row for row in pulse_rows if row.direction == direction]
-        grouped: dict[tuple[int, int, int], list[PulseSummary]] = {}
+        grouped: dict[tuple[int, int, int, int], list[PulseSummary]] = {}
         for row in rows:
-            grouped.setdefault((row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
+            grouped.setdefault((row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
         ranked = []
-        for (lead, advance, pulse_duty), items in grouped.items():
+        for (mode, lead, advance, pulse_duty), items in grouped.items():
             ranked.append(
                 (
                     statistics.fmean(row.accel_20_120_rpm_s for row in items),
@@ -511,38 +519,40 @@ def write_report(path: Path, summaries: list[PulseSummary]) -> None:
                     statistics.fmean(row.baseline_rpm for row in items),
                     statistics.fmean(row.ripple_120_220 for row in items),
                     statistics.fmean(row.final_rpm for row in items),
+                    mode,
                     lead,
                     advance,
                     pulse_duty,
                     len(items),
                 )
             )
-        for accel_mean, accel_std, baseline, rip, final, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
+        for accel_mean, accel_std, baseline, rip, final, mode, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
             lines.append(
-                f"dir={direction:+d} lead={lead} advance={advance} pulse={pulse_duty} accel={accel_mean:.1f} std={accel_std:.1f} baseline={baseline:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
+                f"dir={direction:+d} mode={mode} lead={lead} advance={advance} pulse={pulse_duty} accel={accel_mean:.1f} std={accel_std:.1f} baseline={baseline:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
             )
     if reversal_rows:
         lines += ["", "## Reversal"]
-        grouped: dict[int, list[PulseSummary]] = {}
+        grouped: dict[tuple[int, int], list[PulseSummary]] = {}
         for row in reversal_rows:
-            grouped.setdefault(row.observer_lead_us, []).append(row)
+            grouped.setdefault((row.observer_mode, row.observer_lead_us), []).append(row)
         ranked = []
-        for lead, items in grouped.items():
+        for (mode, lead), items in grouped.items():
             ranked.append(
                 (
                     statistics.fmean(row.zero_cross_ms for row in items),
                     statistics.fmean(row.final_rpm for row in items),
                     statistics.fmean(row.ripple_120_220 for row in items),
+                    mode,
                     lead,
                     len(items),
                 )
             )
-        for zc, final, rip, lead, count in sorted(ranked):
-            lines.append(f"lead={lead} zero_cross={zc:.1f}ms final_reverse={final:.1f} ripple={rip:.4f} n={count}")
+        for zc, final, rip, mode, lead, count in sorted(ranked):
+            lines.append(f"mode={mode} lead={lead} zero_cross={zc:.1f}ms final_reverse={final:.1f} ripple={rip:.4f} n={count}")
     lines += ["", "## Invalid"]
     for row in summaries:
         if not row.valid:
-            lines.append(f"test={row.test} dir={row.direction:+d} lead={row.observer_lead_us} advance={row.advance_deg} pulse={row.pulse_duty} repeat={row.repeat} note={row.note}")
+            lines.append(f"test={row.test} dir={row.direction:+d} mode={row.observer_mode} lead={row.observer_lead_us} advance={row.advance_deg} pulse={row.pulse_duty} repeat={row.repeat} note={row.note}")
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -556,9 +566,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pulse-duty-list", dest="pulse_duties", action="append", type=int, default=None)
     parser.add_argument("--baseline-advance", type=int, default=90)
     parser.add_argument("--advance", dest="advances", action="append", type=int, default=None)
-    parser.add_argument("--observer-lead-us", type=int, default=0)
+    parser.add_argument("--observer-lead-us", type=int, default=450)
     parser.add_argument("--observer-lead", dest="observer_leads", action="append", type=int, default=None)
-    parser.add_argument("--restore-observer-lead-us", type=int, default=350)
+    parser.add_argument("--observer-mode", dest="observer_modes", action="append", type=int, default=None)
+    parser.add_argument("--restore-observer-lead-us", type=int, default=450)
+    parser.add_argument("--restore-observer-mode", type=int, default=OBSERVER_LP4)
     parser.add_argument("--baseline-ms", type=int, default=700)
     parser.add_argument("--pulse-ms", type=int, default=300)
     parser.add_argument("--reversal-ms", type=int, default=300)
@@ -581,122 +593,127 @@ def main() -> int:
     advances = args.advances if args.advances is not None else ADVANCES
     pulse_duties = args.pulse_duties if args.pulse_duties is not None else [args.pulse_duty]
     observer_leads = args.observer_leads if args.observer_leads is not None else [args.observer_lead_us]
+    observer_modes = args.observer_modes if args.observer_modes is not None else [OBSERVER_LP4]
     with EspBridge(args.port) as bridge:
         bridge.enter_bridge(args.bridge_mode)
         client = StepperClient(bridge.serial, args.address)
         try:
-            for lead in observer_leads:
-                args.observer_lead_us = lead
-                if not args.skip_pulses:
-                    for pulse_duty in pulse_duties:
-                        args.pulse_duty = pulse_duty
-                        for direction in DIRECTIONS:
-                            for advance in advances:
-                                for repeat in range(args.repeats):
-                                    print(f"pulse lead={lead} duty={pulse_duty} dir={direction:+d} advance={advance} repeat={repeat}")
-                                    try:
-                                        summary, rows = run_pulse(client, direction, advance, repeat, args)
-                                    except Exception as exc:  # noqa: BLE001
+            for mode in observer_modes:
+                args.observer_mode = mode
+                for lead in observer_leads:
+                    args.observer_lead_us = lead
+                    if not args.skip_pulses:
+                        for pulse_duty in pulse_duties:
+                            args.pulse_duty = pulse_duty
+                            for direction in DIRECTIONS:
+                                for advance in advances:
+                                    for repeat in range(args.repeats):
+                                        print(f"pulse lead={lead} duty={pulse_duty} dir={direction:+d} advance={advance} repeat={repeat}")
                                         try:
-                                            client.set_duty(0)
-                                        except Exception:
-                                            pass
-                                        summary = PulseSummary(
-                                            test="pulse",
-                                            direction=direction,
-                                            advance_deg=advance,
-                                            observer_lead_us=lead,
-                                            repeat=repeat,
-                                            baseline_duty=args.baseline_duty,
-                                            pulse_duty=args.pulse_duty,
-                                            baseline_advance_deg=args.baseline_advance,
-                                            baseline_ms=args.baseline_ms,
-                                            pulse_ms=args.pulse_ms,
-                                            sample_hz=args.sample_hz,
-                                            sample_count=0,
-                                            missed_count=0,
-                                            mct_fault_delta=0,
-                                            faults=0,
-                                            baseline_rpm=0.0,
-                                            start_rpm=0.0,
-                                            rpm_50ms=0.0,
-                                            rpm_100ms=0.0,
-                                            rpm_150ms=0.0,
-                                            final_rpm=0.0,
-                                            signed_start_rpm=0.0,
-                                            signed_final_rpm=0.0,
-                                            zero_cross_ms=float("nan"),
-                                            gain_0_50_rpm=0.0,
-                                            gain_0_90_rpm=0.0,
-                                            accel_0_50_rpm_s=float("nan"),
-                                            accel_0_80_rpm_s=float("nan"),
-                                            accel_20_120_rpm_s=float("nan"),
-                                            accel_40_160_rpm_s=float("nan"),
-                                            ripple_120_220=float("inf"),
-                                            monotonic_fraction=0.0,
-                                            valid=False,
-                                            note=type(exc).__name__,
-                                        )
-                                        rows = []
-                                    print(summary)
-                                    summaries.append(summary)
-                                    raw_rows.extend(rows)
-                                    time.sleep(args.cooldown_s)
-                if args.reversal:
-                    for repeat in range(args.repeats):
-                        print(f"reversal lead={lead} repeat={repeat}")
-                        try:
-                            summary, rows = run_reversal(client, repeat, args)
-                        except Exception as exc:  # noqa: BLE001
+                                            summary, rows = run_pulse(client, direction, advance, repeat, args)
+                                        except Exception as exc:  # noqa: BLE001
+                                            try:
+                                                client.set_duty(0)
+                                            except Exception:
+                                                pass
+                                            summary = PulseSummary(
+                                                test="pulse",
+                                                direction=direction,
+                                                advance_deg=advance,
+                                                observer_lead_us=lead,
+                                                observer_mode=mode,
+                                                repeat=repeat,
+                                                baseline_duty=args.baseline_duty,
+                                                pulse_duty=args.pulse_duty,
+                                                baseline_advance_deg=args.baseline_advance,
+                                                baseline_ms=args.baseline_ms,
+                                                pulse_ms=args.pulse_ms,
+                                                sample_hz=args.sample_hz,
+                                                sample_count=0,
+                                                missed_count=0,
+                                                mct_fault_delta=0,
+                                                faults=0,
+                                                baseline_rpm=0.0,
+                                                start_rpm=0.0,
+                                                rpm_50ms=0.0,
+                                                rpm_100ms=0.0,
+                                                rpm_150ms=0.0,
+                                                final_rpm=0.0,
+                                                signed_start_rpm=0.0,
+                                                signed_final_rpm=0.0,
+                                                zero_cross_ms=float("nan"),
+                                                gain_0_50_rpm=0.0,
+                                                gain_0_90_rpm=0.0,
+                                                accel_0_50_rpm_s=float("nan"),
+                                                accel_0_80_rpm_s=float("nan"),
+                                                accel_20_120_rpm_s=float("nan"),
+                                                accel_40_160_rpm_s=float("nan"),
+                                                ripple_120_220=float("inf"),
+                                                monotonic_fraction=0.0,
+                                                valid=False,
+                                                note=type(exc).__name__,
+                                            )
+                                            rows = []
+                                        print(summary)
+                                        summaries.append(summary)
+                                        raw_rows.extend(rows)
+                                        time.sleep(args.cooldown_s)
+                    if args.reversal:
+                        for repeat in range(args.repeats):
+                            print(f"reversal lead={lead} repeat={repeat}")
                             try:
-                                client.set_duty(0)
-                            except Exception:
-                                pass
-                            summary = PulseSummary(
-                                test="reversal",
-                                direction=-1,
-                                advance_deg=args.baseline_advance,
-                                observer_lead_us=lead,
-                                repeat=repeat,
-                                baseline_duty=args.baseline_duty,
-                                pulse_duty=-args.baseline_duty,
-                                baseline_advance_deg=args.baseline_advance,
-                                baseline_ms=args.baseline_ms,
-                                pulse_ms=args.reversal_ms,
-                                sample_hz=args.sample_hz,
-                                sample_count=0,
-                                missed_count=0,
-                                mct_fault_delta=0,
-                                faults=0,
-                                baseline_rpm=0.0,
-                                start_rpm=0.0,
-                                rpm_50ms=0.0,
-                                rpm_100ms=0.0,
-                                rpm_150ms=0.0,
-                                final_rpm=0.0,
-                                signed_start_rpm=0.0,
-                                signed_final_rpm=0.0,
-                                zero_cross_ms=float("nan"),
-                                gain_0_50_rpm=0.0,
-                                gain_0_90_rpm=0.0,
-                                accel_0_50_rpm_s=float("nan"),
-                                accel_0_80_rpm_s=float("nan"),
-                                accel_20_120_rpm_s=float("nan"),
-                                accel_40_160_rpm_s=float("nan"),
-                                ripple_120_220=float("inf"),
-                                monotonic_fraction=0.0,
-                                valid=False,
-                                note=type(exc).__name__,
-                            )
-                            rows = []
-                        print(summary)
-                        summaries.append(summary)
-                        raw_rows.extend(rows)
-                        time.sleep(args.cooldown_s)
+                                summary, rows = run_reversal(client, repeat, args)
+                            except Exception as exc:  # noqa: BLE001
+                                try:
+                                    client.set_duty(0)
+                                except Exception:
+                                    pass
+                                summary = PulseSummary(
+                                    test="reversal",
+                                    direction=-1,
+                                    advance_deg=args.baseline_advance,
+                                    observer_lead_us=lead,
+                                    observer_mode=mode,
+                                    repeat=repeat,
+                                    baseline_duty=args.baseline_duty,
+                                    pulse_duty=-args.baseline_duty,
+                                    baseline_advance_deg=args.baseline_advance,
+                                    baseline_ms=args.baseline_ms,
+                                    pulse_ms=args.reversal_ms,
+                                    sample_hz=args.sample_hz,
+                                    sample_count=0,
+                                    missed_count=0,
+                                    mct_fault_delta=0,
+                                    faults=0,
+                                    baseline_rpm=0.0,
+                                    start_rpm=0.0,
+                                    rpm_50ms=0.0,
+                                    rpm_100ms=0.0,
+                                    rpm_150ms=0.0,
+                                    final_rpm=0.0,
+                                    signed_start_rpm=0.0,
+                                    signed_final_rpm=0.0,
+                                    zero_cross_ms=float("nan"),
+                                    gain_0_50_rpm=0.0,
+                                    gain_0_90_rpm=0.0,
+                                    accel_0_50_rpm_s=float("nan"),
+                                    accel_0_80_rpm_s=float("nan"),
+                                    accel_20_120_rpm_s=float("nan"),
+                                    accel_40_160_rpm_s=float("nan"),
+                                    ripple_120_220=float("inf"),
+                                    monotonic_fraction=0.0,
+                                    valid=False,
+                                    note=type(exc).__name__,
+                                )
+                                rows = []
+                            print(summary)
+                            summaries.append(summary)
+                            raw_rows.extend(rows)
+                            time.sleep(args.cooldown_s)
         finally:
             try:
                 client.set_duty(0)
-                client.set_observer(args.restore_observer_lead_us)
+                client.set_observer(args.restore_observer_lead_us, args.restore_observer_mode)
             except Exception:
                 pass
             bridge.exit_bridge()

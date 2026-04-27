@@ -37,9 +37,10 @@
 #define ADVANCE_DEG 90
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
-#define OBSERVER_LEAD_US 350
+#define OBSERVER_LEAD_US 450
 #define OBSERVER_LEAD_MIN_US -1000
 #define OBSERVER_LEAD_MAX_US 1000
+#define OBSERVER_MODE PNY_OBSERVER_LP4
 #define COMM_CENTER_OFFSET_DEG 30
 #define COMM_CENTER_TURN16 ((uint16_t)(((uint32_t)COMM_CENTER_OFFSET_DEG * 65536u + 180u) / 360u))
 
@@ -147,6 +148,8 @@ static volatile int8_t current_direction;
 static volatile int16_t current_advance_deg = ADVANCE_DEG;
 static volatile uint16_t current_advance_turn16 = (uint16_t)(((uint32_t)ADVANCE_DEG * 65536u + 180u) / 360u);
 static volatile int16_t observer_lead_us = OBSERVER_LEAD_US;
+static volatile uint8_t observer_mode = OBSERVER_MODE;
+static volatile int32_t observer_velocity_turn32_per_s;
 static volatile uint32_t pending_reset_ms;
 
 static volatile uint32_t isr_duration_us;
@@ -562,8 +565,26 @@ static uint16_t advance_deg_to_turn16(int16_t advance_deg)
 
 static uint16_t observer_angle_turn16(uint16_t angle_turn16)
 {
-    int32_t offset = ((velocity_turn32_per_s / 1000) * observer_lead_us) / 1000;
+    int32_t offset = ((observer_velocity_turn32_per_s / 1000) * observer_lead_us) / 1000;
     return (uint16_t)(angle_turn16 + offset);
+}
+
+static void observer_update_velocity(int32_t velocity)
+{
+    switch (observer_mode) {
+    case PNY_OBSERVER_LP2:
+        observer_velocity_turn32_per_s += (velocity - observer_velocity_turn32_per_s) / 2;
+        break;
+    case PNY_OBSERVER_LP4:
+        observer_velocity_turn32_per_s += (velocity - observer_velocity_turn32_per_s) / 4;
+        break;
+    case PNY_OBSERVER_LP8:
+        observer_velocity_turn32_per_s += (velocity - observer_velocity_turn32_per_s) / 8;
+        break;
+    default:
+        observer_velocity_turn32_per_s = velocity;
+        break;
+    }
 }
 
 static int mechanical_angle_to_step(uint16_t angle_turn16, int direction)
@@ -688,6 +709,7 @@ static void run_begin(void)
     update_position_from_angle(current_angle_turn16);
     last_position_turn32 = absolute_position_turn32;
     velocity_turn32_per_s = 0;
+    observer_velocity_turn32_per_s = 0;
     debug_velocity = 0;
 
     int16_t duty = commanded_duty;
@@ -979,6 +1001,7 @@ void tim21_isr(void)
     vel_counter++;
     if (vel_counter >= VEL_UPDATE_SAMPLES) {
         velocity_turn32_per_s = (absolute_position_turn32 - last_position_turn32) * 1000;
+        observer_update_velocity(velocity_turn32_per_s);
         last_position_turn32 = absolute_position_turn32;
         debug_position = turn32_to_crad(absolute_position_turn32);
         debug_velocity = turn32_to_crad(velocity_turn32_per_s);
@@ -1508,12 +1531,14 @@ static void handle_set_observer(const uint8_t *payload, uint8_t len)
 
     pny_observer_payload_t in;
     memcpy(&in, payload, sizeof(in));
-    if (in.lead_us < OBSERVER_LEAD_MIN_US || in.lead_us > OBSERVER_LEAD_MAX_US) {
+    if (in.lead_us < OBSERVER_LEAD_MIN_US || in.lead_us > OBSERVER_LEAD_MAX_US || in.mode > PNY_OBSERVER_LP8) {
         send_capture_status(PNY_RESULT_RANGE);
         return;
     }
 
     observer_lead_us = in.lead_us;
+    observer_mode = in.mode;
+    observer_velocity_turn32_per_s = velocity_turn32_per_s;
     send_capture_status(PNY_RESULT_OK);
 }
 

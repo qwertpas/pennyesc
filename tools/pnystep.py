@@ -26,6 +26,7 @@ from pnyproto import (  # noqa: E402
     EXT_CAPTURE_START,
     EXT_CAPTURE_STATUS,
     EXT_SET_OBSERVER,
+    OBSERVER_RAW,
     FRAME_MAX_PAYLOAD,
     FRAME_START,
     RESULT_OK,
@@ -149,8 +150,8 @@ class StepperClient:
     def set_advance(self, advance_deg: int) -> Status:
         return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_SET_ADVANCE, struct.pack("<h", advance_deg))))
 
-    def set_observer(self, lead_us: int) -> CaptureStatus:
-        return self._decode_capture_status(self.exchange(CMD_EXT, struct.pack("<Bh", EXT_SET_OBSERVER, lead_us)))
+    def set_observer(self, lead_us: int, mode: int = OBSERVER_RAW) -> CaptureStatus:
+        return self._decode_capture_status(self.exchange(CMD_EXT, struct.pack("<BhB", EXT_SET_OBSERVER, lead_us, mode)))
 
     def set_step(self, step: int) -> Status:
         return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_STEP_SET, struct.pack("<b", step))))
@@ -248,7 +249,7 @@ def print_interactive_help() -> None:
     print("  status")
     print("  duty <value>")
     print("  advance <deg>")
-    print("  observer <lead_us>")
+    print("  observer <lead_us> [mode]")
     print("  step <0..5|off>")
     print("  transition <0..5|off> [blank_ms]")
     print("  cycle [start] [count] [delay_ms] [blank_ms]")
@@ -365,10 +366,11 @@ def run_interactive(client: StepperClient) -> None:
                 print_status(client.set_advance(int(args[0], 0)))
                 continue
             if cmd == "observer":
-                if len(args) != 1:
-                    print("usage: observer <lead_us>")
+                if len(args) not in {1, 2}:
+                    print("usage: observer <lead_us> [mode]")
                     continue
-                print_capture_status(client.set_observer(int(args[0], 0)))
+                mode = int(args[1], 0) if len(args) == 2 else OBSERVER_RAW
+                print_capture_status(client.set_observer(int(args[0], 0), mode))
                 continue
             if cmd in {"step", "hold"}:
                 if len(args) != 1:
@@ -431,6 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     observer = sub.add_parser("observer")
     observer.add_argument("lead_us", type=int)
+    observer.add_argument("--mode", type=int, default=OBSERVER_RAW)
 
     step = sub.add_parser("step")
     step.add_argument("value", type=parse_step)
@@ -482,7 +485,7 @@ def main() -> None:
                 return
 
             if args.cmd == "observer":
-                print_capture_status(client.set_observer(args.lead_us))
+                print_capture_status(client.set_observer(args.lead_us, args.mode))
                 return
 
             if args.cmd == "step":
