@@ -41,6 +41,8 @@
 #define OBSERVER_LEAD_MIN_US -1000
 #define OBSERVER_LEAD_MAX_US 1000
 #define OBSERVER_MODE PNY_OBSERVER_LP4
+#define OBSERVER_VEL_LIMIT 100000000
+#define OBSERVER_ACCEL_LIMIT 2000000000
 #define COMM_CENTER_OFFSET_DEG 30
 #define COMM_CENTER_TURN16 ((uint16_t)(((uint32_t)COMM_CENTER_OFFSET_DEG * 65536u + 180u) / 360u))
 
@@ -124,6 +126,16 @@ typedef struct {
     volatile pny_capture_sample_t samples[CAPTURE_MAX_SAMPLES];
 } capture_state_t;
 
+typedef struct {
+    volatile int32_t position_turn32;
+    volatile int32_t accel_turn32_per_s2;
+} observer_state_t;
+
+typedef union {
+    calibration_state_t cal;
+    capture_state_t capture;
+} work_state_t;
+
 static volatile uint32_t system_millis;
 
 static volatile int16_t sensor_x;
@@ -165,8 +177,11 @@ static volatile int32_t debug_position;
 static volatile int32_t debug_velocity;
 static volatile int debug_comm_step;
 
-static calibration_state_t cal_state;
-static capture_state_t capture_state;
+static work_state_t work_state;
+static observer_state_t observer_state;
+
+#define cal_state work_state.cal
+#define capture_state work_state.capture
 
 static uint8_t frame_buf[FRAME_BUF_SIZE];
 static uint8_t frame_idx;
@@ -565,12 +580,31 @@ static uint16_t advance_deg_to_turn16(int16_t advance_deg)
 
 static uint16_t observer_angle_turn16(uint16_t angle_turn16)
 {
-    int32_t offset = ((observer_velocity_turn32_per_s / 1000) * observer_lead_us) / 1000;
-    return (uint16_t)(angle_turn16 + offset);
+    int32_t position = (int32_t)angle_turn16 << 16;
+    int32_t velocity = observer_velocity_turn32_per_s;
+    int32_t offset = ((velocity / 1000) * observer_lead_us) / 1000;
+    return (uint16_t)((position + offset) >> 16);
+}
+
+static int32_t clamp_i32(int32_t value, int32_t limit)
+{
+    if (value > limit) {
+        return limit;
+    }
+    if (value < -limit) {
+        return -limit;
+    }
+    return value;
 }
 
 static void observer_update_velocity(int32_t velocity)
 {
+    int32_t predicted;
+    int32_t error;
+    int32_t alpha;
+    int32_t beta;
+    int32_t gamma;
+
     switch (observer_mode) {
     case PNY_OBSERVER_LP2:
         observer_velocity_turn32_per_s += (velocity - observer_velocity_turn32_per_s) / 2;
@@ -581,10 +615,69 @@ static void observer_update_velocity(int32_t velocity)
     case PNY_OBSERVER_LP8:
         observer_velocity_turn32_per_s += (velocity - observer_velocity_turn32_per_s) / 8;
         break;
+    case PNY_OBSERVER_AB1:
+        alpha = 96;
+        beta = 16;
+        goto observer_cv;
+    case PNY_OBSERVER_AB2:
+        alpha = 64;
+        beta = 8;
+        goto observer_cv;
+    case PNY_OBSERVER_AB3:
+        alpha = 32;
+        beta = 4;
+        goto observer_cv;
+    case PNY_OBSERVER_KCV1:
+        alpha = 96;
+        beta = 24;
+        goto observer_cv;
+    case PNY_OBSERVER_KCV2:
+        alpha = 128;
+        beta = 32;
+        goto observer_cv;
+    case PNY_OBSERVER_KCV3:
+        alpha = 160;
+        beta = 40;
+        goto observer_cv;
+    case PNY_OBSERVER_KCA1:
+        alpha = 96;
+        beta = 24;
+        gamma = 1;
+        goto observer_ca;
+    case PNY_OBSERVER_KCA2:
+        alpha = 128;
+        beta = 32;
+        gamma = 2;
+        goto observer_ca;
+    case PNY_OBSERVER_KCA3:
+        alpha = 160;
+        beta = 40;
+        gamma = 4;
+        goto observer_ca;
     default:
         observer_velocity_turn32_per_s = velocity;
         break;
     }
+    observer_state.position_turn32 = absolute_position_turn32;
+    return;
+
+observer_cv:
+    predicted = observer_state.position_turn32 + (observer_velocity_turn32_per_s / 1000);
+    error = absolute_position_turn32 - predicted;
+    observer_state.position_turn32 = predicted + ((error * alpha) / 256);
+    observer_velocity_turn32_per_s += ((error * beta) * 1000) / 256;
+    observer_velocity_turn32_per_s = clamp_i32(observer_velocity_turn32_per_s, OBSERVER_VEL_LIMIT);
+    observer_state.accel_turn32_per_s2 = 0;
+    return;
+
+observer_ca:
+    predicted = observer_state.position_turn32 + (observer_velocity_turn32_per_s / 1000) + (observer_state.accel_turn32_per_s2 / 2000000);
+    error = absolute_position_turn32 - predicted;
+    observer_state.position_turn32 = predicted + ((error * alpha) / 256);
+    observer_velocity_turn32_per_s += (observer_state.accel_turn32_per_s2 / 1000) + ((error * beta) * 1000) / 256;
+    observer_velocity_turn32_per_s = clamp_i32(observer_velocity_turn32_per_s, OBSERVER_VEL_LIMIT);
+    observer_state.accel_turn32_per_s2 += (int32_t)(((int64_t)error * gamma * 1000000) / 65536);
+    observer_state.accel_turn32_per_s2 = clamp_i32(observer_state.accel_turn32_per_s2, OBSERVER_ACCEL_LIMIT);
 }
 
 static int mechanical_angle_to_step(uint16_t angle_turn16, int direction)
@@ -710,6 +803,8 @@ static void run_begin(void)
     last_position_turn32 = absolute_position_turn32;
     velocity_turn32_per_s = 0;
     observer_velocity_turn32_per_s = 0;
+    observer_state.position_turn32 = absolute_position_turn32;
+    observer_state.accel_turn32_per_s2 = 0;
     debug_velocity = 0;
 
     int16_t duty = commanded_duty;
@@ -1531,7 +1626,7 @@ static void handle_set_observer(const uint8_t *payload, uint8_t len)
 
     pny_observer_payload_t in;
     memcpy(&in, payload, sizeof(in));
-    if (in.lead_us < OBSERVER_LEAD_MIN_US || in.lead_us > OBSERVER_LEAD_MAX_US || in.mode > PNY_OBSERVER_LP8) {
+    if (in.lead_us < OBSERVER_LEAD_MIN_US || in.lead_us > OBSERVER_LEAD_MAX_US || in.mode > PNY_OBSERVER_MAX) {
         send_capture_status(PNY_RESULT_RANGE);
         return;
     }
@@ -1539,6 +1634,8 @@ static void handle_set_observer(const uint8_t *payload, uint8_t len)
     observer_lead_us = in.lead_us;
     observer_mode = in.mode;
     observer_velocity_turn32_per_s = velocity_turn32_per_s;
+    observer_state.position_turn32 = absolute_position_turn32;
+    observer_state.accel_turn32_per_s2 = 0;
     send_capture_status(PNY_RESULT_OK);
 }
 
