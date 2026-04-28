@@ -1290,7 +1290,8 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
         }
     }
 
-    if ((uint16_t)(now - comm_scheduler.position_tick) > SENSOR_STALE_US) {
+    uint16_t control_tick = sched_now_us();
+    if ((uint16_t)(control_tick - comm_scheduler.position_tick) > SENSOR_STALE_US) {
         comm_stop_from_isr();
         return;
     }
@@ -1301,7 +1302,7 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
         capture_tick_1ms();
     }
 
-    comm_control_tick(now);
+    comm_control_tick(control_tick);
 }
 
 void tim21_isr(void)
