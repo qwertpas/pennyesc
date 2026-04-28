@@ -48,9 +48,6 @@
 #define SENSOR_TICK_US (1000000u / ISR_FREQ_HZ)
 #define TMAG_READ_PERIOD_US SENSOR_TICK_US
 #define SCHED_TIMER_PERIOD 0xffffu
-#define COMM_MIN_DELAY_US 8u
-#define COMM_MAX_DELAY_US 30000u
-#define COMM_SCHED_MIN_VELOCITY 20000000
 #define SENSOR_STALE_US 10000u
 #define VEL_UPDATE_SAMPLES (ISR_FREQ_HZ / 1000u)
 #define VELOCITY_WINDOW_SAMPLES 32u
@@ -135,11 +132,7 @@ typedef struct {
 } observer_state_t;
 
 typedef struct {
-    volatile bool active;
-    volatile bool edge_active;
     volatile uint8_t sector;
-    volatile uint8_t next_sector;
-    volatile int8_t direction;
     volatile uint16_t next_sensor_tick;
     volatile uint16_t next_tmag_tick;
     volatile uint16_t position_tick;
@@ -444,7 +437,7 @@ static void tim21_setup(void)
 {
     timer_set_prescaler(TIM21, 31);
     timer_set_period(TIM21, SCHED_TIMER_PERIOD);
-    TIM_DIER(TIM21) &= ~(TIM_DIER_UIE | TIM_DIER_CC1IE | TIM_DIER_CC2IE);
+    TIM_DIER(TIM21) &= ~(TIM_DIER_UIE | TIM_DIER_CC1IE);
     nvic_enable_irq(NVIC_TIM21_IRQ);
     nvic_set_priority(NVIC_TIM21_IRQ, 1);
     timer_enable_counter(TIM21);
@@ -768,108 +761,24 @@ static uint8_t comm_sector_at_tick(uint16_t tick, int direction)
     return (uint8_t)(((uint32_t)phase * 6u) >> 16);
 }
 
-static bool comm_edge_ready(int8_t direction)
-{
-    int32_t velocity = comm_velocity_turn32_per_s;
-    if (direction < 0) {
-        velocity = -velocity;
-    }
-    return velocity >= COMM_SCHED_MIN_VELOCITY;
-}
-
-static void comm_edge_disable(void)
-{
-    TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
-    comm_scheduler.edge_active = false;
-}
-
 static void comm_scheduler_stop(void)
 {
-    TIM_DIER(TIM21) &= ~(TIM_DIER_CC1IE | TIM_DIER_CC2IE);
-    comm_scheduler.active = false;
-    comm_scheduler.edge_active = false;
+    TIM_DIER(TIM21) &= ~TIM_DIER_CC1IE;
     comm_scheduler.sector = 0xffu;
-    comm_scheduler.next_sector = 0xffu;
-    comm_scheduler.direction = 0;
     comm_scheduler.last_duty = INT16_MIN;
     tmag5273_async_cancel();
-}
-
-static bool comm_next_delay(uint16_t now, int8_t direction, uint16_t *delay_us, uint8_t *next_sector)
-{
-    if (!comm_edge_ready(direction)) {
-        return false;
-    }
-    int32_t velocity = comm_velocity_turn32_per_s;
-    if (velocity < 0) {
-        velocity = -velocity;
-    }
-    uint32_t electrical_velocity = (uint32_t)velocity * POLE_PAIRS;
-    if (electrical_velocity == 0u) {
-        return false;
-    }
-
-    uint16_t phase = (uint16_t)electrical_position_at_tick(now, direction);
-    uint8_t sector = (uint8_t)(((uint32_t)phase * 6u) >> 16);
-    uint32_t distance;
-    if (direction > 0) {
-        uint32_t boundary = ((uint32_t)(sector + 1u) * 65536u + 5u) / 6u;
-        distance = boundary - phase;
-        *next_sector = (uint8_t)((sector + 1u) % 6u);
-    } else {
-        uint32_t boundary = ((uint32_t)sector * 65536u + 5u) / 6u;
-        distance = (phase >= boundary) ? ((uint32_t)phase - boundary) : ((uint32_t)phase + 65536u - boundary);
-        *next_sector = (uint8_t)((sector + 5u) % 6u);
-    }
-    if (distance == 0u) {
-        distance = 1u;
-    }
-
-    uint32_t velocity_per_ms = electrical_velocity / 1000u;
-    if (velocity_per_ms == 0u) {
-        return false;
-    }
-    uint32_t delay = (distance * 1000u) / velocity_per_ms;
-    if (delay > COMM_MAX_DELAY_US) {
-        return false;
-    }
-    if (delay < COMM_MIN_DELAY_US) {
-        delay = COMM_MIN_DELAY_US;
-    }
-    *delay_us = (uint16_t)delay;
-    return true;
-}
-
-static void comm_schedule_next(uint16_t now, int8_t direction)
-{
-    uint16_t delay;
-    uint8_t next_sector;
-    if (!comm_next_delay(now, direction, &delay, &next_sector)) {
-        comm_edge_disable();
-        return;
-    }
-
-    comm_scheduler.next_sector = next_sector;
-    TIM_CCR2(TIM21) = (uint16_t)(now + delay);
-    timer_clear_flag(TIM21, TIM_SR_CC2IF);
-    TIM_DIER(TIM21) |= TIM_DIER_CC2IE;
-    comm_scheduler.edge_active = true;
 }
 
 static void comm_scheduler_start(void)
 {
     uint16_t now = sched_now_us();
-    comm_scheduler.active = true;
-    comm_scheduler.edge_active = false;
     comm_scheduler.sector = 0xffu;
-    comm_scheduler.next_sector = 0xffu;
-    comm_scheduler.direction = current_direction;
     comm_scheduler.position_tick = now;
     comm_scheduler.last_duty = INT16_MIN;
     comm_scheduler.next_sensor_tick = (uint16_t)(now + SENSOR_TICK_US);
     comm_scheduler.next_tmag_tick = now;
     TIM_CCR1(TIM21) = comm_scheduler.next_sensor_tick;
-    timer_clear_flag(TIM21, TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_UIF);
+    timer_clear_flag(TIM21, TIM_SR_CC1IF | TIM_SR_UIF);
     TIM_DIER(TIM21) |= TIM_DIER_CC1IE;
 }
 
@@ -1296,7 +1205,6 @@ static void comm_control_tick(uint16_t now)
     current_duty = duty;
     if (duty == 0 || direction == 0) {
         stop_motor_outputs();
-        comm_edge_disable();
         comm_scheduler.last_duty = INT16_MIN;
         comm_scheduler.sector = 0xffu;
         debug_comm_step = -1;
@@ -1312,16 +1220,10 @@ static void comm_control_tick(uint16_t now)
         return;
     }
     current_direction = direction;
-    comm_scheduler.direction = direction;
-
-    bool scheduled_edges = comm_edge_ready(direction);
-    if (!scheduled_edges) {
-        comm_edge_disable();
-    }
 
     uint8_t sector = comm_sector_at_tick(now, direction);
     debug_comm_step = sector;
-    if (comm_scheduler.sector > 5u || (!comm_scheduler.edge_active && sector != comm_scheduler.sector)) {
+    if (comm_scheduler.sector > 5u || sector != comm_scheduler.sector) {
         set_hall_outputs_raw(sector);
         comm_scheduler.sector = sector;
     }
@@ -1330,7 +1232,6 @@ static void comm_control_tick(uint16_t now)
         apply_pwm_duty(duty);
         comm_scheduler.last_duty = duty;
     }
-    comm_schedule_next(now, direction);
 }
 
 static void comm_sensor_tick(uint16_t scheduled_tick)
@@ -1403,31 +1304,11 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
     comm_control_tick(now);
 }
 
-static void comm_edge_tick(uint16_t now)
-{
-    if (!comm_scheduler.active || !comm_scheduler.edge_active) {
-        return;
-    }
-    if (current_duty != 0 && comm_scheduler.next_sector < 6u) {
-        set_hall_outputs_raw(comm_scheduler.next_sector);
-        comm_scheduler.sector = comm_scheduler.next_sector;
-        debug_comm_step = comm_scheduler.next_sector;
-    }
-    comm_scheduler.edge_active = false;
-    if (current_direction != 0 && current_duty != 0) {
-        comm_schedule_next(now, current_direction);
-    }
-}
-
 void tim21_isr(void)
 {
     uint16_t start = sched_now_us();
     uint32_t flags = TIM_SR(TIM21) & TIM_DIER(TIM21);
 
-    if ((flags & TIM_SR_CC2IF) != 0u) {
-        timer_clear_flag(TIM21, TIM_SR_CC2IF);
-        comm_edge_tick(sched_now_us());
-    }
     if ((flags & TIM_SR_CC1IF) != 0u) {
         uint16_t scheduled_tick = comm_scheduler.next_sensor_tick;
         timer_clear_flag(TIM21, TIM_SR_CC1IF);
@@ -1441,9 +1322,9 @@ void tim21_isr(void)
     if (isr_duration_us > isr_max_us) {
         isr_max_us = isr_duration_us;
     }
-    if ((TIM_SR(TIM21) & (TIM_SR_CC1OF | TIM_SR_CC2OF)) != 0u) {
+    if ((TIM_SR(TIM21) & TIM_SR_CC1OF) != 0u) {
         isr_overrun_count++;
-        timer_clear_flag(TIM21, TIM_SR_CC1OF | TIM_SR_CC2OF);
+        timer_clear_flag(TIM21, TIM_SR_CC1OF);
     }
 }
 
