@@ -12,9 +12,9 @@ from pnyproto import OBSERVER_NAMES
 
 
 METRICS = (
+    ("baseline_rpm", "baseline rpm", "baseline_rpm_vs_lead.png"),
     ("accel_0_50_rpm_s", "0-50 ms accel (rpm/s)", "accel_vs_lead.png"),
-    ("ripple_120_220", "120-220 ms ripple", "ripple_vs_lead.png"),
-    ("final_rpm", "final rpm", "final_rpm_vs_lead.png"),
+    ("end_rpm", "end rpm", "end_rpm_vs_lead.png"),
 )
 
 
@@ -44,10 +44,8 @@ def load_rows(path: Path) -> list[dict[str, object]]:
             row[key] = int(row[key])
         for key in (
             "baseline_rpm",
-            "gain_0_50_rpm",
             "accel_0_50_rpm_s",
-            "ripple_120_220",
-            "final_rpm",
+            "end_rpm",
         ):
             row[key] = finite(row[key])
         row["valid"] = row["valid"] == "True"
@@ -81,10 +79,9 @@ def write_scores(rows: list[dict[str, object]], out_dir: Path) -> list[dict[str,
             "valid_count": len(valid),
             "total_count": len(group),
             "both_dirs": bool(plus and minus),
-            "min_gain_0_50_rpm": min([row["gain_0_50_rpm"] for row in valid], default=math.nan),
+            "mean_baseline_rpm": mean([row["baseline_rpm"] for row in valid]),
             "mean_accel_0_50_rpm_s": mean([row["accel_0_50_rpm_s"] for row in valid]),
-            "max_ripple_120_220": max([row["ripple_120_220"] for row in valid], default=math.nan),
-            "mean_final_rpm": mean([row["final_rpm"] for row in valid]),
+            "mean_end_rpm": mean([row["end_rpm"] for row in valid]),
             "fail_notes": ";".join(sorted({str(row["note"]) for row in group if not row["valid"] and row["note"]})),
         }
         scores.append(score)
@@ -143,20 +140,19 @@ def write_report(scores: list[dict[str, object]], out_dir: Path) -> None:
         score
         for score in scores
         if score["both_dirs"]
-        and math.isfinite(score["min_gain_0_50_rpm"])
-        and math.isfinite(score["max_ripple_120_220"])
+        and math.isfinite(score["mean_accel_0_50_rpm_s"])
     ]
-    usable.sort(key=lambda row: (row["min_gain_0_50_rpm"], -row["max_ripple_120_220"]), reverse=True)
+    usable.sort(key=lambda row: row["mean_accel_0_50_rpm_s"], reverse=True)
 
     lines = ["# Observer Metric Summary", ""]
     lines.append("Top robust candidates require both spin directions valid for that duty.")
     lines.append("")
-    lines.append("| observer | lead_us | duty | min_gain_0_50_rpm | max_ripple | mean_final_rpm |")
+    lines.append("| observer | lead_us | duty | baseline_rpm | accel_0_50_rpm_s | end_rpm |")
     lines.append("|---|---:|---:|---:|---:|---:|")
     for row in usable[:20]:
         lines.append(
             f"| {row['observer']} | {row['lead_us']} | {row['duty']} | "
-            f"{row['min_gain_0_50_rpm']:.1f} | {row['max_ripple_120_220']:.4f} | {row['mean_final_rpm']:.1f} |"
+            f"{row['mean_baseline_rpm']:.1f} | {row['mean_accel_0_50_rpm_s']:.1f} | {row['mean_end_rpm']:.1f} |"
         )
 
     failures = defaultdict(int)

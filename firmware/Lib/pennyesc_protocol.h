@@ -103,6 +103,16 @@ typedef struct __attribute__((packed)) {
     int32_t velocity_crads;
     int16_t duty;
     uint16_t mct_fault_count;
+    uint16_t isr_us;
+    uint16_t isr_max_us;
+    uint16_t i2c_us;
+    uint16_t i2c_start_us;
+    uint16_t i2c_end_us;
+    uint32_t isr_overrun_count;
+    uint32_t i2c_timeout_count;
+    uint32_t i2c_nack_count;
+    uint32_t i2c_recover_count;
+    uint32_t uart_overrun_errors;
 } pny_status_payload_t;
 
 typedef struct __attribute__((packed)) {
@@ -170,10 +180,6 @@ typedef struct __attribute__((packed)) {
     uint16_t elapsed_ms;
     uint16_t sample_count;
     uint16_t missed_count;
-    int16_t start_rpm;
-    int16_t last_rpm;
-    int16_t peak_rpm;
-    int32_t accel_rpm_s;
     uint16_t mct_fault_count;
 } pny_capture_status_payload_t;
 

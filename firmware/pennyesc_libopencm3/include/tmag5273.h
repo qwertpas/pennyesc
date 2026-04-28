@@ -20,13 +20,26 @@ typedef enum {
     TMAG5273_MODE_FAST_XY = 1,
 } tmag5273_mode_t;
 
+typedef struct {
+    uint32_t timeout_count;
+    uint32_t nack_count;
+    uint32_t recover_count;
+} tmag5273_stats_t;
+
+typedef struct {
+    int16_t x;
+    int16_t y;
+    uint16_t start_phase_us;
+    uint16_t end_phase_us;
+    uint32_t sequence;
+} tmag5273_xy_sample_t;
+
 /**
  * Initialize TMAG5273 in full XYZ mode used by idle and calibration paths.
  * @return true on success, false if communication failed
  */
 bool tmag5273_init(void);
 bool tmag5273_set_mode(tmag5273_mode_t mode);
-bool tmag5273_prime_run_mode(void);
 
 /**
  * Clear power-on-reset flag if set
@@ -45,11 +58,15 @@ bool tmag5273_read_xyt(tmag_data_t *out);
  * Standard register read, used outside the run ISR.
  */
 bool tmag5273_read_xy_fast(int16_t *x, int16_t *y);
-bool tmag5273_read_xy_fast_triggered(int16_t *x, int16_t *y);
 bool tmag5273_read_z_fast(int16_t *z);
 bool tmag5273_read_xyz_fast(int16_t *x, int16_t *y, int16_t *z);
 
 bool tmag5273_read_all(tmag_data_t *out);
+void tmag5273_get_stats(tmag5273_stats_t *out);
+void tmag5273_async_cancel(void);
+bool tmag5273_async_start_xy(uint16_t start_phase_us);
+bool tmag5273_async_take_xy(tmag5273_xy_sample_t *out);
+void tmag5273_i2c1_isr(void);
 
 
 /**

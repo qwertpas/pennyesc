@@ -34,6 +34,7 @@ from pnyproto import (  # noqa: E402
     encode_frame,
 )
 
+
 HOST_FRAME_BYTE_GAP_S = 0.0005
 
 
@@ -51,6 +52,16 @@ class Status:
     velocity_crads: int
     duty: int
     mct_fault_count: int
+    isr_us: int
+    isr_max_us: int
+    i2c_us: int
+    i2c_start_us: int
+    i2c_end_us: int
+    isr_overrun_count: int
+    i2c_timeout_count: int
+    i2c_nack_count: int
+    i2c_recover_count: int
+    uart_overrun_errors: int
 
     @property
     def step(self) -> int:
@@ -71,10 +82,6 @@ class CaptureStatus:
     elapsed_ms: int
     sample_count: int
     missed_count: int
-    start_rpm: int
-    last_rpm: int
-    peak_rpm: int
-    accel_rpm_s: int
     mct_fault_count: int
 
 
@@ -132,7 +139,7 @@ class StepperClient:
 
         raise TimeoutError(f"timeout waiting for command 0x{expected_cmd:X}")
 
-    def exchange(self, cmd: int, payload: bytes = b"", timeout: float = 0.5) -> bytes:
+    def exchange(self, cmd: int, payload: bytes = b"", timeout: float = 1.0) -> bytes:
         frame = encode_frame(self.address, cmd, payload)
         for index, byte in enumerate(frame):
             self.port.write(bytes((byte,)))
@@ -141,34 +148,44 @@ class StepperClient:
                 time.sleep(HOST_FRAME_BYTE_GAP_S)
         return self._read_frame(cmd, timeout=timeout)
 
+    def exchange_retry(self, cmd: int, payload: bytes = b"", timeout: float = 1.0, attempts: int = 3) -> bytes:
+        last_error: TimeoutError | None = None
+        for _ in range(attempts):
+            try:
+                return self.exchange(cmd, payload, timeout)
+            except TimeoutError as exc:
+                last_error = exc
+                time.sleep(0.02)
+        raise last_error or TimeoutError(f"timeout waiting for command 0x{cmd:X}")
+
     def get_status(self) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_GET_STATUS)))
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_GET_STATUS)))
 
     def set_duty(self, duty: int) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_SET_DUTY, struct.pack("<h", duty))))
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_SET_DUTY, struct.pack("<h", duty))))
 
     def set_advance(self, advance_deg: int) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_SET_ADVANCE, struct.pack("<h", advance_deg))))
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg))))
 
     def set_observer(self, lead_us: int, mode: int = OBSERVER_RAW) -> CaptureStatus:
-        return self._decode_capture_status(self.exchange(CMD_EXT, struct.pack("<BhB", EXT_SET_OBSERVER, lead_us, mode)))
+        return self._decode_capture_status(self.exchange_retry(CMD_EXT, struct.pack("<BhB", EXT_SET_OBSERVER, lead_us, mode)))
 
     def set_step(self, step: int) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_STEP_SET, struct.pack("<b", step))))
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange(CMD_STEP_SET, struct.pack("<b", step))))
 
     def transition_step(self, step: int, blank_ms: int) -> Status:
         payload = struct.pack("<bH", step, blank_ms)
-        return Status(*struct.unpack("<BBBBhhhHiihH", self.exchange(CMD_STEP_TRANSITION, payload, timeout=1.0)))
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange(CMD_STEP_TRANSITION, payload, timeout=1.0)))
 
     def capture_start(self, duty: int, advance_deg: int, duration_ms: int, sample_hz: int) -> CaptureStatus:
         payload = struct.pack("<BhhHH", EXT_CAPTURE_START, duty, advance_deg, duration_ms, sample_hz)
         return self._decode_capture_status(self.exchange(CMD_EXT, payload))
 
     def capture_status(self) -> CaptureStatus:
-        return self._decode_capture_status(self.exchange(CMD_EXT, struct.pack("<B", EXT_CAPTURE_STATUS)))
+        return self._decode_capture_status(self.exchange_retry(CMD_EXT, struct.pack("<B", EXT_CAPTURE_STATUS), attempts=2))
 
     def capture_read(self, offset: int, count: int) -> list[tuple[int, int]]:
-        payload = self.exchange(CMD_EXT, struct.pack("<BHB", EXT_CAPTURE_READ, offset, count))
+        payload = self.exchange_retry(CMD_EXT, struct.pack("<BHB", EXT_CAPTURE_READ, offset, count))
         if len(payload) < 5 or payload[0] != EXT_CAPTURE_READ:
             raise RuntimeError("bad capture read response")
         result, resp_offset, resp_count = struct.unpack("<BHB", payload[1:5])
@@ -188,9 +205,9 @@ class StepperClient:
 
     @staticmethod
     def _decode_capture_status(payload: bytes) -> CaptureStatus:
-        if len(payload) != struct.calcsize("<BBBBHHHHHhhhiH") or payload[0] != EXT_CAPTURE_STATUS:
+        if len(payload) != struct.calcsize("<BBBBHHHHHH") or payload[0] != EXT_CAPTURE_STATUS:
             raise RuntimeError("bad capture status response")
-        fields = struct.unpack("<BBBBHHHHHhhhiH", payload)
+        fields = struct.unpack("<BBBBHHHHHH", payload)
         return CaptureStatus(*fields[1:])
 
 
@@ -206,7 +223,9 @@ def parse_step(value: str) -> int:
 
 def print_status(status: Status) -> None:
     print(
-        "mode=%d flags=0x%02X faults=0x%02X step=%d transitions=%d raw=(%d,%d,%d) duty=%d mct_faults=%d"
+        "mode=%d flags=0x%02X faults=0x%02X step=%d transitions=%d raw=(%d,%d,%d) duty=%d mct_faults=%d "
+        "isr=%dus max=%dus overruns=%d i2c=%dus phase=%d->%d "
+        "timeouts=%d nacks=%d recovers=%d uart_ore=%d"
         % (
             status.mode,
             status.flags,
@@ -218,6 +237,16 @@ def print_status(status: Status) -> None:
             status.z,
             status.duty,
             status.mct_fault_count,
+            status.isr_us,
+            status.isr_max_us,
+            status.isr_overrun_count,
+            status.i2c_us,
+            status.i2c_start_us,
+            status.i2c_end_us,
+            status.i2c_timeout_count,
+            status.i2c_nack_count,
+            status.i2c_recover_count,
+            status.uart_overrun_errors,
         )
     )
 
@@ -225,7 +254,7 @@ def print_status(status: Status) -> None:
 def print_capture_status(status: CaptureStatus) -> None:
     print(
         "capture result=%d active=%d done=%d hz=%d duration_ms=%d elapsed_ms=%d samples=%d missed=%d "
-        "rpm_start=%d rpm_last=%d rpm_peak=%d accel_rpm_s=%d mct_faults=%d"
+        "mct_faults=%d"
         % (
             status.result,
             status.active,
@@ -235,10 +264,6 @@ def print_capture_status(status: CaptureStatus) -> None:
             status.elapsed_ms,
             status.sample_count,
             status.missed_count,
-            status.start_rpm,
-            status.last_rpm,
-            status.peak_rpm,
-            status.accel_rpm_s,
             status.mct_fault_count,
         )
     )
@@ -511,7 +536,7 @@ def main() -> None:
                 return
         finally:
             try:
-                bridge.exit_bridge()
+                bridge.switch_bridge("off")
             except Exception:
                 pass
 

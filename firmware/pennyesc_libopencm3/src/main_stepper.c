@@ -378,6 +378,7 @@ static void auto_walk_poll(void)
 
 static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
 {
+    memset(payload, 0, sizeof(*payload));
     payload->result = result;
     payload->mode = (current_step >= 0) ? PNY_MODE_RUN : PNY_MODE_IDLE;
     payload->flags = sensor_ready ? PNY_FLAG_SENSOR_OK : 0u;

@@ -21,6 +21,7 @@ from pnyproto import OBSERVER_LP4, RESULT_OK  # noqa: E402
 
 ADVANCES = [30, 50, 70, 90, 110, 130, 150]
 DIRECTIONS = [1, -1]
+ACCEL_WINDOW_MS = 30.0
 
 
 @dataclass(frozen=True)
@@ -42,22 +43,8 @@ class PulseSummary:
     mct_fault_delta: int
     faults: int
     baseline_rpm: float
-    start_rpm: float
-    rpm_50ms: float
-    rpm_100ms: float
-    rpm_150ms: float
-    final_rpm: float
-    signed_start_rpm: float
-    signed_final_rpm: float
-    zero_cross_ms: float
-    gain_0_50_rpm: float
-    gain_0_90_rpm: float
-    accel_0_50_rpm_s: float
-    accel_0_80_rpm_s: float
-    accel_20_120_rpm_s: float
-    accel_40_160_rpm_s: float
-    ripple_120_220: float
-    monotonic_fraction: float
+    accel_0_30_rpm_s: float
+    end_rpm: float
     valid: bool
     note: str
 
@@ -102,56 +89,22 @@ def slope(samples: list[CaptureSample], start_ms: float, end_ms: float) -> float
     return sum((t - mean_t) * (rpm - mean_rpm) for t, rpm in points) / denom
 
 
-def speed_at(samples: list[CaptureSample], t_ms: float) -> float:
-    if not samples:
-        return 0.0
-    return float(abs(min(samples, key=lambda sample: abs(sample.t_ms - t_ms)).rpm))
-
-
 def mean_abs(samples: list[CaptureSample], start_ms: float, end_ms: float) -> float:
     values = [abs(sample.rpm) for sample in samples if start_ms <= sample.t_ms <= end_ms]
     return statistics.fmean(values) if values else 0.0
 
 
-def mean_signed(samples: list[CaptureSample], start_ms: float, end_ms: float) -> float:
-    values = [sample.rpm for sample in samples if start_ms <= sample.t_ms <= end_ms]
-    return statistics.fmean(values) if values else 0.0
-
-
-def ripple(samples: list[CaptureSample], start_ms: float, end_ms: float) -> float:
-    values = [abs(sample.rpm) for sample in samples if start_ms <= sample.t_ms <= end_ms]
-    if len(values) < 2:
-        return float("inf")
-    mean = statistics.fmean(values)
-    return statistics.pstdev(values) / mean if mean > 1.0 else float("inf")
-
-
-def monotonic_fraction(samples: list[CaptureSample]) -> float:
-    angles = unwrap(samples)
-    deltas = [angles[i] - angles[i - 1] for i in range(1, len(angles))]
-    if not deltas:
-        return 0.0
-    pos = sum(1 for delta in deltas if delta > 0)
-    neg = sum(1 for delta in deltas if delta < 0)
-    zero = len(deltas) - pos - neg
-    return (max(pos, neg) + zero) / len(deltas)
-
-
-def zero_cross_ms(samples: list[CaptureSample]) -> float:
-    if len(samples) < 2:
-        return float("nan")
-    last = samples[0]
-    for sample in samples[1:]:
-        if last.rpm == 0:
-            return last.t_ms
-        if (last.rpm < 0 <= sample.rpm) or (last.rpm > 0 >= sample.rpm):
-            span = sample.rpm - last.rpm
-            if span == 0:
-                return sample.t_ms
-            frac = -last.rpm / span
-            return last.t_ms + frac * (sample.t_ms - last.t_ms)
-        last = sample
-    return float("nan")
+def average_status_rpm(client: StepperClient, duration_ms: int) -> tuple[float, object]:
+    values: list[float] = []
+    deadline = time.monotonic() + duration_ms / 1000.0
+    status = client.get_status()
+    while time.monotonic() < deadline:
+        status = client.get_status()
+        values.append(abs(status.velocity_crads) * 60.0 / 62831.853)
+        time.sleep(0.02)
+    if not values:
+        values.append(abs(status.velocity_crads) * 60.0 / 62831.853)
+    return statistics.fmean(values), status
 
 
 def run_pulse(
@@ -166,18 +119,25 @@ def run_pulse(
     rows: list[dict] = []
     try:
         start_faults = client.get_status().mct_fault_count
-        client.set_observer(args.observer_lead_us, args.observer_mode)
+        client.set_observer(args.baseline_observer_lead_us, args.baseline_observer_mode)
         client.set_advance(args.baseline_advance)
         client.set_duty(baseline_duty)
         time.sleep(args.baseline_ms / 1000.0)
-        baseline_status = client.get_status()
-        status = client.capture_start(pulse_duty, advance_deg, args.pulse_ms, args.sample_hz)
+        baseline_rpm, baseline_status = average_status_rpm(client, args.baseline_average_ms)
+        client.set_observer(args.observer_lead_us, args.observer_mode)
+        try:
+            status = client.capture_start(pulse_duty, advance_deg, args.pulse_ms, args.sample_hz)
+        except TimeoutError:
+            status = client.capture_status()
         if status.result != RESULT_OK:
             raise RuntimeError(f"capture_start result={status.result}")
         deadline = time.monotonic() + args.pulse_ms / 1000.0 + 1.0
         while status.active and time.monotonic() < deadline:
             time.sleep(0.015)
-            status = client.capture_status()
+            try:
+                status = client.capture_status()
+            except TimeoutError:
+                continue
         if status.active:
             raise TimeoutError("capture did not finish")
         samples = read_samples(client, status.sample_hz, status.sample_count)
@@ -189,7 +149,6 @@ def run_pulse(
             pass
 
     mct_fault_delta = max(0, status.mct_fault_count - start_faults)
-    mono = monotonic_fraction(samples)
     note = []
     if status.missed_count:
         note.append(f"missed={status.missed_count}")
@@ -199,9 +158,6 @@ def run_pulse(
         note.append(f"mct_fault_delta={mct_fault_delta}")
     if abs(baseline_status.velocity_crads) < 5000:
         note.append("baseline_not_spinning")
-    if mono < 0.90:
-        note.append("angle_not_monotonic")
-
     summary = PulseSummary(
         test="pulse",
         direction=direction,
@@ -219,23 +175,9 @@ def run_pulse(
         missed_count=status.missed_count,
         mct_fault_delta=mct_fault_delta,
         faults=end_status.faults,
-        baseline_rpm=abs(baseline_status.velocity_crads) * 60.0 / 628.0,
-        start_rpm=mean_abs(samples, 0.0, 10.0),
-        rpm_50ms=speed_at(samples, 50.0),
-        rpm_100ms=speed_at(samples, 100.0),
-        rpm_150ms=speed_at(samples, 150.0),
-        final_rpm=mean_abs(samples, max(0.0, args.pulse_ms - 20.0), float(args.pulse_ms)),
-        signed_start_rpm=mean_signed(samples, 0.0, 10.0),
-        signed_final_rpm=mean_signed(samples, max(0.0, args.pulse_ms - 20.0), float(args.pulse_ms)),
-        zero_cross_ms=float("nan"),
-        gain_0_50_rpm=mean_abs(samples, 30.0, 50.0) - mean_abs(samples, 0.0, 10.0),
-        gain_0_90_rpm=mean_abs(samples, 70.0, 90.0) - mean_abs(samples, 0.0, 10.0),
-        accel_0_50_rpm_s=slope(samples, 0.0, 50.0),
-        accel_0_80_rpm_s=slope(samples, 0.0, 80.0),
-        accel_20_120_rpm_s=slope(samples, 20.0, 120.0),
-        accel_40_160_rpm_s=slope(samples, 40.0, 160.0),
-        ripple_120_220=ripple(samples, 120.0, min(220.0, args.pulse_ms)),
-        monotonic_fraction=mono,
+        baseline_rpm=baseline_rpm,
+        accel_0_30_rpm_s=slope(samples, 0.0, ACCEL_WINDOW_MS),
+        end_rpm=mean_abs(samples, max(0.0, args.pulse_ms - 20.0), float(args.pulse_ms)),
         valid=not note,
         note=";".join(note),
     )
@@ -247,6 +189,8 @@ def run_pulse(
             {
                 "direction": direction,
                 "test": "pulse",
+                "baseline_duty": args.baseline_duty,
+                "pulse_duty": args.pulse_duty,
                 "advance_deg": advance_deg,
                 "observer_lead_us": args.observer_lead_us,
                 "observer_mode": args.observer_mode,
@@ -269,18 +213,25 @@ def run_reversal(
     rows: list[dict] = []
     try:
         start_faults = client.get_status().mct_fault_count
-        client.set_observer(args.observer_lead_us, args.observer_mode)
+        client.set_observer(args.baseline_observer_lead_us, args.baseline_observer_mode)
         client.set_advance(args.baseline_advance)
         client.set_duty(args.baseline_duty)
         time.sleep(args.baseline_ms / 1000.0)
-        baseline_status = client.get_status()
-        status = client.capture_start(-args.baseline_duty, args.baseline_advance, args.reversal_ms, args.sample_hz)
+        baseline_rpm, baseline_status = average_status_rpm(client, args.baseline_average_ms)
+        client.set_observer(args.observer_lead_us, args.observer_mode)
+        try:
+            status = client.capture_start(-args.baseline_duty, args.baseline_advance, args.reversal_ms, args.sample_hz)
+        except TimeoutError:
+            status = client.capture_status()
         if status.result != RESULT_OK:
             raise RuntimeError(f"capture_start result={status.result}")
         deadline = time.monotonic() + args.reversal_ms / 1000.0 + 1.0
         while status.active and time.monotonic() < deadline:
             time.sleep(0.015)
-            status = client.capture_status()
+            try:
+                status = client.capture_status()
+            except TimeoutError:
+                continue
         if status.active:
             raise TimeoutError("capture did not finish")
         samples = read_samples(client, status.sample_hz, status.sample_count)
@@ -301,11 +252,6 @@ def run_reversal(
         note.append(f"mct_fault_delta={mct_fault_delta}")
     if abs(baseline_status.velocity_crads) < 5000:
         note.append("baseline_not_spinning")
-    zc = zero_cross_ms(samples)
-    zero_note = "" if not math.isnan(zc) else "no_zero_cross"
-
-    start_signed = mean_signed(samples, 0.0, 10.0)
-    final_signed = mean_signed(samples, max(0.0, args.reversal_ms - 20.0), float(args.reversal_ms))
     summary = PulseSummary(
         test="reversal",
         direction=-1,
@@ -323,25 +269,11 @@ def run_reversal(
         missed_count=status.missed_count,
         mct_fault_delta=mct_fault_delta,
         faults=end_status.faults,
-        baseline_rpm=abs(baseline_status.velocity_crads) * 60.0 / 628.0,
-        start_rpm=abs(start_signed),
-        rpm_50ms=speed_at(samples, 50.0),
-        rpm_100ms=speed_at(samples, 100.0),
-        rpm_150ms=speed_at(samples, 150.0),
-        final_rpm=abs(final_signed),
-        signed_start_rpm=start_signed,
-        signed_final_rpm=final_signed,
-        zero_cross_ms=zc,
-        gain_0_50_rpm=abs(final_signed) - abs(start_signed),
-        gain_0_90_rpm=speed_at(samples, 90.0) - abs(start_signed),
-        accel_0_50_rpm_s=slope(samples, 0.0, 50.0),
-        accel_0_80_rpm_s=slope(samples, 0.0, 80.0),
-        accel_20_120_rpm_s=slope(samples, 20.0, 120.0),
-        accel_40_160_rpm_s=slope(samples, 40.0, 160.0),
-        ripple_120_220=ripple(samples, 120.0, min(220.0, args.reversal_ms)),
-        monotonic_fraction=monotonic_fraction(samples),
+        baseline_rpm=baseline_rpm,
+        accel_0_30_rpm_s=slope(samples, 0.0, ACCEL_WINDOW_MS),
+        end_rpm=mean_abs(samples, max(0.0, args.reversal_ms - 20.0), float(args.reversal_ms)),
         valid=not note,
-        note=";".join(note + ([zero_note] if zero_note else [])),
+        note=";".join(note),
     )
 
     unwrapped = unwrap(samples)
@@ -351,6 +283,8 @@ def run_reversal(
             {
                 "direction": -1,
                 "test": "reversal",
+                "baseline_duty": args.baseline_duty,
+                "pulse_duty": -args.baseline_duty,
                 "advance_deg": args.baseline_advance,
                 "observer_lead_us": args.observer_lead_us,
                 "observer_mode": args.observer_mode,
@@ -384,152 +318,38 @@ def write_report(path: Path, summaries: list[PulseSummary]) -> None:
         f"runs: {len(summaries)}",
         f"valid: {len(valid)}",
         f"invalid: {len(summaries) - len(valid)}",
-        "",
-        "## Best Pulse Gain 0-50ms",
     ]
     pulse_rows = [row for row in valid if row.test == "pulse"]
     reversal_rows = [row for row in valid if row.test == "reversal"]
-    groups = sorted({(row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty) for row in pulse_rows})
-    balanced = []
-    for mode, lead, advance, pulse_duty in groups:
-        dir_rows = []
-        for direction in DIRECTIONS:
-            rows = [
-                row for row in pulse_rows
-                if row.direction == direction
-                and row.observer_mode == mode
-                and row.observer_lead_us == lead
-                and row.advance_deg == advance
-                and row.pulse_duty == pulse_duty
-            ]
-            if rows:
-                dir_rows.append(
-                    (
-                        direction,
-                        statistics.fmean(row.gain_0_50_rpm for row in rows),
-                        statistics.fmean(row.final_rpm for row in rows),
-                        statistics.fmean(row.ripple_120_220 for row in rows),
-                        len(rows),
-                    )
-                )
-        if len(dir_rows) == 2:
-            balanced.append((min(row[1] for row in dir_rows), mode, lead, advance, pulse_duty, dir_rows))
-    if balanced:
-        lines += ["", "## Balanced Score"]
-        for score, mode, lead, advance, pulse_duty, dir_rows in sorted(balanced, reverse=True):
-            parts = " ".join(
-                f"dir={direction:+d} gain50={gain:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
-                for direction, gain, final, rip, count in dir_rows
-            )
-            lines.append(f"mode={mode} lead={lead} advance={advance} pulse={pulse_duty} score={score:.1f} {parts}")
 
     if pulse_rows:
-        lines += ["", "## Balanced By Pulse Duty"]
-        for pulse_duty in sorted({row.pulse_duty for row in pulse_rows}):
-            rows = [row for row in balanced if row[4] == pulse_duty]
-            if rows:
-                score, mode, lead, advance, _, dir_rows = sorted(rows, reverse=True)[0]
-                parts = " ".join(
-                    f"dir={direction:+d} gain50={gain:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
-                    for direction, gain, final, rip, count in dir_rows
-                )
-                lines.append(f"pulse={pulse_duty} best_mode={mode} best_lead={lead} advance={advance} score={score:.1f} {parts}")
-
-        lead_scores = []
-        for mode, lead in sorted({(row.observer_mode, row.observer_lead_us) for row in pulse_rows}):
-            duty_scores = []
-            for pulse_duty in sorted({row.pulse_duty for row in pulse_rows}):
-                candidates = [row for row in balanced if row[1] == mode and row[2] == lead and row[4] == pulse_duty]
-                if candidates:
-                    duty_scores.append(max(row[0] for row in candidates))
-            if duty_scores:
-                lead_scores.append((min(duty_scores), statistics.fmean(duty_scores), mode, lead, len(duty_scores)))
-        if lead_scores:
-            lines += ["", "## Overall Lead Score"]
-            for worst, mean, mode, lead, count in sorted(lead_scores, reverse=True):
-                lines.append(f"mode={mode} lead={lead} worst_duty_score={worst:.1f} mean_duty_score={mean:.1f} duties={count}")
-
-    for direction in DIRECTIONS:
-        rows = [row for row in pulse_rows if row.direction == direction]
-        grouped: dict[tuple[int, int, int, int], list[PulseSummary]] = {}
-        for row in rows:
-            grouped.setdefault((row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
+        lines += ["", "## Pulse Groups"]
+        grouped: dict[tuple[int, int, int, int, int], list[PulseSummary]] = {}
+        for row in pulse_rows:
+            key = (row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty, row.direction)
+            grouped.setdefault(key, []).append(row)
         ranked = []
-        for (mode, lead, advance, pulse_duty), items in grouped.items():
+        for (mode, lead, advance, pulse_duty, direction), items in grouped.items():
             ranked.append(
                 (
-                    statistics.fmean(row.gain_0_50_rpm for row in items),
-                    statistics.pstdev(row.gain_0_50_rpm for row in items) if len(items) > 1 else 0.0,
-                    statistics.fmean(row.accel_0_50_rpm_s for row in items),
-                    statistics.fmean(row.start_rpm for row in items),
-                    statistics.fmean(row.ripple_120_220 for row in items),
-                    statistics.fmean(row.final_rpm for row in items),
-                    mode,
-                    lead,
-                    advance,
-                    pulse_duty,
-                    len(items),
-                )
-            )
-        for gain, gain_std, accel, start, rip, final, mode, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
-            lines.append(
-                f"dir={direction:+d} mode={mode} lead={lead} advance={advance} pulse={pulse_duty} gain50={gain:.1f} std={gain_std:.1f} accel50={accel:.1f} start={start:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
-            )
-
-    lines += ["", "## Best Acceleration 0-50ms"]
-    for direction in DIRECTIONS:
-        rows = [row for row in pulse_rows if row.direction == direction]
-        grouped: dict[tuple[int, int, int, int], list[PulseSummary]] = {}
-        for row in rows:
-            grouped.setdefault((row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
-        ranked = []
-        for (mode, lead, advance, pulse_duty), items in grouped.items():
-            ranked.append(
-                (
-                    statistics.fmean(row.accel_0_50_rpm_s for row in items),
-                    statistics.pstdev(row.accel_0_50_rpm_s for row in items) if len(items) > 1 else 0.0,
-                    statistics.fmean(row.gain_0_50_rpm for row in items),
-                    statistics.fmean(row.start_rpm for row in items),
-                    statistics.fmean(row.ripple_120_220 for row in items),
-                    statistics.fmean(row.final_rpm for row in items),
-                    mode,
-                    lead,
-                    advance,
-                    pulse_duty,
-                    len(items),
-                )
-            )
-        for accel, accel_std, gain, start, rip, final, mode, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
-            lines.append(
-                f"dir={direction:+d} mode={mode} lead={lead} advance={advance} pulse={pulse_duty} accel50={accel:.1f} std={accel_std:.1f} gain50={gain:.1f} start={start:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
-            )
-
-    lines += ["", "## Best Acceleration 20-120ms"]
-    for direction in DIRECTIONS:
-        rows = [row for row in pulse_rows if row.direction == direction]
-        grouped: dict[tuple[int, int, int, int], list[PulseSummary]] = {}
-        for row in rows:
-            grouped.setdefault((row.observer_mode, row.observer_lead_us, row.advance_deg, row.pulse_duty), []).append(row)
-        ranked = []
-        for (mode, lead, advance, pulse_duty), items in grouped.items():
-            ranked.append(
-                (
-                    statistics.fmean(row.accel_20_120_rpm_s for row in items),
-                    statistics.pstdev(row.accel_20_120_rpm_s for row in items) if len(items) > 1 else 0.0,
+                    statistics.fmean(row.accel_0_30_rpm_s for row in items),
+                    statistics.pstdev(row.accel_0_30_rpm_s for row in items) if len(items) > 1 else 0.0,
                     statistics.fmean(row.baseline_rpm for row in items),
-                    statistics.fmean(row.ripple_120_220 for row in items),
-                    statistics.fmean(row.final_rpm for row in items),
+                    statistics.fmean(row.end_rpm for row in items),
                     mode,
                     lead,
                     advance,
                     pulse_duty,
+                    direction,
                     len(items),
                 )
             )
-        for accel_mean, accel_std, baseline, rip, final, mode, lead, advance, pulse_duty, count in sorted(ranked, reverse=True):
+        for accel, accel_std, baseline, end_rpm, mode, lead, advance, pulse_duty, direction, count in sorted(ranked, reverse=True):
             lines.append(
-                f"dir={direction:+d} mode={mode} lead={lead} advance={advance} pulse={pulse_duty} accel={accel_mean:.1f} std={accel_std:.1f} baseline={baseline:.1f} final={final:.1f} ripple={rip:.4f} n={count}"
+                f"dir={direction:+d} mode={mode} lead={lead} advance={advance} pulse={pulse_duty} "
+                f"baseline={baseline:.1f} accel30={accel:.1f} accel_std={accel_std:.1f} end={end_rpm:.1f} n={count}"
             )
+
     if reversal_rows:
         lines += ["", "## Reversal"]
         grouped: dict[tuple[int, int], list[PulseSummary]] = {}
@@ -539,16 +359,17 @@ def write_report(path: Path, summaries: list[PulseSummary]) -> None:
         for (mode, lead), items in grouped.items():
             ranked.append(
                 (
-                    statistics.fmean(row.zero_cross_ms for row in items),
-                    statistics.fmean(row.final_rpm for row in items),
-                    statistics.fmean(row.ripple_120_220 for row in items),
+                    statistics.fmean(row.accel_0_30_rpm_s for row in items),
+                    statistics.fmean(row.baseline_rpm for row in items),
+                    statistics.fmean(row.end_rpm for row in items),
                     mode,
                     lead,
                     len(items),
                 )
             )
-        for zc, final, rip, mode, lead, count in sorted(ranked):
-            lines.append(f"mode={mode} lead={lead} zero_cross={zc:.1f}ms final_reverse={final:.1f} ripple={rip:.4f} n={count}")
+        for accel, baseline, end_rpm, mode, lead, count in sorted(ranked, reverse=True):
+            lines.append(f"mode={mode} lead={lead} baseline={baseline:.1f} accel30={accel:.1f} end={end_rpm:.1f} n={count}")
+
     lines += ["", "## Invalid"]
     for row in summaries:
         if not row.valid:
@@ -569,9 +390,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--observer-lead-us", type=int, default=450)
     parser.add_argument("--observer-lead", dest="observer_leads", action="append", type=int, default=None)
     parser.add_argument("--observer-mode", dest="observer_modes", action="append", type=int, default=None)
+    parser.add_argument("--baseline-observer-lead-us", type=int, default=0)
+    parser.add_argument("--baseline-observer-mode", type=int, default=0)
     parser.add_argument("--restore-observer-lead-us", type=int, default=450)
     parser.add_argument("--restore-observer-mode", type=int, default=OBSERVER_LP4)
     parser.add_argument("--baseline-ms", type=int, default=700)
+    parser.add_argument("--baseline-average-ms", type=int, default=200)
     parser.add_argument("--pulse-ms", type=int, default=300)
     parser.add_argument("--reversal-ms", type=int, default=300)
     parser.add_argument("--sample-hz", type=int, default=500)
@@ -634,22 +458,8 @@ def main() -> int:
                                                 mct_fault_delta=0,
                                                 faults=0,
                                                 baseline_rpm=0.0,
-                                                start_rpm=0.0,
-                                                rpm_50ms=0.0,
-                                                rpm_100ms=0.0,
-                                                rpm_150ms=0.0,
-                                                final_rpm=0.0,
-                                                signed_start_rpm=0.0,
-                                                signed_final_rpm=0.0,
-                                                zero_cross_ms=float("nan"),
-                                                gain_0_50_rpm=0.0,
-                                                gain_0_90_rpm=0.0,
-                                                accel_0_50_rpm_s=float("nan"),
-                                                accel_0_80_rpm_s=float("nan"),
-                                                accel_20_120_rpm_s=float("nan"),
-                                                accel_40_160_rpm_s=float("nan"),
-                                                ripple_120_220=float("inf"),
-                                                monotonic_fraction=0.0,
+                                                accel_0_30_rpm_s=float("nan"),
+                                                end_rpm=0.0,
                                                 valid=False,
                                                 note=type(exc).__name__,
                                             )
@@ -686,22 +496,8 @@ def main() -> int:
                                     mct_fault_delta=0,
                                     faults=0,
                                     baseline_rpm=0.0,
-                                    start_rpm=0.0,
-                                    rpm_50ms=0.0,
-                                    rpm_100ms=0.0,
-                                    rpm_150ms=0.0,
-                                    final_rpm=0.0,
-                                    signed_start_rpm=0.0,
-                                    signed_final_rpm=0.0,
-                                    zero_cross_ms=float("nan"),
-                                    gain_0_50_rpm=0.0,
-                                    gain_0_90_rpm=0.0,
-                                    accel_0_50_rpm_s=float("nan"),
-                                    accel_0_80_rpm_s=float("nan"),
-                                    accel_20_120_rpm_s=float("nan"),
-                                    accel_40_160_rpm_s=float("nan"),
-                                    ripple_120_220=float("inf"),
-                                    monotonic_fraction=0.0,
+                                    accel_0_30_rpm_s=float("nan"),
+                                    end_rpm=0.0,
                                     valid=False,
                                     note=type(exc).__name__,
                                 )
