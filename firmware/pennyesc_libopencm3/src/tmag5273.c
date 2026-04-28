@@ -276,7 +276,12 @@ void tmag5273_async_cancel(void)
     async_disable();
     async_state = ASYNC_IDLE;
     async_rx_index = 0;
-    async_clear_flags();
+    async_sample_ready = false;
+    if ((I2C_ISR(I2C1) & I2C_ISR_BUSY) != 0u) {
+        i2c1_recover();
+    } else {
+        async_clear_flags();
+    }
 }
 
 bool tmag5273_async_start_xy(uint16_t start_phase_us)

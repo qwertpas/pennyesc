@@ -22,18 +22,16 @@ static const pennyesc_calibration_blob_t *active_blob;
 static bool active_valid;
 static calibration_writer_t writer;
 
-static int32_t div_round_i64(int64_t value, int32_t denom)
-{
-    if (value >= 0) {
-        return (int32_t)((value + (denom / 2)) / denom);
-    }
-    return -(int32_t)(((-value) + (denom / 2)) / denom);
-}
-
 static uint16_t blend_angle_turn16(uint16_t a, uint16_t b, uint16_t frac)
 {
     int16_t delta = (int16_t)(b - a);
-    return (uint16_t)(a + div_round_i64((int64_t)delta * frac, (int32_t)(1u << PENNYESC_PSEUDO_FRAC_BITS)));
+    int32_t value = (int32_t)delta * frac;
+    if (value >= 0) {
+        value = (value + (1 << (PENNYESC_PSEUDO_FRAC_BITS - 1u))) >> PENNYESC_PSEUDO_FRAC_BITS;
+    } else {
+        value = -(((-value) + (1 << (PENNYESC_PSEUDO_FRAC_BITS - 1u))) >> PENNYESC_PSEUDO_FRAC_BITS);
+    }
+    return (uint16_t)(a + value);
 }
 
 static uint8_t pseudo_lookup(int32_t x, int32_t y, uint16_t *frac_out)
