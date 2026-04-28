@@ -38,7 +38,7 @@
 #define ADVANCE_DEFAULT_TURN16 ((uint16_t)(((uint32_t)((ADVANCE_DEG < 0) ? (ADVANCE_DEG + 360) : ADVANCE_DEG) * 65536u + 180u) / 360u))
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
-#define OBSERVER_LEAD_US 450
+#define OBSERVER_LEAD_US 350
 #define OBSERVER_LEAD_MIN_US -1000
 #define OBSERVER_LEAD_MAX_US 1000
 #define COMM_CENTER_OFFSET_DEG 30
@@ -701,12 +701,22 @@ static uint16_t sched_now_us(void)
     return (uint16_t)timer_get_counter(TIM21);
 }
 
-static int32_t observer_position_at_tick(uint16_t tick)
+static int32_t comm_velocity_for_direction(int direction)
+{
+    int32_t velocity = comm_velocity_turn32_per_s;
+    if ((direction > 0 && velocity < 0) || (direction < 0 && velocity > 0)) {
+        return 0;
+    }
+    return velocity;
+}
+
+static int32_t observer_position_at_tick(uint16_t tick, int direction)
 {
     int32_t dt_us = (int16_t)(tick - comm_scheduler.position_tick);
     dt_us += observer_lead_us;
+    int32_t velocity = comm_velocity_for_direction(direction);
     return observer_state.position_turn32 +
-           (comm_velocity_turn32_per_s / 1000) * dt_us / 1000;
+           (velocity / 1000) * dt_us / 1000;
 }
 
 static int32_t predict_position_delta(int32_t velocity, uint16_t dt_us)
@@ -742,19 +752,7 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
 
 static int32_t electrical_position_at_tick(uint16_t tick, int direction)
 {
-    int32_t electrical = (int32_t)((uint32_t)observer_position_at_tick(tick) * POLE_PAIRS);
-    electrical += (int32_t)COMM_CENTER_TURN16;
-    if (direction > 0) {
-        electrical += current_advance_turn16;
-    } else if (direction < 0) {
-        electrical -= current_advance_turn16;
-    }
-    return electrical;
-}
-
-static int32_t electrical_position_from_measured(int direction)
-{
-    int32_t electrical = (int32_t)((uint32_t)absolute_position_turn32 * POLE_PAIRS);
+    int32_t electrical = (int32_t)((uint32_t)observer_position_at_tick(tick, direction) * POLE_PAIRS);
     electrical += (int32_t)COMM_CENTER_TURN16;
     if (direction > 0) {
         electrical += current_advance_turn16;
@@ -767,12 +765,6 @@ static int32_t electrical_position_from_measured(int direction)
 static uint8_t comm_sector_at_tick(uint16_t tick, int direction)
 {
     uint16_t phase = (uint16_t)electrical_position_at_tick(tick, direction);
-    return (uint8_t)(((uint32_t)phase * 6u) >> 16);
-}
-
-static uint8_t comm_sector_measured(int direction)
-{
-    uint16_t phase = (uint16_t)electrical_position_from_measured(direction);
     return (uint8_t)(((uint32_t)phase * 6u) >> 16);
 }
 
@@ -1327,7 +1319,7 @@ static void comm_control_tick(uint16_t now)
         comm_edge_disable();
     }
 
-    uint8_t sector = scheduled_edges ? comm_sector_at_tick(now, direction) : comm_sector_measured(direction);
+    uint8_t sector = comm_sector_at_tick(now, direction);
     debug_comm_step = sector;
     if (comm_scheduler.sector > 5u || (!comm_scheduler.edge_active && sector != comm_scheduler.sector)) {
         set_hall_outputs_raw(sector);
