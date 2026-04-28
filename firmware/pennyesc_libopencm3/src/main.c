@@ -671,11 +671,12 @@ static uint16_t advance_deg_to_turn16(int16_t advance_deg)
     return (uint16_t)(((uint32_t)advance * 65536u + 180u) / 360u);
 }
 
-static uint16_t observer_angle_turn16(uint16_t angle_turn16)
+static uint16_t observer_angle_turn16(void)
 {
+    int32_t position = observer_state.position_turn32;
     int32_t velocity = observer_velocity_turn32_per_s;
     int32_t offset = (int32_t)(((int64_t)velocity * observer_lead_us) / 1000000);
-    return (uint16_t)((int32_t)angle_turn16 + offset);
+    return (uint16_t)(position + offset);
 }
 
 static int32_t clamp_i32(int32_t value, int32_t limit)
@@ -754,27 +755,31 @@ static void observer_update_velocity(int32_t velocity)
     return;
 
 observer_cv:
-    predicted = observer_state.position_turn32 + (observer_velocity_turn32_per_s / 1000);
+    predicted = observer_state.position_turn32 + (observer_velocity_turn32_per_s / ISR_FREQ_HZ);
     error = absolute_position_turn32 - predicted;
     observer_state.position_turn32 = predicted + ((error * alpha) / 256);
-    observer_velocity_turn32_per_s += ((error * beta) * 1000) / 256;
+    observer_velocity_turn32_per_s += (int32_t)(((int64_t)error * beta * ISR_FREQ_HZ) / 256);
     observer_velocity_turn32_per_s = clamp_i32(observer_velocity_turn32_per_s, OBSERVER_VEL_LIMIT);
     observer_state.accel_turn32_per_s2 = 0;
     return;
 
 observer_ca:
-    predicted = observer_state.position_turn32 + (observer_velocity_turn32_per_s / 1000) + (observer_state.accel_turn32_per_s2 / 2000000);
+    predicted = observer_state.position_turn32 +
+                (observer_velocity_turn32_per_s / ISR_FREQ_HZ) +
+                (int32_t)((int64_t)observer_state.accel_turn32_per_s2 / (2 * ISR_FREQ_HZ * ISR_FREQ_HZ));
     error = absolute_position_turn32 - predicted;
     observer_state.position_turn32 = predicted + ((error * alpha) / 256);
-    observer_velocity_turn32_per_s += (observer_state.accel_turn32_per_s2 / 1000) + ((error * beta) * 1000) / 256;
+    observer_velocity_turn32_per_s += (observer_state.accel_turn32_per_s2 / ISR_FREQ_HZ) +
+                                      (int32_t)(((int64_t)error * beta * ISR_FREQ_HZ) / 256);
     observer_velocity_turn32_per_s = clamp_i32(observer_velocity_turn32_per_s, OBSERVER_VEL_LIMIT);
-    observer_state.accel_turn32_per_s2 += (int32_t)(((int64_t)error * gamma * 1000000) / 65536);
+    observer_state.accel_turn32_per_s2 += (int32_t)(((int64_t)error * gamma * ISR_FREQ_HZ * ISR_FREQ_HZ) / 256);
     observer_state.accel_turn32_per_s2 = clamp_i32(observer_state.accel_turn32_per_s2, OBSERVER_ACCEL_LIMIT);
 }
 
 static int mechanical_angle_to_step(uint16_t angle_turn16, int direction)
 {
-    uint16_t estimated_angle = observer_angle_turn16(angle_turn16);
+    (void)angle_turn16;
+    uint16_t estimated_angle = observer_angle_turn16();
     int32_t electrical = (int32_t)((uint32_t)estimated_angle * POLE_PAIRS);
     electrical += COMM_CENTER_TURN16;
     if (direction > 0) {
@@ -1304,11 +1309,11 @@ static void handle_set_duty(const uint8_t *payload, uint8_t len)
     commanded_duty = duty;
 
     if (duty == 0) {
+        run_stop();
         current_mode = PNY_MODE_IDLE;
         current_duty = 0;
         current_direction = 0;
         send_status_response(PNY_CMD_SET_DUTY, PNY_RESULT_OK);
-        run_stop();
         return;
     }
 
@@ -1321,12 +1326,19 @@ static void handle_set_duty(const uint8_t *payload, uint8_t len)
     }
     if (was_running) {
         mct_recover_if_needed(duty < 0);
+        current_duty = duty;
+        current_direction = (duty > 0) ? 1 : -1;
+    } else {
+        run_begin();
+        if (current_mode != PNY_MODE_RUN) {
+            commanded_duty = old_commanded_duty;
+            target_position_set = old_target_position_set;
+            send_status_response(PNY_CMD_SET_DUTY, PNY_RESULT_BAD_STATE);
+            return;
+        }
     }
     current_mode = PNY_MODE_RUN;
     send_status_response(PNY_CMD_SET_DUTY, PNY_RESULT_OK);
-    if (!was_running) {
-        run_begin();
-    }
 }
 
 static void handle_set_position(const uint8_t *payload, uint8_t len)
