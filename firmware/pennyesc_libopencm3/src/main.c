@@ -38,7 +38,7 @@
 #define ADVANCE_DEFAULT_TURN16 ((uint16_t)(((uint32_t)((ADVANCE_DEG < 0) ? (ADVANCE_DEG + 360) : ADVANCE_DEG) * 65536u + 180u) / 360u))
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
-#define OBSERVER_LEAD_US 350
+#define OBSERVER_LEAD_US 0
 #define OBSERVER_LEAD_MIN_US -1000
 #define OBSERVER_LEAD_MAX_US 1000
 #define COMM_CENTER_OFFSET_DEG 30
@@ -49,6 +49,7 @@
 #define TMAG_READ_PERIOD_US SENSOR_TICK_US
 #define SCHED_TIMER_PERIOD 0xffffu
 #define SENSOR_STALE_US 10000u
+#define SENSOR_START_RETRIES 4u
 #define VEL_UPDATE_SAMPLES (ISR_FREQ_HZ / 1000u)
 #define VELOCITY_WINDOW_SAMPLES 32u
 #define VELOCITY_WINDOW_MASK (VELOCITY_WINDOW_SAMPLES - 1u)
@@ -64,12 +65,14 @@
 #define UART_APP_BAUD 230400u
 #define UART_DMA_RX_BUF_SIZE 64u
 #define UART_DMA_RX_BUF_MASK (UART_DMA_RX_BUF_SIZE - 1u)
+#define MCT_RUN_CHECK_MS 10u
+#define MCT_RUN_BAD_LIMIT 3u
 
 #define FRAME_BUF_SIZE (PNY_FRAME_MAX_PAYLOAD + 4u)
 #define CAPTURE_MAX_SAMPLES 160u
 #define CAPTURE_MAX_DURATION_MS 2000u
 #define MCT_IC_STATUS_NPOR (1u << 3)
-#define MCT_EXPECTED_CONTROL2A (MCT8316Z_CONTROL2A_RESERVED | MCT8316Z_SDO_MODE_PUSH_PULL | MCT8316Z_PWM_MODE_SYNC_DIG)
+#define MCT_EXPECTED_CONTROL2A (MCT8316Z_CONTROL2A_RESERVED | MCT8316Z_PWM_MODE_SYNC_DIG)
 #define MCT_EXPECTED_CONTROL3 MCT8316Z_CONTROL3_NO_REPORTS
 #define MCT_EXPECTED_CONTROL4 (0x10u | MCT8316Z_OCP_MODE_DISABLED)
 #define MCT_EXPECTED_CONTROL8 (MCT8316Z_MTR_LOCK_RETRY_5000MS | MCT8316Z_MTR_LOCK_TDET_5000MS | MCT8316Z_MTR_LOCK_DISABLED)
@@ -177,6 +180,15 @@ static volatile uint32_t sensor_i2c_us;
 static volatile uint16_t sensor_i2c_start_us;
 static volatile uint16_t sensor_i2c_end_us;
 static volatile uint16_t mct_fault_count;
+static volatile uint32_t next_mct_check_ms;
+static volatile uint8_t mct_run_bad_count;
+volatile uint8_t mct_last_bad_mask;
+volatile uint16_t mct_last_ic_status;
+volatile uint16_t mct_last_control2a;
+volatile uint16_t mct_last_control3;
+volatile uint16_t mct_last_control4;
+volatile uint16_t mct_last_control7;
+volatile uint16_t mct_last_control8;
 static volatile uint32_t uart_crc_errors;
 static volatile uint32_t uart_overrun_errors;
 static volatile int debug_comm_step;
@@ -537,7 +549,15 @@ static int32_t comm_velocity_update(int32_t position, uint16_t tick)
     if (dt_us == 0u || dt_us >= SENSOR_STALE_US) {
         return comm_velocity_turn32_per_s;
     }
-    return ((delta * 1000) / dt_us) * 1000;
+    return ((delta * 1000) / (int32_t)dt_us) * 1000;
+}
+
+static int32_t velocity_sum_to_turn32_per_s(int32_t sum)
+{
+    int32_t whole = sum / VELOCITY_SLOPE_DIVISOR;
+    int32_t rem = sum % VELOCITY_SLOPE_DIVISOR;
+    return (whole * (int32_t)ISR_FREQ_HZ) +
+           ((rem * (int32_t)ISR_FREQ_HZ) / (int32_t)VELOCITY_SLOPE_DIVISOR);
 }
 
 static int32_t velocity_update(int32_t position)
@@ -553,7 +573,7 @@ static int32_t velocity_update(int32_t position)
         int32_t delta = (velocity_positions[index] - newest) >> VELOCITY_DELTA_SHIFT;
         sum += weight * delta;
     }
-    return (sum * (int32_t)ISR_FREQ_HZ) / VELOCITY_SLOPE_DIVISOR;
+    return velocity_sum_to_turn32_per_s(sum);
 }
 
 static void update_position_from_angle(uint16_t angle_turn16)
@@ -782,6 +802,17 @@ static void comm_scheduler_start(void)
     TIM_DIER(TIM21) |= TIM_DIER_CC1IE;
 }
 
+static bool sensor_start_read(void)
+{
+    for (uint8_t i = 0; i < SENSOR_START_RETRIES; i++) {
+        if (sensor_set_run_mode() && refresh_sensor_xy(false)) {
+            return true;
+        }
+        delay_ms(1);
+    }
+    return false;
+}
+
 static void run_stop(void)
 {
     capture_state.active = false;
@@ -795,7 +826,7 @@ static void run_stop(void)
 static uint8_t run_ready(void)
 {
     if (!sensor_ready) {
-        if (!sensor_set_run_mode() || !refresh_sensor_xy(false)) {
+        if (!sensor_start_read()) {
             return PNY_RESULT_BAD_STATE;
         }
     }
@@ -810,32 +841,78 @@ static uint8_t run_ready(void)
 
 static void mct_apply_config(bool reverse)
 {
-    mct8316z_set_pwm_mode_sync_dig();
-    mct8316z_set_hall_hys_high();
-    mct8316z_set_direction(reverse);
-    mct8316z_disable_protections();
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL1, 0x03u);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A | MCT8316Z_CLR_FLT);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL3, MCT_EXPECTED_CONTROL3);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL4, MCT_EXPECTED_CONTROL4);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL7, MCT8316Z_HALL_HYS_HIGH | (reverse ? MCT8316Z_DIR_REVERSE : 0u));
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL8, MCT_EXPECTED_CONTROL8);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A | MCT8316Z_CLR_FLT);
 }
 
-static bool mct_config_ok(bool reverse, bool check_direction)
+static void mct_set_direction(bool reverse)
 {
-    uint8_t ic_status = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_IC_STATUS);
-    uint8_t control2a = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
-    uint8_t control3 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL3);
-    uint8_t control4 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL4);
-    uint8_t control7 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL7);
-    uint8_t control8 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL8);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL7, MCT8316Z_HALL_HYS_HIGH | (reverse ? MCT8316Z_DIR_REVERSE : 0u));
+}
+
+static uint8_t mct_config_bad_mask(bool reverse, bool check_direction)
+{
+    uint16_t ic_status_word = mct8316z_read_reg(MCT8316Z_REG_IC_STATUS);
+    uint16_t control2a_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
+    uint16_t control3_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL3);
+    uint16_t control4_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL4);
+    uint16_t control7_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL7);
+    uint16_t control8_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL8);
+    uint8_t ic_status = (uint8_t)ic_status_word;
+    uint8_t control2a = (uint8_t)control2a_word;
+    uint8_t control3 = (uint8_t)control3_word;
+    uint8_t control4 = (uint8_t)control4_word;
+    uint8_t control7 = (uint8_t)control7_word;
+    uint8_t control8 = (uint8_t)control8_word;
     uint8_t expected_control7 = MCT8316Z_HALL_HYS_HIGH;
+    uint8_t bad = 0u;
     if (reverse) {
         expected_control7 |= MCT8316Z_DIR_REVERSE;
     }
 
-    return (ic_status & MCT_IC_STATUS_NPOR) != 0u &&
-           control2a == MCT_EXPECTED_CONTROL2A &&
-           control3 == MCT_EXPECTED_CONTROL3 &&
-           control4 == MCT_EXPECTED_CONTROL4 &&
-           (control7 & MCT8316Z_HALL_HYS_HIGH) == MCT8316Z_HALL_HYS_HIGH &&
-           (!check_direction || (control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) == expected_control7) &&
-           control8 == MCT_EXPECTED_CONTROL8;
+    if ((ic_status & MCT_IC_STATUS_NPOR) == 0u) {
+        bad |= 1u << 0;
+    }
+    if (control2a != MCT_EXPECTED_CONTROL2A) {
+        bad |= 1u << 1;
+    }
+    if (control3 != MCT_EXPECTED_CONTROL3) {
+        bad |= 1u << 2;
+    }
+    if (control4 != MCT_EXPECTED_CONTROL4) {
+        bad |= 1u << 3;
+    }
+    if ((control7 & MCT8316Z_HALL_HYS_HIGH) != MCT8316Z_HALL_HYS_HIGH) {
+        bad |= 1u << 4;
+    }
+    if (check_direction && (control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) != expected_control7) {
+        bad |= 1u << 5;
+    }
+    if (control8 != MCT_EXPECTED_CONTROL8) {
+        bad |= 1u << 6;
+    }
+
+    if (bad != 0u) {
+        mct_last_bad_mask = bad;
+        mct_last_ic_status = ic_status_word;
+        mct_last_control2a = control2a_word;
+        mct_last_control3 = control3_word;
+        mct_last_control4 = control4_word;
+        mct_last_control7 = control7_word;
+        mct_last_control8 = control8_word;
+    }
+
+    return bad;
+}
+
+static bool mct_config_ok(bool reverse, bool check_direction)
+{
+    return mct_config_bad_mask(reverse, check_direction) == 0u;
 }
 
 static void mct_recover_if_needed(bool reverse)
@@ -844,7 +921,7 @@ static void mct_recover_if_needed(bool reverse)
         return;
     }
     if (mct_config_ok(reverse, false)) {
-        mct8316z_set_direction(reverse);
+        mct_set_direction(reverse);
         return;
     }
 
@@ -856,7 +933,7 @@ static void mct_recover_if_needed(bool reverse)
     delay_ms(2);
 
     if (mct_config_ok(reverse, false)) {
-        mct8316z_set_direction(reverse);
+        mct_set_direction(reverse);
         if (restart_timer) {
             comm_scheduler_start();
         }
@@ -875,15 +952,49 @@ static void mct_recover_if_needed(bool reverse)
     }
 }
 
-static void run_begin(void)
+static void mct_run_check(void)
 {
-    if (!sensor_set_run_mode()) {
-        sensor_ready = false;
-        current_mode = PNY_MODE_IDLE;
-        stop_motor_outputs();
+    uint32_t now = system_millis;
+    bool reverse;
+
+    if ((int32_t)(now - next_mct_check_ms) < 0) {
         return;
     }
-    if (!refresh_sensor_xy(false)) {
+    next_mct_check_ms = now + MCT_RUN_CHECK_MS;
+    if (current_mode != PNY_MODE_RUN || current_duty == 0 || current_direction == 0) {
+        return;
+    }
+
+    reverse = current_direction < 0;
+    uint8_t bad = mct_config_bad_mask(reverse, true);
+    if (bad == 0u) {
+        mct_run_bad_count = 0;
+        return;
+    }
+
+    if (mct_run_bad_count < MCT_RUN_BAD_LIMIT) {
+        mct_run_bad_count++;
+    }
+    if (mct_run_bad_count < MCT_RUN_BAD_LIMIT) {
+        return;
+    }
+
+    if (mct_fault_count != UINT16_MAX) {
+        mct_fault_count++;
+    }
+    mct_run_bad_count = 0;
+    target_position_set = false;
+    commanded_duty = 0;
+    capture_state.active = false;
+    capture_state.done = true;
+    run_stop();
+    mct_apply_config(reverse);
+}
+
+static void run_begin(void)
+{
+    if (!sensor_start_read()) {
+        sensor_ready = false;
         current_mode = PNY_MODE_IDLE;
         stop_motor_outputs();
         return;
@@ -921,9 +1032,11 @@ static void run_begin(void)
 
     if (duty != 0 && direction != 0) {
         mct_recover_if_needed(direction < 0);
+        next_mct_check_ms = system_millis + MCT_RUN_CHECK_MS;
+        mct_run_bad_count = 0;
         current_duty = duty;
         if (direction != current_direction) {
-            mct8316z_set_direction(direction < 0);
+            mct_set_direction(direction < 0);
         }
         current_direction = direction;
         comm_scheduler.position_tick = sched_now_us();
@@ -1252,9 +1365,10 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
         uint16_t sample_dt = (uint16_t)(sensor_i2c_end_us - last_tick);
         int32_t sample_velocity = comm_velocity_turn32_per_s;
         if (sample_dt > 0u && sample_dt < SENSOR_STALE_US) {
-            sample_velocity = ((absolute_position_turn32 - last_position) * 1000) / sample_dt * 1000;
+            sample_velocity = ((absolute_position_turn32 - last_position) * 1000) / (int32_t)sample_dt * 1000;
         }
         int32_t secant_velocity = comm_velocity_update(absolute_position_turn32, sensor_i2c_end_us);
+        velocity_turn32_per_s = velocity_update(absolute_position_turn32);
         if (observer_mode == PNY_OBSERVER_AB3) {
             observer_ab_update(absolute_position_turn32, sensor_i2c_end_us, 2u, 4u);
         } else if (observer_mode == PNY_OBSERVER_KCV1) {
@@ -1281,8 +1395,6 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
         }
         comm_scheduler.position_tick = sensor_i2c_end_us;
     }
-
-    velocity_turn32_per_s = velocity_update(absolute_position_turn32);
 
     if ((int16_t)(scheduled_tick - comm_scheduler.next_tmag_tick) >= 0) {
         if (tmag5273_async_start_xy(scheduled_tick)) {
@@ -1923,6 +2035,7 @@ int main(void)
             calibration_poll();
         }
 
+        mct_run_check();
         pennyesc_uart_update_poll(system_millis);
         if (pending_reset_ms != 0u && (int32_t)(system_millis - pending_reset_ms) >= 0) {
             scb_reset_system();

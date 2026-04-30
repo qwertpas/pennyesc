@@ -28,6 +28,7 @@ production/backups
 .history
 pennyesc-backups
 firmware/dynamic_metrics/
+firmware/pennyesc_libopencm3/test_results/
 
 __pycache__/
 *.py[cod]

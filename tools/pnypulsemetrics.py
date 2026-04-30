@@ -100,10 +100,10 @@ def average_status_rpm(client: StepperClient, duration_ms: int) -> tuple[float, 
     status = client.get_status()
     while time.monotonic() < deadline:
         status = client.get_status()
-        values.append(abs(status.velocity_crads) * 60.0 / 62831.853)
+        values.append(abs(status.velocity_crads) * 60.0 / 628.31853)
         time.sleep(0.02)
     if not values:
-        values.append(abs(status.velocity_crads) * 60.0 / 62831.853)
+        values.append(abs(status.velocity_crads) * 60.0 / 628.31853)
     return statistics.fmean(values), status
 
 

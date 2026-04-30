@@ -757,56 +757,59 @@ class TestWorker(QtCore.QThread):
                 self.log.emit(f"open {self.port}")
                 bridge.enter_bridge("app")
                 self.log.emit("bridge app")
-                client = Stm32Client(bridge.serial, address=self.address)
+                try:
+                    client = Stm32Client(bridge.serial, address=self.address)
 
-                if self.mode in {"full", "static"}:
-                    self.progress.emit(1)
-                    raw_points = capture_points(
-                        client,
-                        status_cb=self.on_capture_status,
-                        sample_cb=self.on_capture_sample,
-                    )
-                    self.log.emit("average")
-                    reduced_points = reduce_capture_points(raw_points)
-                    session.static = build_partial_static_result(raw_points, reduced_points)
-                    self.log.emit("solve")
-                    solved = solve_capture(reduced_points)
-                    session.static = build_static_result(raw_points, reduced_points, solved)
-                    self.log.emit(
-                        "fit %.2f deg sweep %.2f deg crc32 0x%08X"
-                        % (solved.fit_max_error_deg, solved.sweep_delta_deg, solved.blob_crc32)
-                    )
-                    self.log.emit("upload")
-                    upload_calibration(client, solved, self.chunk_size, upload_cb=self.on_upload)
-                    self.log.emit("commit")
-                    result, valid = client.cal_commit()
-                    if result != 0 or valid != 1:
-                        raise CalibrationError(f"CAL_COMMIT failed with result {result}")
-                    info = verify_calibration(client, solved)
-                    if session.static is not None:
-                        session.static.blob_size = int(info.blob_size)
-                    session.status = "static committed"
-                    self.progress.emit(80)
-                    self.log.emit(
-                        "static committed crc32=0x%08X size=%d"
-                        % (info.blob_crc32, info.blob_size)
-                    )
+                    if self.mode in {"full", "static"}:
+                        self.progress.emit(1)
+                        raw_points = capture_points(
+                            client,
+                            status_cb=self.on_capture_status,
+                            sample_cb=self.on_capture_sample,
+                        )
+                        self.log.emit("average")
+                        reduced_points = reduce_capture_points(raw_points)
+                        session.static = build_partial_static_result(raw_points, reduced_points)
+                        self.log.emit("solve")
+                        solved = solve_capture(reduced_points)
+                        session.static = build_static_result(raw_points, reduced_points, solved)
+                        self.log.emit(
+                            "fit %.2f deg sweep %.2f deg crc32 0x%08X"
+                            % (solved.fit_max_error_deg, solved.sweep_delta_deg, solved.blob_crc32)
+                        )
+                        self.log.emit("upload")
+                        upload_calibration(client, solved, self.chunk_size, upload_cb=self.on_upload)
+                        self.log.emit("commit")
+                        result, valid = client.cal_commit()
+                        if result != 0 or valid != 1:
+                            raise CalibrationError(f"CAL_COMMIT failed with result {result}")
+                        info = verify_calibration(client, solved)
+                        if session.static is not None:
+                            session.static.blob_size = int(info.blob_size)
+                        session.status = "static committed"
+                        self.progress.emit(80)
+                        self.log.emit(
+                            "static committed crc32=0x%08X size=%d"
+                            % (info.blob_crc32, info.blob_size)
+                        )
 
-                if self.mode in {"full", "dynamic"}:
-                    speeds = parse_speed_text(self.speed_text)
-                    self.log.emit("dynamic start")
-                    dynamic = run_dynamic(
-                        client,
-                        speeds=speeds,
-                        base_advance_deg=self.base_advance_deg,
-                        log_cb=lambda text: self.log.emit(text),
-                        progress_cb=lambda value: self.progress.emit(value),
-                    )
-                    session.dynamic = dynamic
-                    session.status = dynamic.state
+                    if self.mode in {"full", "dynamic"}:
+                        speeds = parse_speed_text(self.speed_text)
+                        self.log.emit("dynamic start")
+                        dynamic = run_dynamic(
+                            client,
+                            speeds=speeds,
+                            base_advance_deg=self.base_advance_deg,
+                            log_cb=lambda text: self.log.emit(text),
+                            progress_cb=lambda value: self.progress.emit(value),
+                        )
+                        session.dynamic = dynamic
+                        session.status = dynamic.state
 
-                if self.mode == "static" and session.status == "not run":
-                    session.status = "static committed"
+                    if self.mode == "static" and session.status == "not run":
+                        session.status = "static committed"
+                finally:
+                    bridge.exit_bridge()
 
             session.ended_at = datetime.now().isoformat(timespec="seconds")
             self.session_ready.emit(session)

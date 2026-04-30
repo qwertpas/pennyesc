@@ -403,6 +403,7 @@ class EspBridge:
     def __init__(self, port: str, baudrate: int = 115200) -> None:
         self.port_name = port
         self.baudrate = baudrate
+        self.command_prefix = ""
         self.serial = self._open_serial()
 
     def _open_serial(self) -> serial.Serial:
@@ -458,18 +459,32 @@ class EspBridge:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.serial.reset_input_buffer()
-            self.serial.write(b"\n")
-            self.serial.write(b"ping\n")
+            self.serial.write(b"!#ping\n")
             self.serial.flush()
-            wait_deadline = time.monotonic() + 0.8
+            wait_deadline = time.monotonic() + 0.25
             while time.monotonic() < wait_deadline:
                 line = self.serial.readline()
                 if not line:
                     continue
                 text = line.decode("utf-8", errors="replace").strip()
                 if text == "pong":
+                    self.command_prefix = "!#"
                     return True
-            time.sleep(0.4)
+
+            self.serial.reset_input_buffer()
+            self.serial.write(b"\n")
+            self.serial.write(b"ping\n")
+            self.serial.flush()
+            wait_deadline = time.monotonic() + 0.25
+            while time.monotonic() < wait_deadline:
+                line = self.serial.readline()
+                if not line:
+                    continue
+                text = line.decode("utf-8", errors="replace").strip()
+                if text == "pong":
+                    self.command_prefix = ""
+                    return True
+            time.sleep(0.05)
         return False
 
     def sync_shell(self, timeout: float = 6.0) -> None:
@@ -484,16 +499,18 @@ class EspBridge:
         self.sync_shell()
         self.serial.reset_input_buffer()
         self.serial.reset_output_buffer()
-        self.serial.write(f"bridge {mode}\n".encode("utf-8"))
+        self.serial.write(f"{self.command_prefix}bridge {mode}\n".encode("utf-8"))
         self.serial.flush()
         self._read_line_until(lambda text: text == f"# bridge={mode}", timeout=2.0)
+        self.command_prefix = "!#"
 
     def exit_bridge(self) -> None:
         self.serial.reset_input_buffer()
         self.serial.reset_output_buffer()
-        self.serial.write(b"!#bridge off\n")
+        self.serial.write(f"{self.command_prefix or '!#'}bridge off\n".encode("utf-8"))
         self.serial.flush()
         self._read_line_until(lambda text: text == "# bridge=off", timeout=2.0)
+        self.command_prefix = ""
 
 
 class Stm32Client:
