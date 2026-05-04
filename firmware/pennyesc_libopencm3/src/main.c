@@ -42,9 +42,6 @@
 #define OBSERVER_LEAD_US 0
 #define OBSERVER_LEAD_MIN_US -1000
 #define OBSERVER_LEAD_MAX_US 1000
-#define COMM_CENTER_OFFSET_DEG 30
-#define COMM_CENTER_TURN16 ((uint16_t)(((uint32_t)COMM_CENTER_OFFSET_DEG * 65536u + 180u) / 360u))
-
 #define ISR_FREQ_HZ 10000
 #define SENSOR_TICK_US (1000000u / ISR_FREQ_HZ)
 #define TMAG_READ_PERIOD_US SENSOR_TICK_US
@@ -68,7 +65,7 @@
 #define UART_APP_BAUD 230400u
 #define UART_DMA_RX_BUF_SIZE 64u
 #define UART_DMA_RX_BUF_MASK (UART_DMA_RX_BUF_SIZE - 1u)
-#define MCT_RUN_CHECK_MS 10u
+#define MCT_RUN_CHECK_MS 500u
 #define MCT_RUN_BAD_LIMIT 3u
 
 #define CAPTURE_MAX_SAMPLES 160u
@@ -580,6 +577,16 @@ static void update_position_from_angle(uint16_t angle_turn16)
     last_angle_turn16 = angle_turn16;
 }
 
+static int32_t forward_position_from_sensor(int32_t position)
+{
+    return pennyesc_calibration_forward_angle_sign() < 0 ? -position : position;
+}
+
+static int32_t sensor_position_from_forward(int32_t position)
+{
+    return pennyesc_calibration_forward_angle_sign() < 0 ? -position : position;
+}
+
 static bool sensor_set_full_mode(void)
 {
     if (!sensor_run_mode) {
@@ -590,6 +597,22 @@ static bool sensor_set_full_mode(void)
     }
     sensor_run_mode = false;
     return true;
+}
+
+static bool sensor_init_full_mode(void)
+{
+    for (uint8_t i = 0; i < SENSOR_START_RETRIES; i++) {
+        if (tmag5273_init()) {
+            tmag5273_clear_por();
+            sensor_ready = true;
+            sensor_run_mode = false;
+            return true;
+        }
+        delay_ms(1);
+    }
+    sensor_ready = false;
+    sensor_run_mode = false;
+    return false;
 }
 
 static bool sensor_set_run_mode(void)
@@ -687,6 +710,8 @@ static void stop_motor_outputs(void)
     clear_hall_outputs();
     current_duty = 0;
     current_direction = 0;
+    velocity_turn32_per_s = 0;
+    comm_velocity_turn32_per_s = 0;
 }
 
 static uint16_t advance_deg_to_turn16(int16_t advance_deg)
@@ -745,14 +770,9 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
 
 static int32_t electrical_position_at_tick(uint16_t tick, int direction)
 {
+    (void)direction;
     int32_t electrical = (int32_t)((uint32_t)observer_position_at_tick(tick, direction) * POLE_PAIRS);
-    int advance_direction = direction * (int)pennyesc_calibration_forward_angle_sign();
-    electrical += (int32_t)COMM_CENTER_TURN16;
-    if (advance_direction > 0) {
-        electrical += current_advance_turn16;
-    } else if (advance_direction < 0) {
-        electrical -= current_advance_turn16;
-    }
+    electrical += current_advance_turn16;
     return electrical;
 }
 
@@ -842,9 +862,14 @@ static void comm_scheduler_start(void)
 static bool sensor_start_read(void)
 {
     for (uint8_t i = 0; i < SENSOR_START_RETRIES; i++) {
+        if (!sensor_ready && !sensor_init_full_mode()) {
+            delay_ms(1);
+            continue;
+        }
         if (sensor_set_run_mode() && refresh_sensor_xy(false)) {
             return true;
         }
+        sensor_ready = false;
         delay_ms(1);
     }
     return false;
@@ -1139,8 +1164,8 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->y = sensor_y;
     payload->z = sensor_z;
     payload->angle_turn16 = current_angle_turn16;
-    payload->position_turn32 = absolute_position_turn32;
-    payload->velocity_turn32_per_s = velocity_turn32_per_s;
+    payload->position_turn32 = forward_position_from_sensor(absolute_position_turn32);
+    payload->velocity_turn32_per_s = forward_position_from_sensor(velocity_turn32_per_s);
     payload->duty = current_duty;
     payload->mct_fault_count = mct_fault_count;
     payload->isr_us = (uint16_t)isr_duration_us;
@@ -1155,8 +1180,22 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->uart_overrun_errors = uart_overrun_errors;
 }
 
+static void refresh_status_sensor(void)
+{
+    if (current_mode != PNY_MODE_IDLE) {
+        return;
+    }
+
+    if ((!sensor_ready && !sensor_init_full_mode()) || !sensor_set_full_mode()) {
+        sensor_ready = false;
+        return;
+    }
+    refresh_sensor_xyz(false);
+}
+
 static void fill_update_status(pny_status_payload_t *payload)
 {
+    refresh_status_sensor();
     fill_status_payload(payload, PNY_RESULT_OK);
 }
 
@@ -1571,9 +1610,7 @@ static void send_status_response(uint8_t cmd, uint8_t result)
 
 static void handle_get_status(void)
 {
-    if (current_mode == PNY_MODE_IDLE && sensor_set_full_mode()) {
-        refresh_sensor_xyz(false);
-    }
+    refresh_status_sensor();
     send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);
 }
 
@@ -1610,9 +1647,22 @@ static void handle_set_duty(const uint8_t *payload, uint8_t len)
         return;
     }
     if (was_running) {
-        mct_recover_if_needed(duty < 0);
-        current_duty = duty;
-        current_direction = (duty > 0) ? 1 : -1;
+        int8_t old_direction = current_direction;
+        int8_t new_direction = (duty > 0) ? 1 : -1;
+        if (old_direction != 0 && new_direction != old_direction) {
+            run_stop();
+            run_begin();
+            if (current_mode != PNY_MODE_RUN) {
+                commanded_duty = old_commanded_duty;
+                target_position_set = old_target_position_set;
+                send_status_response(PNY_CMD_SET_DUTY, PNY_RESULT_BAD_STATE);
+                return;
+            }
+        } else {
+            mct_recover_if_needed(duty < 0);
+            current_duty = duty;
+            current_direction = new_direction;
+        }
     } else {
         run_begin();
         if (current_mode != PNY_MODE_RUN) {
@@ -1640,7 +1690,7 @@ static void handle_set_position(const uint8_t *payload, uint8_t len)
     bool old_target_position_set = target_position_set;
     int32_t old_target_position_turn32 = target_position_turn32;
     bool was_running = (current_mode == PNY_MODE_RUN);
-    target_position_turn32 = position_turn32;
+    target_position_turn32 = sensor_position_from_forward(position_turn32);
     target_position_set = true;
     if (commanded_duty == 0) {
         commanded_duty = DEFAULT_POSITION_DUTY;
@@ -2090,15 +2140,10 @@ int main(void)
     delay_ms(5);
     mct_apply_config(false);
 
-    sensor_ready = tmag5273_init();
-    if (sensor_ready) {
-        tmag5273_clear_por();
-    }
-
     pennyesc_calibration_load();
     flash_fault = false;
 
-    if (sensor_ready) {
+    if (sensor_init_full_mode()) {
         refresh_sensor_xyz(false);
         if (pennyesc_calibration_valid()) {
             last_angle_turn16 = current_angle_turn16;

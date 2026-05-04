@@ -177,15 +177,15 @@ static bool write_reg_checked(uint8_t reg, uint8_t value)
     return true;
 }
 
-static void write_mode_regs(uint8_t avg, uint8_t channels, uint8_t op_mode)
+static bool write_mode_regs(uint8_t avg, uint8_t channels, uint8_t op_mode)
 {
-    tmag5273_write_reg(REG_DEVICE_CONFIG_1, avg << CONV_AVG_SHIFT);
-    tmag5273_write_reg(REG_SENSOR_CONFIG_1,
-        (0u << SLEEPTIME_SHIFT) | (channels << MAG_CH_EN_SHIFT));
-    tmag5273_write_reg(REG_SENSOR_CONFIG_2,
-        (ANGLE_OFF << ANGLE_EN_SHIFT) | (1u << X_Y_RANGE_SHIFT));
-    tmag5273_write_reg(REG_INT_CONFIG_1, 0x01u);
-    tmag5273_write_reg(REG_DEVICE_CONFIG_2, op_mode << OPERATING_MODE_SHIFT);
+    return write_reg_checked(REG_DEVICE_CONFIG_1, avg << CONV_AVG_SHIFT) &&
+           write_reg_checked(REG_SENSOR_CONFIG_1,
+               (0u << SLEEPTIME_SHIFT) | (channels << MAG_CH_EN_SHIFT)) &&
+           write_reg_checked(REG_SENSOR_CONFIG_2,
+               (ANGLE_OFF << ANGLE_EN_SHIFT) | (1u << X_Y_RANGE_SHIFT)) &&
+           write_reg_checked(REG_INT_CONFIG_1, 0x01u) &&
+           write_reg_checked(REG_DEVICE_CONFIG_2, op_mode << OPERATING_MODE_SHIFT);
 }
 
 void tmag5273_write_reg(uint8_t reg, uint8_t value)
@@ -214,11 +214,10 @@ bool tmag5273_init(void)
 bool tmag5273_set_mode(tmag5273_mode_t mode)
 {
     if (mode == TMAG5273_MODE_FAST_XY) {
-        write_mode_regs(CONV_AVG_1X, MAG_CH_XY, OP_CONTINUOUS);
+        return write_mode_regs(CONV_AVG_1X, MAG_CH_XY, OP_CONTINUOUS);
     } else {
-        write_mode_regs(CONV_AVG_2X, MAG_CH_XYZ, OP_CONTINUOUS);
+        return write_mode_regs(CONV_AVG_2X, MAG_CH_XYZ, OP_CONTINUOUS);
     }
-    return true;
 }
 
 void tmag5273_clear_por(void)

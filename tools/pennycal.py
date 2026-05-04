@@ -64,6 +64,7 @@ BRIDGE_IDLE_S = 2.7
 MAX_FIT_ERROR_DEG = 8.0
 MAX_SWEEP_DELTA_DEG = 12.5
 HOST_FRAME_BYTE_GAP_S = 0.0005
+POST_COMMIT_SETTLE_S = 2.0
 FORWARD_SIGN_TEST_DUTY = 120
 FORWARD_SIGN_TEST_ADVANCE_DEG = 90
 FORWARD_SIGN_TEST_RUN_S = 0.45
@@ -71,6 +72,7 @@ TURN32_PER_REV = 65536.0
 TURN32_TO_RAD = (2.0 * math.pi) / TURN32_PER_REV
 RAD_TO_TURN32 = TURN32_PER_REV / (2.0 * math.pi)
 FORWARD_SIGN_TEST_MIN_TURN32 = 834
+FORWARD_SIGN_TEST_ATTEMPTS = 3
 
 class CalibrationError(RuntimeError):
     pass
@@ -656,7 +658,7 @@ class Stm32Client:
         return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
 
     def set_advance_deg(self, advance_deg: int) -> Status:
-        payload = self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg), timeout=0.5)
+        payload = self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg), timeout=0.75, attempts=5)
         return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
 
     def set_position(self, position_turn32: int) -> Status:
@@ -699,7 +701,8 @@ class Stm32Client:
         payload = self.exchange_retry(CMD_CAL_INFO, timeout=0.5)
         return CalibrationInfo(*struct.unpack("<BBHI", payload))
 
-    def wait_until_ready(self, timeout: float = 5.0) -> Status:
+    def wait_until_ready(self, timeout: float = 8.0) -> Status:
+        self.port.reset_input_buffer()
         deadline = time.monotonic() + timeout
         last_error: Exception | None = None
         while time.monotonic() < deadline:
@@ -1005,17 +1008,23 @@ def _run_forward_sign_candidate(client: Stm32Client, candidate_sign: int) -> For
 
 def measure_forward_angle_sign(client: Stm32Client) -> ForwardSignResult:
     tests: list[ForwardSignTest] = []
+    clean: list[ForwardSignTest] = []
     try:
         for candidate_sign in (1, -1):
-            tests.append(_run_forward_sign_candidate(client, candidate_sign))
+            for _ in range(FORWARD_SIGN_TEST_ATTEMPTS):
+                test = _run_forward_sign_candidate(client, candidate_sign)
+                tests.append(test)
+                if test.faults == 0:
+                    clean.append(test)
+                    break
+                time.sleep(0.2)
     finally:
         try:
             client.set_duty(0)
         finally:
             client.set_advance_deg(FORWARD_SIGN_TEST_ADVANCE_DEG)
 
-    clean = [test for test in tests if test.faults == 0]
-    if len(clean) != len(tests):
+    if len(clean) != 2:
         raise CalibrationError("forward sign test reported faults")
 
     best = max(clean, key=lambda test: test.delta_turn32)
@@ -1038,6 +1047,7 @@ def commit_calibration_blob(
     result, valid = client.cal_commit()
     if result != RESULT_OK or valid != 1:
         raise CalibrationError(f"CAL_COMMIT failed with result {result}")
+    time.sleep(POST_COMMIT_SETTLE_S)
     return verify_calibration(client, solved)
 
 
