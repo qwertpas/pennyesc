@@ -48,8 +48,8 @@ class Status:
     y: int
     z: int
     angle_turn16: int
-    position_crad: int
-    velocity_crads: int
+    position_turn32: int
+    velocity_turn32_per_s: int
     duty: int
     mct_fault_count: int
     isr_us: int
@@ -65,11 +65,11 @@ class Status:
 
     @property
     def step(self) -> int:
-        return self.position_crad
+        return self.position_turn32
 
     @property
     def transitions(self) -> int:
-        return self.velocity_crads
+        return self.velocity_turn32_per_s
 
 
 @dataclass(frozen=True)

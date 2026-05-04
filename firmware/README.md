@@ -179,7 +179,7 @@ RX: [START=0xAA] [STATUS] [POS_0..3] [VEL_0..3] [CRC8]
 |---------|------|---------|--------------|
 | Poll | 0x03 | none | 3 bytes |
 | Set Duty | 0x02 | int16 (little-endian) | 5 bytes |
-| Set Position | 0x01 | int32 centiradians (LE) | 7 bytes |
+| Set Position | 0x01 | int32 turn32 (LE, 65536 = 1 rev) | 7 bytes |
 
 ### Response (PennyESC to Host)
 
@@ -189,8 +189,8 @@ Always 11 bytes:
 |------|-------|-------------|
 | 0 | START | 0xAA |
 | 1 | STATUS | Bit 0: position reached, Bit 1: error |
-| 2-5 | position | int32, centiradians (1 crad = 0.01 rad) |
-| 6-9 | velocity | int32, centiradians/second |
+| 2-5 | position | int32 turn32, 65536 = 1 mechanical revolution |
+| 6-9 | velocity | int32 turn32/second |
 | 10 | CRC8 | CRC of bytes 0-9 |
 
 ### Byte-Level Examples
@@ -228,25 +228,25 @@ TX: AA 02 6A FF 2C
      └─────────── START_BYTE
 ```
 
-**Example 4: Set Position = 628 crad (2*pi radians)**
+**Example 4: Set Position = 1 revolution**
 
-Position 628 = 0x00000274 (little-endian: 74 02 00 00):
+Position 65536 = 0x00010000 (little-endian: 00 00 01 00):
 
 ```
-TX: AA 01 74 02 00 00 9A
-     │  │  └────────┴── int32 position = 628 crad
+TX: AA 01 00 00 01 00 xx
+     │  │  └────────┴── int32 position_turn32 = 65536
      │  └────────────── CMD_SET_POSITION
      └───────────────── START_BYTE
 ```
 
 **Example 5: Response Parsing**
 
-Response when motor is at position 1234 crad, velocity 5000 crad/s:
+Response when motor is at position 1 rev, velocity 2 rev/s:
 
 ```
-RX: AA 00 D2 04 00 00 88 13 00 00 xx
-     │  │  └────────┴── position = 0x000004D2 = 1234 crad (12.34 rad)
-     │  │              └────────┴── velocity = 0x00001388 = 5000 crad/s
+RX: AA 00 00 00 01 00 00 00 02 00 xx
+     │  │  └────────┴── position_turn32 = 65536 = 1 rev
+     │  │              └────────┴── velocity_turn32_per_s = 131072 = 2 rev/s
      │  └── status = 0 (moving)
      └───── START_BYTE
 
@@ -259,8 +259,8 @@ RX: AA 01 ...
 
 | Value | Unit | Conversion |
 |-------|------|------------|
-| Position | centiradians | 1 crad = 0.01 rad = 0.573° |
-| Velocity | centiradians/s | 1 crad/s = 0.00955 RPM |
+| Position | turn32 | radians = turn32 * 2*pi / 65536 |
+| Velocity | turn32/s | RPM = turn32/s * 60 / 65536 |
 | Duty | raw PWM | Range: -799 to +799 |
 
 ### Resync Behavior

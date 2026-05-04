@@ -6,8 +6,8 @@ Measure candidate torque/angle-quality metrics first using the current raw-angle
 ## Baseline Sanity Checks
 - Before metric tests, run a low-risk sensor sanity pass at duties `[100, 150]`, max `1 s` each.
 - Verify position and velocity are reasonable:
-  - `position_crad` changes monotonically for a steady direction.
-  - `velocity_crads` sign matches commanded duty direction.
+  - `position_turn32` changes monotonically for a steady direction.
+  - `velocity_turn32_per_s` sign matches commanded duty direction.
   - rpm trend rises after duty is applied and falls/stabilizes after `duty 0`.
   - `angle_turn16` changes smoothly without large discontinuities except normal wrap.
   - `faults=0`, `mct_faults` does not increment unexpectedly.

@@ -23,12 +23,18 @@ class ProtocolTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.pending: list[tuple[float, bytes]] = []
                 self.reset_calls = 0
+                self.tx = bytearray()
 
             def write(self, data: bytes) -> int:
-                address, cmd, _payload = decode_frame(data)
-                frame = encode_frame(address, cmd, b"\x01")
-                delay = 0.03 if len(self.pending) == 0 else 0.0
-                self.pending.append((time.monotonic() + delay, frame))
+                self.tx.extend(data)
+                if len(self.tx) >= 3:
+                    expected_len = self.tx[2] + 4
+                    if len(self.tx) == expected_len:
+                        address, cmd, _payload = decode_frame(bytes(self.tx))
+                        self.tx.clear()
+                        frame = encode_frame(address, cmd, b"\x01")
+                        delay = 0.03 if len(self.pending) == 0 else 0.0
+                        self.pending.append((time.monotonic() + delay, frame))
                 return len(data)
 
             def flush(self) -> None:
@@ -72,7 +78,7 @@ class ProtocolTests(unittest.TestCase):
     def test_blob_pack_and_validate(self) -> None:
         affine_q20 = (100, 0, 0, 0, 100, 0)
         angle_lut = tuple(range(256))
-        blob = build_blob(affine_q20, angle_lut, 1.25, 0.75)
+        blob = build_blob(affine_q20, angle_lut, 1.25, 0.75, -1)
         self.assertEqual(len(blob), CAL_BLOB_SIZE)
         valid, crc32 = validate_blob(blob)
         self.assertTrue(valid)

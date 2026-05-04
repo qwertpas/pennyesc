@@ -8,6 +8,9 @@
 static const uint32_t PENNYESC_BAUD_UPDATE = 115200u;
 static const uint32_t PENNYESC_BAUD_FAST = 230400u;
 static const uint32_t PENNYESC_ROM_BAUD = 115200u;
+static const float PENNYESC_TURN32_PER_REV = 65536.0f;
+static const float PENNYESC_TURN32_TO_RAD = 6.2831853f / PENNYESC_TURN32_PER_REV;
+static const float PENNYESC_RAD_TO_TURN32 = PENNYESC_TURN32_PER_REV / 6.2831853f;
 
 struct PennyEscPins {
     int rx = 12;
@@ -26,8 +29,8 @@ struct PennyEscStatus {
     int16_t y = 0;
     int16_t z = 0;
     uint16_t angle_turn16 = 0;
-    int32_t position_crad = 0;
-    int32_t velocity_crads = 0;
+    int32_t position_turn32 = 0;
+    int32_t velocity_turn32_per_s = 0;
     int16_t duty = 0;
 
     bool sensorOk() const { return (flags & PNY_FLAG_SENSOR_OK) != 0u; }
@@ -36,9 +39,9 @@ struct PennyEscStatus {
     bool positionReached() const { return (flags & PNY_FLAG_POSITION_REACHED) != 0u; }
     bool hasFault() const { return (flags & PNY_FLAG_FAULT) != 0u; }
     float angleRad() const { return ((float)angle_turn16 * 6.2831853f) / 65536.0f; }
-    float positionRad() const { return (float)position_crad * 0.01f; }
-    float velocityRadS() const { return (float)velocity_crads * 0.01f; }
-    float velocityRpm() const { return velocityRadS() * 9.5492966f; }
+    float positionRad() const { return (float)position_turn32 * PENNYESC_TURN32_TO_RAD; }
+    float velocityRadS() const { return (float)velocity_turn32_per_s * PENNYESC_TURN32_TO_RAD; }
+    float velocityRpm() const { return (float)velocity_turn32_per_s * 60.0f / PENNYESC_TURN32_PER_REV; }
 };
 
 struct PennyEscEncoderData {
@@ -46,12 +49,12 @@ struct PennyEscEncoderData {
     int16_t x = 0;
     int16_t y = 0;
     int16_t z = 0;
-    int32_t position_crad = 0;
-    int32_t velocity_crads = 0;
+    int32_t position_turn32 = 0;
+    int32_t velocity_turn32_per_s = 0;
 
-    float positionRad() const { return (float)position_crad * 0.01f; }
-    float velocityRadS() const { return (float)velocity_crads * 0.01f; }
-    float velocityRpm() const { return velocityRadS() * 9.5492966f; }
+    float positionRad() const { return (float)position_turn32 * PENNYESC_TURN32_TO_RAD; }
+    float velocityRadS() const { return (float)velocity_turn32_per_s * PENNYESC_TURN32_TO_RAD; }
+    float velocityRpm() const { return (float)velocity_turn32_per_s * 60.0f / PENNYESC_TURN32_PER_REV; }
 };
 
 class PennyEsc {
@@ -130,13 +133,13 @@ public:
         return parseStatus(frame, frame_len, ignore);
     }
 
-    bool setPositionCrad(int32_t position_crad, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
+    bool setPositionTurn32(int32_t position_turn32, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
     {
         uint8_t payload[4];
         uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
         uint8_t frame_len = 0u;
 
-        memcpy(payload, &position_crad, sizeof(position_crad));
+        memcpy(payload, &position_turn32, sizeof(position_turn32));
         if (!sendFrame(PNY_CMD_SET_POSITION, payload, sizeof(payload))) {
             return false;
         }
@@ -152,7 +155,7 @@ public:
 
     bool setPositionRad(float position_rad, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
     {
-        return setPositionCrad((int32_t)(position_rad * 100.0f), status, timeout_ms);
+        return setPositionTurn32((int32_t)(position_rad * PENNYESC_RAD_TO_TURN32), status, timeout_ms);
     }
 
     bool setAdvanceDeg(int16_t advance_deg, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
@@ -205,8 +208,8 @@ public:
         data.x = status.x;
         data.y = status.y;
         data.z = status.z;
-        data.position_crad = status.position_crad;
-        data.velocity_crads = status.velocity_crads;
+        data.position_turn32 = status.position_turn32;
+        data.velocity_turn32_per_s = status.velocity_turn32_per_s;
         return true;
     }
 
@@ -328,8 +331,8 @@ private:
         status.y = payload.y;
         status.z = payload.z;
         status.angle_turn16 = payload.angle_turn16;
-        status.position_crad = payload.position_crad;
-        status.velocity_crads = payload.velocity_crads;
+        status.position_turn32 = payload.position_turn32;
+        status.velocity_turn32_per_s = payload.velocity_turn32_per_s;
         status.duty = payload.duty;
         return true;
     }

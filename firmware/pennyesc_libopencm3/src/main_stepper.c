@@ -387,8 +387,8 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->y = sensor_y;
     payload->z = sensor_z;
     payload->angle_turn16 = (current_step < 0) ? 0u : (uint16_t)((uint32_t)current_step * 65536u / 6u);
-    payload->position_crad = current_step;
-    payload->velocity_crads = transition_count;
+    payload->position_turn32 = current_step;
+    payload->velocity_turn32_per_s = transition_count;
     payload->duty = current_duty;
 }
 

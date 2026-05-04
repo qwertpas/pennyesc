@@ -43,7 +43,7 @@ Signal = getattr(QtCore, "Signal", QtCore.pyqtSignal)
 
 def format_status(status) -> str:
     return (
-        "mode=%d flags=0x%02X faults=0x%02X raw=(%d,%d,%d) angle_turn16=%d pos_crad=%d vel_crads=%d duty=%d"
+        "mode=%d flags=0x%02X faults=0x%02X raw=(%d,%d,%d) angle_turn16=%d pos_turn32=%d vel_turn32_s=%d duty=%d"
         % (
             status.mode,
             status.flags,
@@ -52,8 +52,8 @@ def format_status(status) -> str:
             status.y,
             status.z,
             status.angle_turn16,
-            status.position_crad,
-            status.velocity_crads,
+            status.position_turn32,
+            status.velocity_turn32_per_s,
             status.duty,
         )
     )

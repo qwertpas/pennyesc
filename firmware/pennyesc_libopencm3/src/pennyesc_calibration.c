@@ -92,6 +92,9 @@ static bool calibration_blob_valid(const pennyesc_calibration_blob_t *blob)
     if (blob->size != sizeof(*blob)) {
         return false;
     }
+    if (blob->forward_angle_sign != 1 && blob->forward_angle_sign != -1) {
+        return false;
+    }
 
     const uint8_t *data = (const uint8_t *)blob;
     uint32_t calc = pennyesc_calibration_crc32(data + 12, blob->size - 12);
@@ -135,6 +138,11 @@ const pennyesc_calibration_blob_t *pennyesc_calibration_active(void)
 bool pennyesc_calibration_valid(void)
 {
     return active_valid;
+}
+
+int8_t pennyesc_calibration_forward_angle_sign(void)
+{
+    return active_valid ? active_blob->forward_angle_sign : 1;
 }
 
 uint32_t pennyesc_calibration_crc32(const void *data, uint32_t len)

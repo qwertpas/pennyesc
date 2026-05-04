@@ -22,6 +22,8 @@ from pnyproto import OBSERVER_LP4, RESULT_OK  # noqa: E402
 ADVANCES = [30, 50, 70, 90, 110, 130, 150]
 DIRECTIONS = [1, -1]
 ACCEL_WINDOW_MS = 30.0
+TURN32_PER_REV = 65536.0
+BASELINE_MIN_TURN32_PER_S = 521518
 
 
 @dataclass(frozen=True)
@@ -100,10 +102,10 @@ def average_status_rpm(client: StepperClient, duration_ms: int) -> tuple[float, 
     status = client.get_status()
     while time.monotonic() < deadline:
         status = client.get_status()
-        values.append(abs(status.velocity_crads) * 60.0 / 628.31853)
+        values.append(abs(status.velocity_turn32_per_s) * 60.0 / TURN32_PER_REV)
         time.sleep(0.02)
     if not values:
-        values.append(abs(status.velocity_crads) * 60.0 / 628.31853)
+        values.append(abs(status.velocity_turn32_per_s) * 60.0 / TURN32_PER_REV)
     return statistics.fmean(values), status
 
 
@@ -156,7 +158,7 @@ def run_pulse(
         note.append(f"faults=0x{end_status.faults:02X}")
     if mct_fault_delta:
         note.append(f"mct_fault_delta={mct_fault_delta}")
-    if abs(baseline_status.velocity_crads) < 5000:
+    if abs(baseline_status.velocity_turn32_per_s) < BASELINE_MIN_TURN32_PER_S:
         note.append("baseline_not_spinning")
     summary = PulseSummary(
         test="pulse",
@@ -250,7 +252,7 @@ def run_reversal(
         note.append(f"faults=0x{end_status.faults:02X}")
     if mct_fault_delta:
         note.append(f"mct_fault_delta={mct_fault_delta}")
-    if abs(baseline_status.velocity_crads) < 5000:
+    if abs(baseline_status.velocity_turn32_per_s) < BASELINE_MIN_TURN32_PER_S:
         note.append("baseline_not_spinning")
     summary = PulseSummary(
         test="reversal",

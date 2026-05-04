@@ -131,7 +131,6 @@ static void mct8316z_set_pwm_mode(uint8_t mode_bits)
 
     mct8316z_write_reg(MCT8316Z_REG_CONTROL2A,
                        MCT8316Z_CONTROL2A_RESERVED |
-                       MCT8316Z_SDO_MODE_PUSH_PULL |
                        (mode_bits & 0x06u) |
                        MCT8316Z_CLR_FLT);
     for (volatile int x = 0; x < 1000; x++);

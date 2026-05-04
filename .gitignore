@@ -29,6 +29,11 @@ production/backups
 pennyesc-backups
 firmware/dynamic_metrics/
 firmware/pennyesc_libopencm3/test_results/
+firmware/esp32s3demo/__pycache__
 
-__pycache__/
+__pycache__
 *.py[cod]
+
+
+tools/__pycache__
+.pytest_cache

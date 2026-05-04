@@ -14,6 +14,7 @@
 #include "mct8316z.h"
 #include "pennyesc_boot.h"
 #include "pennyesc_calibration.h"
+#include "pennyesc_frame.h"
 #include "pennyesc_protocol.h"
 #include "pennyesc_uart_update.h"
 #include "tmag5273.h"
@@ -33,7 +34,7 @@
 #define PWM_PERIOD 799
 #define DUTY_LIMIT 799
 #define DEFAULT_POSITION_DUTY 150
-#define POSITION_DEADBAND_CRAD 6
+#define POSITION_DEADBAND_TURN32 626
 #define ADVANCE_DEG 90
 #define ADVANCE_DEFAULT_TURN16 ((uint16_t)(((uint32_t)((ADVANCE_DEG < 0) ? (ADVANCE_DEG + 360) : ADVANCE_DEG) * 65536u + 180u) / 360u))
 #define ADVANCE_MIN_DEG -180
@@ -50,6 +51,8 @@
 #define SCHED_TIMER_PERIOD 0xffffu
 #define SENSOR_STALE_US 10000u
 #define SENSOR_START_RETRIES 4u
+#define COMM_MIN_EVENT_US 2u
+#define COMM_MAX_EVENT_US 60000u
 #define VEL_UPDATE_SAMPLES (ISR_FREQ_HZ / 1000u)
 #define VELOCITY_WINDOW_SAMPLES 32u
 #define VELOCITY_WINDOW_MASK (VELOCITY_WINDOW_SAMPLES - 1u)
@@ -68,14 +71,17 @@
 #define MCT_RUN_CHECK_MS 10u
 #define MCT_RUN_BAD_LIMIT 3u
 
-#define FRAME_BUF_SIZE (PNY_FRAME_MAX_PAYLOAD + 4u)
 #define CAPTURE_MAX_SAMPLES 160u
 #define CAPTURE_MAX_DURATION_MS 2000u
 #define MCT_IC_STATUS_NPOR (1u << 3)
 #define MCT_EXPECTED_CONTROL2A (MCT8316Z_CONTROL2A_RESERVED | MCT8316Z_PWM_MODE_SYNC_DIG)
 #define MCT_EXPECTED_CONTROL3 MCT8316Z_CONTROL3_NO_REPORTS
 #define MCT_EXPECTED_CONTROL4 (0x10u | MCT8316Z_OCP_MODE_DISABLED)
+#define MCT_EXPECTED_CONTROL5 0x00u
+#define MCT_EXPECTED_CONTROL6 0x00u
 #define MCT_EXPECTED_CONTROL8 (MCT8316Z_MTR_LOCK_RETRY_5000MS | MCT8316Z_MTR_LOCK_TDET_5000MS | MCT8316Z_MTR_LOCK_DISABLED)
+#define MCT_EXPECTED_CONTROL9 0x00u
+#define MCT_EXPECTED_CONTROL10 0x00u
 
 #define HALLA_PORT GPIOC
 #define HALLA_PIN GPIO14
@@ -138,6 +144,7 @@ typedef struct {
     volatile uint8_t sector;
     volatile uint16_t next_sensor_tick;
     volatile uint16_t next_tmag_tick;
+    volatile uint16_t next_comm_tick;
     volatile uint16_t position_tick;
     int16_t last_duty;
 } comm_scheduler_t;
@@ -187,8 +194,12 @@ volatile uint16_t mct_last_ic_status;
 volatile uint16_t mct_last_control2a;
 volatile uint16_t mct_last_control3;
 volatile uint16_t mct_last_control4;
+volatile uint16_t mct_last_control5;
+volatile uint16_t mct_last_control6;
 volatile uint16_t mct_last_control7;
 volatile uint16_t mct_last_control8;
+volatile uint16_t mct_last_control9;
+volatile uint16_t mct_last_control10;
 static volatile uint32_t uart_crc_errors;
 static volatile uint32_t uart_overrun_errors;
 static volatile int debug_comm_step;
@@ -206,10 +217,7 @@ static uint8_t comm_velocity_count;
 #define cal_state work_state.cal
 #define capture_state work_state.capture
 
-static uint8_t frame_buf[FRAME_BUF_SIZE];
-static uint8_t frame_idx;
-static uint8_t frame_expected;
-static uint32_t frame_last_byte_ms;
+static pny_frame_parser_t frame_parser;
 static volatile uint32_t uart_quiet_until_ms;
 static volatile uint8_t uart_dma_rx[UART_DMA_RX_BUF_SIZE];
 static volatile uint16_t uart_dma_tail;
@@ -217,15 +225,6 @@ static bool sensor_run_mode;
 
 static void stop_motor_outputs(void);
 static uint16_t sched_now_us(void);
-
-static const uint8_t hall_pattern[6][3] = {
-    {1, 1, 0},
-    {1, 0, 0},
-    {1, 0, 1},
-    {0, 0, 1},
-    {0, 1, 1},
-    {0, 1, 0},
-};
 
 void sys_tick_handler(void)
 {
@@ -260,44 +259,32 @@ static void delay_ms(uint32_t ms)
     }
 }
 
-static uint8_t crc8_calculate(const uint8_t *data, uint8_t len)
+static int8_t position_target_direction(int32_t target, int32_t current, int32_t deadband)
 {
-    uint8_t crc = 0u;
-
-    for (uint8_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (uint8_t bit = 0; bit < 8; bit++) {
-            crc = (crc & 0x80u) ? (uint8_t)((crc << 1) ^ 0x07u) : (uint8_t)(crc << 1);
+    if (target > current) {
+        if (current > INT32_MAX - deadband) {
+            return 0;
         }
+        return (target > current + deadband) ? 1 : 0;
     }
-
-    return crc;
+    if (target < current) {
+        if (current < INT32_MIN + deadband) {
+            return 0;
+        }
+        return (target < current - deadband) ? -1 : 0;
+    }
+    return 0;
 }
 
-static int32_t turn32_to_crad(int32_t turn32)
+static int32_t position_add_turn16_delta(int32_t position, int16_t delta)
 {
-    int32_t whole = (turn32 / 65536) * 628;
-    int32_t frac = turn32 % 65536;
-    int32_t part = frac * 628;
-    if (part >= 0) {
-        part = (part + 32768) >> 16;
-    } else {
-        part = -(((-part) + 32768) >> 16);
+    if (delta > 0 && position > INT32_MAX - delta) {
+        return INT32_MAX;
     }
-    return whole + part;
-}
-
-static int32_t crad_to_turn32(int32_t crad)
-{
-    int32_t whole = (crad / 628) * 65536;
-    int32_t rem = crad % 628;
-    int32_t part = rem * 16384;
-    if (part >= 0) {
-        part = (part + 79) / 157;
-    } else {
-        part = -(((-part) + 79) / 157);
+    if (delta < 0 && position < INT32_MIN - delta) {
+        return INT32_MIN;
     }
-    return whole + part;
+    return position + delta;
 }
 
 static int16_t turn32_per_s_to_rpm(int32_t turn32_per_s)
@@ -368,19 +355,7 @@ static uint8_t current_flags(void)
 
 static void send_frame(uint8_t cmd, const void *payload, uint8_t payload_len)
 {
-    uint8_t tx[FRAME_BUF_SIZE];
-
-    tx[0] = PNY_FRAME_START;
-    tx[1] = frame_header(cmd);
-    tx[2] = payload_len;
-    if (payload_len != 0u) {
-        memcpy(&tx[3], payload, payload_len);
-    }
-    tx[3 + payload_len] = crc8_calculate(tx, (uint8_t)(3u + payload_len));
-
-    for (uint8_t i = 0; i < (uint8_t)(4u + payload_len); i++) {
-        usart_send_blocking(USART2, tx[i]);
-    }
+    pny_frame_send(frame_header(cmd), payload, payload_len);
 }
 
 static void uart_dma_setup(void)
@@ -449,7 +424,7 @@ static void tim21_setup(void)
 {
     timer_set_prescaler(TIM21, 31);
     timer_set_period(TIM21, SCHED_TIMER_PERIOD);
-    TIM_DIER(TIM21) &= ~(TIM_DIER_UIE | TIM_DIER_CC1IE);
+    TIM_DIER(TIM21) &= ~(TIM_DIER_UIE | TIM_DIER_CC1IE | TIM_DIER_CC2IE);
     nvic_enable_irq(NVIC_TIM21_IRQ);
     nvic_set_priority(NVIC_TIM21_IRQ, 1);
     timer_enable_counter(TIM21);
@@ -483,22 +458,36 @@ static void clear_hall_outputs(void)
 
 static void set_hall_outputs_raw(uint8_t step)
 {
-    const uint8_t *pattern = hall_pattern[step];
-    if (pattern[0]) {
-        gpio_set(HALLA_PORT, HALLA_PIN);
-    } else {
-        gpio_clear(HALLA_PORT, HALLA_PIN);
+    uint16_t pc_set = 0u;
+    uint16_t pa_set = 0u;
+
+    switch (step) {
+    case 0:
+        pc_set = HALLA_PIN | HALLB_PIN;
+        break;
+    case 1:
+        pc_set = HALLA_PIN;
+        break;
+    case 2:
+        pc_set = HALLA_PIN;
+        pa_set = HALLC_PIN;
+        break;
+    case 3:
+        pa_set = HALLC_PIN;
+        break;
+    case 4:
+        pc_set = HALLB_PIN;
+        pa_set = HALLC_PIN;
+        break;
+    default:
+        pc_set = HALLB_PIN;
+        break;
     }
-    if (pattern[1]) {
-        gpio_set(HALLB_PORT, HALLB_PIN);
-    } else {
-        gpio_clear(HALLB_PORT, HALLB_PIN);
-    }
-    if (pattern[2]) {
-        gpio_set(HALLC_PORT, HALLC_PIN);
-    } else {
-        gpio_clear(HALLC_PORT, HALLC_PIN);
-    }
+
+    gpio_clear(GPIOC, HALLA_PIN | HALLB_PIN);
+    gpio_clear(GPIOA, HALLC_PIN);
+    gpio_set(GPIOC, pc_set);
+    gpio_set(GPIOA, pa_set);
 }
 
 static void set_hall_outputs(int step)
@@ -587,7 +576,7 @@ static void update_position_from_angle(uint16_t angle_turn16)
     }
 
     int16_t delta = (int16_t)(angle_turn16 - last_angle_turn16);
-    absolute_position_turn32 += delta;
+    absolute_position_turn32 = position_add_turn16_delta(absolute_position_turn32, delta);
     last_angle_turn16 = angle_turn16;
 }
 
@@ -714,22 +703,13 @@ static uint16_t sched_now_us(void)
     return (uint16_t)timer_get_counter(TIM21);
 }
 
-static int32_t comm_velocity_for_direction(int direction)
-{
-    int32_t velocity = comm_velocity_turn32_per_s;
-    if ((direction > 0 && velocity < 0) || (direction < 0 && velocity > 0)) {
-        return 0;
-    }
-    return velocity;
-}
-
 static int32_t observer_position_at_tick(uint16_t tick, int direction)
 {
+    (void)direction;
     int32_t dt_us = (int16_t)(tick - comm_scheduler.position_tick);
     dt_us += observer_lead_us;
-    int32_t velocity = comm_velocity_for_direction(direction);
     return observer_state.position_turn32 +
-           (velocity / 1000) * dt_us / 1000;
+           (comm_velocity_turn32_per_s / 1000) * dt_us / 1000;
 }
 
 static int32_t predict_position_delta(int32_t velocity, uint16_t dt_us)
@@ -766,10 +746,11 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
 static int32_t electrical_position_at_tick(uint16_t tick, int direction)
 {
     int32_t electrical = (int32_t)((uint32_t)observer_position_at_tick(tick, direction) * POLE_PAIRS);
+    int advance_direction = direction * (int)pennyesc_calibration_forward_angle_sign();
     electrical += (int32_t)COMM_CENTER_TURN16;
-    if (direction > 0) {
+    if (advance_direction > 0) {
         electrical += current_advance_turn16;
-    } else if (direction < 0) {
+    } else if (advance_direction < 0) {
         electrical -= current_advance_turn16;
     }
     return electrical;
@@ -781,9 +762,64 @@ static uint8_t comm_sector_at_tick(uint16_t tick, int direction)
     return (uint8_t)(((uint32_t)phase * 6u) >> 16);
 }
 
+static void comm_scheduler_disable_sector_event(void)
+{
+    TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
+    timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
+}
+
+static uint16_t comm_sector_start_phase(uint8_t sector)
+{
+    return (uint16_t)((((uint32_t)sector * 65536u) + 5u) / 6u);
+}
+
+static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
+{
+    int32_t electrical_velocity = comm_velocity_turn32_per_s * POLE_PAIRS;
+    if (direction == 0 || electrical_velocity == 0) {
+        comm_scheduler_disable_sector_event();
+        return;
+    }
+
+    uint32_t speed = abs_u32(electrical_velocity);
+    uint16_t phase = (uint16_t)electrical_position_at_tick(now, direction);
+    uint8_t sector = (uint8_t)(((uint32_t)phase * 6u) >> 16);
+    uint16_t phase_delta;
+
+    if (electrical_velocity > 0) {
+        uint16_t boundary = comm_sector_start_phase((uint8_t)(sector + 1u));
+        phase_delta = (uint16_t)(boundary - phase);
+    } else {
+        uint16_t boundary = (uint16_t)(comm_sector_start_phase(sector) - 1u);
+        phase_delta = (uint16_t)(phase - boundary);
+    }
+    if (phase_delta == 0u) {
+        phase_delta = 1u;
+    }
+
+    uint32_t speed_k = speed / 1000u;
+    if (speed_k == 0u) {
+        comm_scheduler_disable_sector_event();
+        return;
+    }
+    uint32_t dt_us = ((uint32_t)phase_delta * 1000u) / speed_k;
+    if (dt_us < COMM_MIN_EVENT_US) {
+        dt_us = COMM_MIN_EVENT_US;
+    }
+    if (dt_us > COMM_MAX_EVENT_US) {
+        comm_scheduler_disable_sector_event();
+        return;
+    }
+
+    comm_scheduler.next_comm_tick = (uint16_t)(now + (uint16_t)dt_us);
+    TIM_CCR2(TIM21) = comm_scheduler.next_comm_tick;
+    timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
+    TIM_DIER(TIM21) |= TIM_DIER_CC2IE;
+}
+
 static void comm_scheduler_stop(void)
 {
-    TIM_DIER(TIM21) &= ~TIM_DIER_CC1IE;
+    TIM_DIER(TIM21) &= ~(TIM_DIER_CC1IE | TIM_DIER_CC2IE);
     comm_scheduler.sector = 0xffu;
     comm_scheduler.last_duty = INT16_MIN;
     tmag5273_async_cancel();
@@ -797,8 +833,9 @@ static void comm_scheduler_start(void)
     comm_scheduler.last_duty = INT16_MIN;
     comm_scheduler.next_sensor_tick = (uint16_t)(now + SENSOR_TICK_US);
     comm_scheduler.next_tmag_tick = now;
+    comm_scheduler.next_comm_tick = now;
     TIM_CCR1(TIM21) = comm_scheduler.next_sensor_tick;
-    timer_clear_flag(TIM21, TIM_SR_CC1IF | TIM_SR_UIF);
+    timer_clear_flag(TIM21, TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC1OF | TIM_SR_CC2OF | TIM_SR_UIF);
     TIM_DIER(TIM21) |= TIM_DIER_CC1IE;
 }
 
@@ -845,8 +882,12 @@ static void mct_apply_config(bool reverse)
     mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A | MCT8316Z_CLR_FLT);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL3, MCT_EXPECTED_CONTROL3);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL4, MCT_EXPECTED_CONTROL4);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL5, MCT_EXPECTED_CONTROL5);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL6, MCT_EXPECTED_CONTROL6);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL7, MCT8316Z_HALL_HYS_HIGH | (reverse ? MCT8316Z_DIR_REVERSE : 0u));
     mct8316z_write_reg(MCT8316Z_REG_CONTROL8, MCT_EXPECTED_CONTROL8);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL9, MCT_EXPECTED_CONTROL9);
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL10, MCT_EXPECTED_CONTROL10);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A | MCT8316Z_CLR_FLT);
 }
 
@@ -861,14 +902,22 @@ static uint8_t mct_config_bad_mask(bool reverse, bool check_direction)
     uint16_t control2a_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
     uint16_t control3_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL3);
     uint16_t control4_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL4);
+    uint16_t control5_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL5);
+    uint16_t control6_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL6);
     uint16_t control7_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL7);
     uint16_t control8_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL8);
+    uint16_t control9_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL9);
+    uint16_t control10_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL10);
     uint8_t ic_status = (uint8_t)ic_status_word;
     uint8_t control2a = (uint8_t)control2a_word;
     uint8_t control3 = (uint8_t)control3_word;
     uint8_t control4 = (uint8_t)control4_word;
+    uint8_t control5 = (uint8_t)control5_word;
+    uint8_t control6 = (uint8_t)control6_word;
     uint8_t control7 = (uint8_t)control7_word;
     uint8_t control8 = (uint8_t)control8_word;
+    uint8_t control9 = (uint8_t)control9_word;
+    uint8_t control10 = (uint8_t)control10_word;
     uint8_t expected_control7 = MCT8316Z_HALL_HYS_HIGH;
     uint8_t bad = 0u;
     if (reverse) {
@@ -887,6 +936,12 @@ static uint8_t mct_config_bad_mask(bool reverse, bool check_direction)
     if (control4 != MCT_EXPECTED_CONTROL4) {
         bad |= 1u << 3;
     }
+    if (control5 != MCT_EXPECTED_CONTROL5 ||
+        control6 != MCT_EXPECTED_CONTROL6 ||
+        control9 != MCT_EXPECTED_CONTROL9 ||
+        control10 != MCT_EXPECTED_CONTROL10) {
+        bad |= 1u << 7;
+    }
     if ((control7 & MCT8316Z_HALL_HYS_HIGH) != MCT8316Z_HALL_HYS_HIGH) {
         bad |= 1u << 4;
     }
@@ -903,8 +958,12 @@ static uint8_t mct_config_bad_mask(bool reverse, bool check_direction)
         mct_last_control2a = control2a_word;
         mct_last_control3 = control3_word;
         mct_last_control4 = control4_word;
+        mct_last_control5 = control5_word;
+        mct_last_control6 = control6_word;
         mct_last_control7 = control7_word;
         mct_last_control8 = control8_word;
+        mct_last_control9 = control9_word;
+        mct_last_control10 = control10_word;
     }
 
     return bad;
@@ -1006,19 +1065,19 @@ static void run_begin(void)
     int16_t duty = commanded_duty;
     int8_t direction = 0;
     if (target_position_set) {
-        int32_t error = target_position_turn32 - absolute_position_turn32;
-        int32_t deadband = crad_to_turn32(POSITION_DEADBAND_CRAD);
+        int32_t deadband = POSITION_DEADBAND_TURN32;
         int16_t drive = commanded_duty;
+        int8_t target_direction = position_target_direction(target_position_turn32, absolute_position_turn32, deadband);
         if (drive < 0) {
             drive = (int16_t)(-drive);
         }
         if (drive == 0) {
             drive = DEFAULT_POSITION_DUTY;
         }
-        if (error > deadband) {
+        if (target_direction > 0) {
             duty = drive;
             direction = 1;
-        } else if (error < -deadband) {
+        } else if (target_direction < 0) {
             duty = (int16_t)(-drive);
             direction = -1;
         } else {
@@ -1049,6 +1108,21 @@ static void run_begin(void)
     comm_scheduler_start();
     if (duty != 0 && direction != 0) {
         comm_scheduler.sector = (uint8_t)debug_comm_step;
+        comm_scheduler_schedule_sector_event(sched_now_us(), direction);
+    }
+}
+
+static void position_restart_poll(void)
+{
+    if (!target_position_set || current_mode != PNY_MODE_IDLE) {
+        return;
+    }
+
+    run_begin();
+    if (current_mode != PNY_MODE_RUN) {
+        target_position_set = false;
+        commanded_duty = 0;
+        stop_motor_outputs();
     }
 }
 
@@ -1065,8 +1139,8 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->y = sensor_y;
     payload->z = sensor_z;
     payload->angle_turn16 = current_angle_turn16;
-    payload->position_crad = turn32_to_crad(absolute_position_turn32);
-    payload->velocity_crads = turn32_to_crad(velocity_turn32_per_s);
+    payload->position_turn32 = absolute_position_turn32;
+    payload->velocity_turn32_per_s = velocity_turn32_per_s;
     payload->duty = current_duty;
     payload->mct_fault_count = mct_fault_count;
     payload->isr_us = (uint16_t)isr_duration_us;
@@ -1180,6 +1254,9 @@ static uint8_t calibration_start(uint8_t sweep_dir)
     memset(&cal_state, 0, sizeof(cal_state));
     target_position_set = false;
     commanded_duty = 0;
+    stop_motor_outputs();
+    mct_apply_config(false);
+    delay_ms(2);
     current_mode = PNY_MODE_CAL;
     cal_state.active = true;
     cal_state.total_points = PNY_CAL_POINTS_PER_SWEEP;
@@ -1292,9 +1369,9 @@ static void comm_control_tick(uint16_t now)
     int8_t direction = 0;
 
     if (target_position_set) {
-        int32_t error = target_position_turn32 - absolute_position_turn32;
-        int32_t deadband = crad_to_turn32(POSITION_DEADBAND_CRAD);
+        int32_t deadband = POSITION_DEADBAND_TURN32;
         int16_t drive = commanded_duty;
+        int8_t target_direction = position_target_direction(target_position_turn32, absolute_position_turn32, deadband);
         if (drive < 0) {
             drive = (int16_t)(-drive);
         }
@@ -1302,10 +1379,10 @@ static void comm_control_tick(uint16_t now)
             drive = DEFAULT_POSITION_DUTY;
         }
 
-        if (error > deadband) {
+        if (target_direction > 0) {
             duty = drive;
             direction = 1;
-        } else if (error < -deadband) {
+        } else if (target_direction < 0) {
             duty = (int16_t)(-drive);
             direction = -1;
         }
@@ -1329,7 +1406,13 @@ static void comm_control_tick(uint16_t now)
     }
 
     if (current_direction != 0 && direction != current_direction) {
-        comm_stop_from_isr();
+        if (target_position_set) {
+            current_mode = PNY_MODE_IDLE;
+            comm_scheduler_stop();
+            stop_motor_outputs();
+        } else {
+            comm_stop_from_isr();
+        }
         return;
     }
     current_direction = direction;
@@ -1361,20 +1444,29 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
 
     int32_t last_position = absolute_position_turn32;
     uint16_t last_tick = comm_scheduler.position_tick;
-    if (take_sensor_xy_async(true)) {
-        uint16_t sample_dt = (uint16_t)(sensor_i2c_end_us - last_tick);
+    bool have_sample = take_sensor_xy_async(true);
+
+    if ((int16_t)(scheduled_tick - comm_scheduler.next_tmag_tick) >= 0) {
+        if (tmag5273_async_start_xy(scheduled_tick)) {
+            comm_scheduler.next_tmag_tick = (uint16_t)(scheduled_tick + TMAG_READ_PERIOD_US);
+        }
+    }
+
+    if (have_sample) {
+        uint16_t sample_tick = sensor_i2c_start_us;
+        uint16_t sample_dt = (uint16_t)(sample_tick - last_tick);
         int32_t sample_velocity = comm_velocity_turn32_per_s;
         if (sample_dt > 0u && sample_dt < SENSOR_STALE_US) {
             sample_velocity = ((absolute_position_turn32 - last_position) * 1000) / (int32_t)sample_dt * 1000;
         }
-        int32_t secant_velocity = comm_velocity_update(absolute_position_turn32, sensor_i2c_end_us);
+        int32_t secant_velocity = comm_velocity_update(absolute_position_turn32, sample_tick);
         velocity_turn32_per_s = velocity_update(absolute_position_turn32);
         if (observer_mode == PNY_OBSERVER_AB3) {
-            observer_ab_update(absolute_position_turn32, sensor_i2c_end_us, 2u, 4u);
+            observer_ab_update(absolute_position_turn32, sample_tick, 2u, 4u);
         } else if (observer_mode == PNY_OBSERVER_KCV1) {
-            observer_ab_update(absolute_position_turn32, sensor_i2c_end_us, 2u, 8u);
+            observer_ab_update(absolute_position_turn32, sample_tick, 2u, 8u);
         } else if (observer_mode == PNY_OBSERVER_KCV2) {
-            observer_ab_update(absolute_position_turn32, sensor_i2c_end_us, 4u, 8u);
+            observer_ab_update(absolute_position_turn32, sample_tick, 4u, 8u);
         } else {
             observer_state.position_turn32 = absolute_position_turn32;
         }
@@ -1393,13 +1485,7 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
         } else {
             comm_velocity_turn32_per_s += (sample_velocity - comm_velocity_turn32_per_s) / 2;
         }
-        comm_scheduler.position_tick = sensor_i2c_end_us;
-    }
-
-    if ((int16_t)(scheduled_tick - comm_scheduler.next_tmag_tick) >= 0) {
-        if (tmag5273_async_start_xy(scheduled_tick)) {
-            comm_scheduler.next_tmag_tick = (uint16_t)(scheduled_tick + TMAG_READ_PERIOD_US);
-        }
+        comm_scheduler.position_tick = sample_tick;
     }
 
     uint16_t control_tick = sched_now_us();
@@ -1415,6 +1501,22 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
     }
 
     comm_control_tick(control_tick);
+    comm_scheduler_schedule_sector_event(control_tick, current_direction);
+}
+
+static void comm_sector_tick(uint16_t scheduled_tick)
+{
+    uint16_t now = sched_now_us();
+    if ((int16_t)(now - scheduled_tick) < 0) {
+        now = scheduled_tick;
+    }
+    if ((uint16_t)(now - comm_scheduler.position_tick) > SENSOR_STALE_US) {
+        comm_stop_from_isr();
+        return;
+    }
+
+    comm_control_tick(now);
+    comm_scheduler_schedule_sector_event(now, current_direction);
 }
 
 void tim21_isr(void)
@@ -1422,6 +1524,11 @@ void tim21_isr(void)
     uint16_t start = sched_now_us();
     uint32_t flags = TIM_SR(TIM21) & TIM_DIER(TIM21);
 
+    if ((flags & TIM_SR_CC2IF) != 0u) {
+        uint16_t scheduled_tick = comm_scheduler.next_comm_tick;
+        timer_clear_flag(TIM21, TIM_SR_CC2IF);
+        comm_sector_tick(scheduled_tick);
+    }
     if ((flags & TIM_SR_CC1IF) != 0u) {
         uint16_t scheduled_tick = comm_scheduler.next_sensor_tick;
         timer_clear_flag(TIM21, TIM_SR_CC1IF);
@@ -1439,17 +1546,15 @@ void tim21_isr(void)
         isr_overrun_count++;
         timer_clear_flag(TIM21, TIM_SR_CC1OF);
     }
+    if ((TIM_SR(TIM21) & TIM_SR_CC2OF) != 0u) {
+        isr_overrun_count++;
+        timer_clear_flag(TIM21, TIM_SR_CC2OF);
+    }
 }
 
 void i2c1_isr(void)
 {
     tmag5273_i2c1_isr();
-}
-
-static void parser_reset(void)
-{
-    frame_idx = 0;
-    frame_expected = 0;
 }
 
 static bool uart_quiet_active(uint32_t now_ms)
@@ -1462,6 +1567,14 @@ static void send_status_response(uint8_t cmd, uint8_t result)
     pny_status_payload_t payload;
     fill_status_payload(&payload, result);
     send_frame(cmd, &payload, sizeof(payload));
+}
+
+static void handle_get_status(void)
+{
+    if (current_mode == PNY_MODE_IDLE && sensor_set_full_mode()) {
+        refresh_sensor_xyz(false);
+    }
+    send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);
 }
 
 static void handle_set_duty(const uint8_t *payload, uint8_t len)
@@ -1520,14 +1633,14 @@ static void handle_set_position(const uint8_t *payload, uint8_t len)
         return;
     }
 
-    int32_t position_crad;
-    memcpy(&position_crad, payload, sizeof(position_crad));
+    int32_t position_turn32;
+    memcpy(&position_turn32, payload, sizeof(position_turn32));
 
     int16_t old_commanded_duty = commanded_duty;
     bool old_target_position_set = target_position_set;
     int32_t old_target_position_turn32 = target_position_turn32;
     bool was_running = (current_mode == PNY_MODE_RUN);
-    target_position_turn32 = crad_to_turn32(position_crad);
+    target_position_turn32 = position_turn32;
     target_position_set = true;
     if (commanded_duty == 0) {
         commanded_duty = DEFAULT_POSITION_DUTY;
@@ -1881,7 +1994,7 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
         handle_ext(payload, len);
         break;
     case PNY_CMD_GET_STATUS:
-        send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);
+        handle_get_status();
         break;
     case PNY_CMD_SET_DUTY:
         handle_set_duty(payload, len);
@@ -1928,10 +2041,9 @@ static void uart_poll(void)
     while (uart_dma_tail != head) {
         uint8_t byte = uart_dma_rx[uart_dma_tail];
         uart_dma_tail = (uint16_t)((uart_dma_tail + 1u) & UART_DMA_RX_BUF_MASK);
-        frame_last_byte_ms = system_millis;
 
         if (uart_quiet_active(system_millis)) {
-            parser_reset();
+            pny_frame_parser_reset(&frame_parser);
             continue;
         }
 
@@ -1941,48 +2053,16 @@ static void uart_poll(void)
                 system_millis,
                 fill_update_status,
                 prepare_update_boot)) {
-            parser_reset();
+            pny_frame_parser_reset(&frame_parser);
             continue;
         }
 
-        if (frame_idx == 0u) {
-            if (byte != PNY_FRAME_START) {
-                continue;
-            }
-            frame_buf[frame_idx++] = byte;
-            continue;
-        }
-
-        if (frame_idx < 3u && byte == PNY_FRAME_START) {
-            frame_buf[0] = byte;
-            frame_idx = 1u;
-            frame_expected = 0u;
-            continue;
-        }
-
-        frame_buf[frame_idx++] = byte;
-
-        if (frame_idx == 3u) {
-            if (frame_buf[2] > PNY_FRAME_MAX_PAYLOAD) {
-                parser_reset();
-                continue;
-            }
-            frame_expected = (uint8_t)(frame_buf[2] + 4u);
-        }
-
-        if (frame_expected != 0u && frame_idx == frame_expected) {
-            uint8_t crc = crc8_calculate(frame_buf, (uint8_t)(frame_expected - 1u));
-            if (crc == frame_buf[frame_expected - 1u]) {
-                process_frame(frame_buf[1], &frame_buf[3], frame_buf[2]);
-            } else {
-                uart_crc_errors++;
-            }
-            parser_reset();
-            continue;
-        }
-
-        if (frame_idx >= FRAME_BUF_SIZE) {
-            parser_reset();
+        const uint8_t *frame;
+        uint8_t frame_len;
+        if (pny_frame_parser_push(&frame_parser, byte, system_millis, UART_FRAME_TIMEOUT_MS, &frame, &frame_len)) {
+            process_frame(frame[1], &frame[3], frame[2]);
+        } else if (frame_parser.crc_error) {
+            uart_crc_errors++;
         }
     }
 
@@ -1991,9 +2071,6 @@ static void uart_poll(void)
         uart_overrun_errors++;
     }
 
-    if (frame_idx != 0u && (system_millis - frame_last_byte_ms) > UART_FRAME_TIMEOUT_MS) {
-        parser_reset();
-    }
 }
 
 int main(void)
@@ -2036,6 +2113,7 @@ int main(void)
         }
 
         mct_run_check();
+        position_restart_poll();
         pennyesc_uart_update_poll(system_millis);
         if (pending_reset_ms != 0u && (int32_t)(system_millis - pending_reset_ms) >= 0) {
             scb_reset_system();

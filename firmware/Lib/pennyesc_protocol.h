@@ -99,8 +99,8 @@ typedef struct __attribute__((packed)) {
     int16_t y;
     int16_t z;
     uint16_t angle_turn16;
-    int32_t position_crad;
-    int32_t velocity_crads;
+    int32_t position_turn32;
+    int32_t velocity_turn32_per_s;
     int16_t duty;
     uint16_t mct_fault_count;
     uint16_t isr_us;
