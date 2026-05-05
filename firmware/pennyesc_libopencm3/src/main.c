@@ -36,7 +36,9 @@
 #define DEFAULT_POSITION_DUTY 150
 #define POSITION_DEADBAND_TURN32 626
 #define ADVANCE_DEG 90
-#define ADVANCE_DEFAULT_TURN16 ((uint16_t)(((uint32_t)((ADVANCE_DEG < 0) ? (ADVANCE_DEG + 360) : ADVANCE_DEG) * 65536u + 180u) / 360u))
+#define LEAD_DEFAULT_TURN16 ((int32_t)(((int32_t)ADVANCE_DEG * 65536 + 180) / 360))
+#define SECTOR_ALIGNMENT_DEG 240
+#define SECTOR_ALIGNMENT_TURN16 ((int32_t)(((int32_t)SECTOR_ALIGNMENT_DEG * 65536 + 180) / 360))
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
 #define OBSERVER_LEAD_US 0
@@ -172,7 +174,7 @@ static volatile int32_t target_position_turn32;
 static volatile int16_t commanded_duty;
 static volatile int16_t current_duty;
 static volatile int8_t current_direction;
-static volatile uint16_t current_advance_turn16 = ADVANCE_DEFAULT_TURN16;
+static volatile int32_t current_lead_turn16 = LEAD_DEFAULT_TURN16;
 static volatile int16_t observer_lead_us = OBSERVER_LEAD_US;
 static volatile uint8_t observer_mode = PNY_OBSERVER_LP4;
 static volatile uint32_t pending_reset_ms;
@@ -714,13 +716,18 @@ static void stop_motor_outputs(void)
     comm_velocity_turn32_per_s = 0;
 }
 
-static uint16_t advance_deg_to_turn16(int16_t advance_deg)
+static int32_t lead_deg_to_turn16(int16_t lead_deg)
 {
-    int32_t advance = advance_deg;
-    if (advance < 0) {
-        advance += 360;
+    int32_t scaled = (int32_t)lead_deg * 65536;
+    if (scaled >= 0) {
+        return (scaled + 180) / 360;
     }
-    return (uint16_t)(((uint32_t)advance * 65536u + 180u) / 360u);
+    return -((-scaled + 180) / 360);
+}
+
+static int32_t advance_deg_to_lead_turn16(int16_t advance_deg)
+{
+    return lead_deg_to_turn16(advance_deg);
 }
 
 static uint16_t sched_now_us(void)
@@ -728,9 +735,8 @@ static uint16_t sched_now_us(void)
     return (uint16_t)timer_get_counter(TIM21);
 }
 
-static int32_t observer_position_at_tick(uint16_t tick, int direction)
+static int32_t observer_position_at_tick(uint16_t tick)
 {
-    (void)direction;
     int32_t dt_us = (int16_t)(tick - comm_scheduler.position_tick);
     dt_us += observer_lead_us;
     return observer_state.position_turn32 +
@@ -768,17 +774,20 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
     comm_velocity_turn32_per_s += correction / beta_div;
 }
 
-static int32_t electrical_position_at_tick(uint16_t tick, int direction)
+static int32_t physical_phase_at_tick(uint16_t tick, int direction)
 {
-    (void)direction;
-    int32_t electrical = (int32_t)((uint32_t)observer_position_at_tick(tick, direction) * POLE_PAIRS);
-    electrical += current_advance_turn16;
-    return electrical;
+    int32_t rotor_electrical = forward_position_from_sensor(observer_position_at_tick(tick)) * POLE_PAIRS;
+    return rotor_electrical + SECTOR_ALIGNMENT_TURN16 + ((int32_t)direction * current_lead_turn16);
+}
+
+static int32_t hall_phase_at_tick(uint16_t tick, int direction)
+{
+    return sensor_position_from_forward(physical_phase_at_tick(tick, direction));
 }
 
 static uint8_t comm_sector_at_tick(uint16_t tick, int direction)
 {
-    uint16_t phase = (uint16_t)electrical_position_at_tick(tick, direction);
+    uint16_t phase = (uint16_t)hall_phase_at_tick(tick, direction);
     return (uint8_t)(((uint32_t)phase * 6u) >> 16);
 }
 
@@ -802,7 +811,7 @@ static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
     }
 
     uint32_t speed = abs_u32(electrical_velocity);
-    uint16_t phase = (uint16_t)electrical_position_at_tick(now, direction);
+    uint16_t phase = (uint16_t)hall_phase_at_tick(now, direction);
     uint8_t sector = (uint8_t)(((uint32_t)phase * 6u) >> 16);
     uint16_t phase_delta;
 
@@ -901,7 +910,7 @@ static uint8_t run_ready(void)
     return PNY_RESULT_OK;
 }
 
-static void mct_apply_config(bool reverse)
+static void mct_apply_config(void)
 {
     mct8316z_write_reg(MCT8316Z_REG_CONTROL1, 0x03u);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A | MCT8316Z_CLR_FLT);
@@ -909,19 +918,14 @@ static void mct_apply_config(bool reverse)
     mct8316z_write_reg(MCT8316Z_REG_CONTROL4, MCT_EXPECTED_CONTROL4);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL5, MCT_EXPECTED_CONTROL5);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL6, MCT_EXPECTED_CONTROL6);
-    mct8316z_write_reg(MCT8316Z_REG_CONTROL7, MCT8316Z_HALL_HYS_HIGH | (reverse ? MCT8316Z_DIR_REVERSE : 0u));
+    mct8316z_write_reg(MCT8316Z_REG_CONTROL7, MCT8316Z_HALL_HYS_HIGH);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL8, MCT_EXPECTED_CONTROL8);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL9, MCT_EXPECTED_CONTROL9);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL10, MCT_EXPECTED_CONTROL10);
     mct8316z_write_reg(MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A | MCT8316Z_CLR_FLT);
 }
 
-static void mct_set_direction(bool reverse)
-{
-    mct8316z_write_reg(MCT8316Z_REG_CONTROL7, MCT8316Z_HALL_HYS_HIGH | (reverse ? MCT8316Z_DIR_REVERSE : 0u));
-}
-
-static uint8_t mct_config_bad_mask(bool reverse, bool check_direction)
+static uint8_t mct_config_bad_mask(void)
 {
     uint16_t ic_status_word = mct8316z_read_reg(MCT8316Z_REG_IC_STATUS);
     uint16_t control2a_word = mct8316z_read_reg(MCT8316Z_REG_CONTROL2A);
@@ -945,9 +949,6 @@ static uint8_t mct_config_bad_mask(bool reverse, bool check_direction)
     uint8_t control10 = (uint8_t)control10_word;
     uint8_t expected_control7 = MCT8316Z_HALL_HYS_HIGH;
     uint8_t bad = 0u;
-    if (reverse) {
-        expected_control7 |= MCT8316Z_DIR_REVERSE;
-    }
 
     if ((ic_status & MCT_IC_STATUS_NPOR) == 0u) {
         bad |= 1u << 0;
@@ -970,7 +971,7 @@ static uint8_t mct_config_bad_mask(bool reverse, bool check_direction)
     if ((control7 & MCT8316Z_HALL_HYS_HIGH) != MCT8316Z_HALL_HYS_HIGH) {
         bad |= 1u << 4;
     }
-    if (check_direction && (control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) != expected_control7) {
+    if ((control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) != expected_control7) {
         bad |= 1u << 5;
     }
     if (control8 != MCT_EXPECTED_CONTROL8) {
@@ -994,18 +995,14 @@ static uint8_t mct_config_bad_mask(bool reverse, bool check_direction)
     return bad;
 }
 
-static bool mct_config_ok(bool reverse, bool check_direction)
+static bool mct_config_ok(void)
 {
-    return mct_config_bad_mask(reverse, check_direction) == 0u;
+    return mct_config_bad_mask() == 0u;
 }
 
-static void mct_recover_if_needed(bool reverse)
+static void mct_recover_if_needed(void)
 {
-    if (mct_config_ok(reverse, true)) {
-        return;
-    }
-    if (mct_config_ok(reverse, false)) {
-        mct_set_direction(reverse);
+    if (mct_config_ok()) {
         return;
     }
 
@@ -1016,8 +1013,7 @@ static void mct_recover_if_needed(bool reverse)
     apply_pwm_duty(0);
     delay_ms(2);
 
-    if (mct_config_ok(reverse, false)) {
-        mct_set_direction(reverse);
+    if (mct_config_ok()) {
         if (restart_timer) {
             comm_scheduler_start();
         }
@@ -1028,7 +1024,7 @@ static void mct_recover_if_needed(bool reverse)
         mct_fault_count++;
     }
 
-    mct_apply_config(reverse);
+    mct_apply_config();
     delay_ms(2);
 
     if (restart_timer) {
@@ -1039,7 +1035,6 @@ static void mct_recover_if_needed(bool reverse)
 static void mct_run_check(void)
 {
     uint32_t now = system_millis;
-    bool reverse;
 
     if ((int32_t)(now - next_mct_check_ms) < 0) {
         return;
@@ -1049,8 +1044,7 @@ static void mct_run_check(void)
         return;
     }
 
-    reverse = current_direction < 0;
-    uint8_t bad = mct_config_bad_mask(reverse, true);
+    uint8_t bad = mct_config_bad_mask();
     if (bad == 0u) {
         mct_run_bad_count = 0;
         return;
@@ -1072,7 +1066,7 @@ static void mct_run_check(void)
     capture_state.active = false;
     capture_state.done = true;
     run_stop();
-    mct_apply_config(reverse);
+    mct_apply_config();
 }
 
 static void run_begin(void)
@@ -1115,13 +1109,10 @@ static void run_begin(void)
     }
 
     if (duty != 0 && direction != 0) {
-        mct_recover_if_needed(direction < 0);
+        mct_recover_if_needed();
         next_mct_check_ms = system_millis + MCT_RUN_CHECK_MS;
         mct_run_bad_count = 0;
         current_duty = duty;
-        if (direction != current_direction) {
-            mct_set_direction(direction < 0);
-        }
         current_direction = direction;
         comm_scheduler.position_tick = sched_now_us();
         debug_comm_step = comm_sector_at_tick(comm_scheduler.position_tick, direction);
@@ -1234,7 +1225,7 @@ static void calibration_begin_sample_window(void)
 static void calibration_arm_point(uint8_t point_index)
 {
     uint8_t step = cal_point_step_index(point_index, cal_state.sweep_dir);
-    mct_recover_if_needed(false);
+    mct_recover_if_needed();
     set_hall_outputs(step % 6u);
     apply_pwm_duty(CAL_DUTY);
     calibration_begin_sample_window();
@@ -1294,7 +1285,7 @@ static uint8_t calibration_start(uint8_t sweep_dir)
     target_position_set = false;
     commanded_duty = 0;
     stop_motor_outputs();
-    mct_apply_config(false);
+    mct_apply_config();
     delay_ms(2);
     current_mode = PNY_MODE_CAL;
     cal_state.active = true;
@@ -1659,7 +1650,7 @@ static void handle_set_duty(const uint8_t *payload, uint8_t len)
                 return;
             }
         } else {
-            mct_recover_if_needed(duty < 0);
+            mct_recover_if_needed();
             current_duty = duty;
             current_direction = new_direction;
         }
@@ -1705,7 +1696,7 @@ static void handle_set_position(const uint8_t *payload, uint8_t len)
         return;
     }
     if (was_running) {
-        mct_recover_if_needed(current_direction < 0);
+        mct_recover_if_needed();
     }
     current_mode = PNY_MODE_RUN;
     send_status_response(PNY_CMD_SET_POSITION, PNY_RESULT_OK);
@@ -1728,7 +1719,7 @@ static void handle_set_advance(const uint8_t *payload, uint8_t len)
         return;
     }
 
-    current_advance_turn16 = advance_deg_to_turn16(advance_deg);
+    current_lead_turn16 = advance_deg_to_lead_turn16(advance_deg);
     send_status_response(PNY_CMD_SET_ADVANCE, PNY_RESULT_OK);
 }
 
@@ -1922,7 +1913,7 @@ static void handle_capture_start(const uint8_t *payload, uint8_t len)
     capture_state.sample_period_ms = (uint16_t)(1000u / in.sample_hz);
     capture_state.active = true;
 
-    current_advance_turn16 = advance_deg_to_turn16(in.advance_deg);
+    current_lead_turn16 = advance_deg_to_lead_turn16(in.advance_deg);
     target_position_set = false;
     commanded_duty = in.duty;
 
@@ -2138,7 +2129,7 @@ int main(void)
 
     mct8316z_init();
     delay_ms(5);
-    mct_apply_config(false);
+    mct_apply_config();
 
     pennyesc_calibration_load();
     flash_fault = false;
