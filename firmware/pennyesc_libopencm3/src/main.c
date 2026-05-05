@@ -162,6 +162,7 @@ static volatile uint16_t current_angle_turn16;
 static volatile int32_t absolute_position_turn32;
 static volatile int32_t velocity_turn32_per_s;
 static volatile int32_t comm_velocity_turn32_per_s;
+static volatile int32_t position_zero_turn32;
 
 static volatile bool position_initialized;
 static volatile uint16_t last_angle_turn16;
@@ -224,6 +225,7 @@ static bool sensor_run_mode;
 
 static void stop_motor_outputs(void);
 static uint16_t sched_now_us(void);
+static bool position_target_reached(void);
 
 void sys_tick_handler(void)
 {
@@ -343,7 +345,7 @@ static uint8_t current_flags(void)
     if (sensor_ready) {
         flags |= PNY_FLAG_SENSOR_OK;
     }
-    if (target_position_set && current_duty == 0) {
+    if (position_target_reached()) {
         flags |= PNY_FLAG_POSITION_REACHED;
     }
     if (current_faults() != 0u) {
@@ -587,6 +589,28 @@ static int32_t forward_position_from_sensor(int32_t position)
 static int32_t sensor_position_from_forward(int32_t position)
 {
     return pennyesc_calibration_forward_angle_sign() < 0 ? -position : position;
+}
+
+static int32_t position_from_zero(int32_t position)
+{
+    int64_t delta = (int64_t)position - position_zero_turn32;
+    if (delta > INT32_MAX) {
+        return INT32_MAX;
+    }
+    if (delta < INT32_MIN) {
+        return INT32_MIN;
+    }
+    return forward_position_from_sensor((int32_t)delta);
+}
+
+static int8_t current_position_target_direction(int32_t target)
+{
+    return position_target_direction(target, position_from_zero(absolute_position_turn32), POSITION_DEADBAND_TURN32);
+}
+
+static bool position_target_reached(void)
+{
+    return target_position_set && current_position_target_direction(target_position_turn32) == 0;
 }
 
 static bool sensor_set_full_mode(void)
@@ -1084,9 +1108,8 @@ static void run_begin(void)
     int16_t duty = commanded_duty;
     int8_t direction = 0;
     if (target_position_set) {
-        int32_t deadband = POSITION_DEADBAND_TURN32;
         int16_t drive = commanded_duty;
-        int8_t target_direction = position_target_direction(target_position_turn32, absolute_position_turn32, deadband);
+        int8_t target_direction = current_position_target_direction(target_position_turn32);
         if (drive < 0) {
             drive = (int16_t)(-drive);
         }
@@ -1108,29 +1131,38 @@ static void run_begin(void)
         direction = -1;
     }
 
-    if (duty != 0 && direction != 0) {
-        mct_recover_if_needed();
-        next_mct_check_ms = system_millis + MCT_RUN_CHECK_MS;
-        mct_run_bad_count = 0;
-        current_duty = duty;
-        current_direction = direction;
-        comm_scheduler.position_tick = sched_now_us();
-        debug_comm_step = comm_sector_at_tick(comm_scheduler.position_tick, direction);
-        set_hall_outputs_raw((uint8_t)debug_comm_step);
-        apply_pwm_duty(duty);
+    if (duty == 0 || direction == 0) {
+        current_duty = 0;
+        current_direction = 0;
+        stop_motor_outputs();
+        comm_scheduler_stop();
+        current_mode = PNY_MODE_IDLE;
+        return;
     }
 
+    mct_recover_if_needed();
+    next_mct_check_ms = system_millis + MCT_RUN_CHECK_MS;
+    mct_run_bad_count = 0;
+    current_duty = duty;
+    current_direction = direction;
+    comm_scheduler.position_tick = sched_now_us();
+    debug_comm_step = comm_sector_at_tick(comm_scheduler.position_tick, direction);
+    set_hall_outputs_raw((uint8_t)debug_comm_step);
+    apply_pwm_duty(duty);
     current_mode = PNY_MODE_RUN;
     comm_scheduler_start();
-    if (duty != 0 && direction != 0) {
-        comm_scheduler.sector = (uint8_t)debug_comm_step;
-        comm_scheduler_schedule_sector_event(sched_now_us(), direction);
-    }
+    comm_scheduler.sector = (uint8_t)debug_comm_step;
+    comm_scheduler_schedule_sector_event(sched_now_us(), direction);
 }
 
 static void position_restart_poll(void)
 {
     if (!target_position_set || current_mode != PNY_MODE_IDLE) {
+        return;
+    }
+    if (position_target_reached()) {
+        current_duty = 0;
+        current_direction = 0;
         return;
     }
 
@@ -1155,7 +1187,7 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->y = sensor_y;
     payload->z = sensor_z;
     payload->angle_turn16 = current_angle_turn16;
-    payload->position_turn32 = forward_position_from_sensor(absolute_position_turn32);
+    payload->position_turn32 = position_from_zero(absolute_position_turn32);
     payload->velocity_turn32_per_s = forward_position_from_sensor(velocity_turn32_per_s);
     payload->duty = current_duty;
     payload->mct_fault_count = mct_fault_count;
@@ -1399,9 +1431,8 @@ static void comm_control_tick(uint16_t now)
     int8_t direction = 0;
 
     if (target_position_set) {
-        int32_t deadband = POSITION_DEADBAND_TURN32;
         int16_t drive = commanded_duty;
-        int8_t target_direction = position_target_direction(target_position_turn32, absolute_position_turn32, deadband);
+        int8_t target_direction = current_position_target_direction(target_position_turn32);
         if (drive < 0) {
             drive = (int16_t)(-drive);
         }
@@ -1424,11 +1455,13 @@ static void comm_control_tick(uint16_t now)
 
     current_duty = duty;
     if (duty == 0 || direction == 0) {
+        current_duty = 0;
+        current_direction = 0;
         stop_motor_outputs();
         comm_scheduler.last_duty = INT16_MIN;
         comm_scheduler.sector = 0xffu;
         debug_comm_step = -1;
-        if (!target_position_set && !capture_state.active) {
+        if (!capture_state.active) {
             current_mode = PNY_MODE_IDLE;
             comm_scheduler_stop();
         }
@@ -1605,6 +1638,30 @@ static void handle_get_status(void)
     send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);
 }
 
+static void handle_zero_position(const uint8_t *payload, uint8_t len)
+{
+    (void)payload;
+
+    if (len != 0u) {
+        send_status_response(PNY_CMD_ZERO_POSITION, PNY_RESULT_BAD_ARG);
+        return;
+    }
+    if (current_mode == PNY_MODE_CAL) {
+        send_status_response(PNY_CMD_ZERO_POSITION, PNY_RESULT_BAD_STATE);
+        return;
+    }
+
+    target_position_set = false;
+    commanded_duty = 0;
+    run_stop();
+    current_mode = PNY_MODE_IDLE;
+    current_duty = 0;
+    current_direction = 0;
+    refresh_status_sensor();
+    position_zero_turn32 = absolute_position_turn32;
+    send_status_response(PNY_CMD_ZERO_POSITION, PNY_RESULT_OK);
+}
+
 static void handle_set_duty(const uint8_t *payload, uint8_t len)
 {
     if (len != 2u) {
@@ -1681,7 +1738,7 @@ static void handle_set_position(const uint8_t *payload, uint8_t len)
     bool old_target_position_set = target_position_set;
     int32_t old_target_position_turn32 = target_position_turn32;
     bool was_running = (current_mode == PNY_MODE_RUN);
-    target_position_turn32 = sensor_position_from_forward(position_turn32);
+    target_position_turn32 = position_turn32;
     target_position_set = true;
     if (commanded_duty == 0) {
         commanded_duty = DEFAULT_POSITION_DUTY;
@@ -1758,7 +1815,7 @@ static void handle_cal_start(const uint8_t *payload, uint8_t len)
 
     out.result = result;
     out.total_points = PNY_CAL_POINTS_PER_SWEEP;
-    send_frame(PNY_CMD_CAL_START, &out, sizeof(out));
+    send_frame(PNY_CMD_CAL, &out, sizeof(out));
 }
 
 static void handle_cal_status(void)
@@ -1768,7 +1825,7 @@ static void handle_cal_status(void)
     payload.active = cal_state.active ? 1u : 0u;
     payload.next_index = cal_state.index;
     payload.total_points = cal_state.total_points;
-    send_frame(PNY_CMD_CAL_STATUS, &payload, sizeof(payload));
+    send_frame(PNY_CMD_CAL, &payload, sizeof(payload));
 }
 
 static void handle_cal_read_point(const uint8_t *payload, uint8_t len)
@@ -1778,19 +1835,19 @@ static void handle_cal_read_point(const uint8_t *payload, uint8_t len)
 
     if (len != 1u) {
         out.result = PNY_RESULT_BAD_ARG;
-        send_frame(PNY_CMD_CAL_READ_POINT, &out, sizeof(out));
+        send_frame(PNY_CMD_CAL, &out, sizeof(out));
         return;
     }
 
     uint8_t index = payload[0];
     if (index >= cal_state.total_points || (cal_state.active && index >= cal_state.index)) {
         out.result = PNY_RESULT_RANGE;
-        send_frame(PNY_CMD_CAL_READ_POINT, &out, sizeof(out));
+        send_frame(PNY_CMD_CAL, &out, sizeof(out));
         return;
     }
 
     out = cal_state.points[index];
-    send_frame(PNY_CMD_CAL_READ_POINT, &out, sizeof(out));
+    send_frame(PNY_CMD_CAL, &out, sizeof(out));
 }
 
 static void handle_cal_write_blob(const uint8_t *payload, uint8_t len)
@@ -1801,12 +1858,12 @@ static void handle_cal_write_blob(const uint8_t *payload, uint8_t len)
 
     if (current_mode != PNY_MODE_IDLE) {
         out.result = PNY_RESULT_BAD_STATE;
-        send_frame(PNY_CMD_CAL_WRITE_BLOB, &out, sizeof(out));
+        send_frame(PNY_CMD_CAL, &out, sizeof(out));
         return;
     }
     if (len < 3u) {
         out.result = PNY_RESULT_BAD_ARG;
-        send_frame(PNY_CMD_CAL_WRITE_BLOB, &out, sizeof(out));
+        send_frame(PNY_CMD_CAL, &out, sizeof(out));
         return;
     }
 
@@ -1816,7 +1873,7 @@ static void handle_cal_write_blob(const uint8_t *payload, uint8_t len)
     flash_fault = !ok;
     out.result = ok ? PNY_RESULT_OK : PNY_RESULT_FLASH;
     out.next_offset = ok ? (uint16_t)(offset + chunk_len) : offset;
-    send_frame(PNY_CMD_CAL_WRITE_BLOB, &out, sizeof(out));
+    send_frame(PNY_CMD_CAL, &out, sizeof(out));
 }
 
 static void handle_cal_commit(void)
@@ -1826,7 +1883,7 @@ static void handle_cal_commit(void)
     flash_fault = !ok;
     out.result = ok ? PNY_RESULT_OK : PNY_RESULT_FLASH;
     out.valid = ok ? 1u : 0u;
-    send_frame(PNY_CMD_CAL_COMMIT, &out, sizeof(out));
+    send_frame(PNY_CMD_CAL, &out, sizeof(out));
     if (ok) {
         pending_reset_ms = system_millis + 20u;
     }
@@ -1843,7 +1900,7 @@ static void handle_cal_clear(void)
     }
     out.result = ok ? PNY_RESULT_OK : PNY_RESULT_FLASH;
     out.valid = 0u;
-    send_frame(PNY_CMD_CAL_CLEAR, &out, sizeof(out));
+    send_frame(PNY_CMD_CAL, &out, sizeof(out));
 }
 
 static void handle_cal_info(void)
@@ -1854,12 +1911,12 @@ static void handle_cal_info(void)
     out.valid = blob ? 1u : 0u;
     out.blob_size = blob ? blob->size : 0u;
     out.blob_crc32 = blob ? blob->crc32 : 0u;
-    send_frame(PNY_CMD_CAL_INFO, &out, sizeof(out));
+    send_frame(PNY_CMD_CAL, &out, sizeof(out));
 }
 
 static void fill_capture_status(pny_capture_status_payload_t *out, uint8_t result)
 {
-    out->subcmd = PNY_EXT_CAPTURE_STATUS;
+    out->subcmd = PNY_DEBUG_CAPTURE_STATUS;
     out->result = result;
     out->active = capture_state.active ? 1u : 0u;
     out->done = capture_state.done ? 1u : 0u;
@@ -1875,7 +1932,7 @@ static void send_capture_status(uint8_t result)
 {
     pny_capture_status_payload_t out;
     fill_capture_status(&out, result);
-    send_frame(PNY_CMD_EXT, &out, sizeof(out));
+    send_frame(PNY_CMD_DEBUG, &out, sizeof(out));
 }
 
 static void handle_capture_start(const uint8_t *payload, uint8_t len)
@@ -1938,16 +1995,16 @@ static void handle_capture_read(const uint8_t *payload, uint8_t len)
 {
     pny_capture_read_payload_t out;
     memset(&out, 0, sizeof(out));
-    out.subcmd = PNY_EXT_CAPTURE_READ;
+    out.subcmd = PNY_DEBUG_CAPTURE_READ;
 
-    if (len != 4u || payload[0] != PNY_EXT_CAPTURE_READ || payload[3] > 14u) {
+    if (len != 4u || payload[0] != PNY_DEBUG_CAPTURE_READ || payload[3] > 14u) {
         out.result = PNY_RESULT_BAD_ARG;
-        send_frame(PNY_CMD_EXT, &out, 5u);
+        send_frame(PNY_CMD_DEBUG, &out, 5u);
         return;
     }
     if (capture_state.active) {
         out.result = PNY_RESULT_BUSY;
-        send_frame(PNY_CMD_EXT, &out, 5u);
+        send_frame(PNY_CMD_DEBUG, &out, 5u);
         return;
     }
 
@@ -1955,7 +2012,7 @@ static void handle_capture_read(const uint8_t *payload, uint8_t len)
     memcpy(&offset, &payload[1], sizeof(offset));
     if (offset > capture_state.sample_count) {
         out.result = PNY_RESULT_RANGE;
-        send_frame(PNY_CMD_EXT, &out, 5u);
+        send_frame(PNY_CMD_DEBUG, &out, 5u);
         return;
     }
 
@@ -1972,7 +2029,7 @@ static void handle_capture_read(const uint8_t *payload, uint8_t len)
         out.samples[i].angle_turn16 = capture_state.samples[offset + i].angle_turn16;
         out.samples[i].rpm = capture_state.samples[offset + i].rpm;
     }
-    send_frame(PNY_CMD_EXT, &out, (uint8_t)(5u + (want * sizeof(pny_capture_sample_t))));
+    send_frame(PNY_CMD_DEBUG, &out, (uint8_t)(5u + (want * sizeof(pny_capture_sample_t))));
 }
 
 static void handle_set_observer(const uint8_t *payload, uint8_t len)
@@ -1995,7 +2052,45 @@ static void handle_set_observer(const uint8_t *payload, uint8_t len)
     send_capture_status(PNY_RESULT_OK);
 }
 
-static void handle_ext(const uint8_t *payload, uint8_t len)
+static void handle_cal(const uint8_t *payload, uint8_t len)
+{
+    if (len == 0u) {
+        pny_cal_status_payload_t out = {PNY_RESULT_BAD_ARG, 0, 0, 0};
+        send_frame(PNY_CMD_CAL, &out, sizeof(out));
+        return;
+    }
+
+    switch (payload[0]) {
+    case PNY_CAL_START:
+        handle_cal_start(&payload[1], (uint8_t)(len - 1u));
+        break;
+    case PNY_CAL_STATUS:
+        handle_cal_status();
+        break;
+    case PNY_CAL_READ_POINT:
+        handle_cal_read_point(&payload[1], (uint8_t)(len - 1u));
+        break;
+    case PNY_CAL_WRITE_BLOB:
+        handle_cal_write_blob(&payload[1], (uint8_t)(len - 1u));
+        break;
+    case PNY_CAL_COMMIT:
+        handle_cal_commit();
+        break;
+    case PNY_CAL_CLEAR:
+        handle_cal_clear();
+        break;
+    case PNY_CAL_INFO:
+        handle_cal_info();
+        break;
+    default: {
+        pny_cal_status_payload_t out = {PNY_RESULT_BAD_ARG, 0, 0, 0};
+        send_frame(PNY_CMD_CAL, &out, sizeof(out));
+        break;
+    }
+    }
+}
+
+static void handle_debug(const uint8_t *payload, uint8_t len)
 {
     if (len == 0u) {
         send_capture_status(PNY_RESULT_BAD_ARG);
@@ -2003,16 +2098,16 @@ static void handle_ext(const uint8_t *payload, uint8_t len)
     }
 
     switch (payload[0]) {
-    case PNY_EXT_CAPTURE_START:
+    case PNY_DEBUG_CAPTURE_START:
         handle_capture_start(payload, len);
         break;
-    case PNY_EXT_CAPTURE_STATUS:
+    case PNY_DEBUG_CAPTURE_STATUS:
         send_capture_status(PNY_RESULT_OK);
         break;
-    case PNY_EXT_CAPTURE_READ:
+    case PNY_DEBUG_CAPTURE_READ:
         handle_capture_read(payload, len);
         break;
-    case PNY_EXT_SET_OBSERVER:
+    case PNY_DEBUG_SET_OBSERVER:
         handle_set_observer(payload, len);
         break;
     default:
@@ -2031,11 +2126,11 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
     }
 
     switch (cmd) {
-    case PNY_CMD_EXT:
-        handle_ext(payload, len);
-        break;
     case PNY_CMD_GET_STATUS:
         handle_get_status();
+        break;
+    case PNY_CMD_ZERO_POSITION:
+        handle_zero_position(payload, len);
         break;
     case PNY_CMD_SET_DUTY:
         handle_set_duty(payload, len);
@@ -2049,26 +2144,11 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
     case PNY_CMD_SET_QUIET:
         handle_set_quiet(payload, len);
         break;
-    case PNY_CMD_CAL_START:
-        handle_cal_start(payload, len);
+    case PNY_CMD_CAL:
+        handle_cal(payload, len);
         break;
-    case PNY_CMD_CAL_STATUS:
-        handle_cal_status();
-        break;
-    case PNY_CMD_CAL_READ_POINT:
-        handle_cal_read_point(payload, len);
-        break;
-    case PNY_CMD_CAL_WRITE_BLOB:
-        handle_cal_write_blob(payload, len);
-        break;
-    case PNY_CMD_CAL_COMMIT:
-        handle_cal_commit();
-        break;
-    case PNY_CMD_CAL_CLEAR:
-        handle_cal_clear();
-        break;
-    case PNY_CMD_CAL_INFO:
-        handle_cal_info();
+    case PNY_CMD_DEBUG:
+        handle_debug(payload, len);
         break;
     default:
         break;

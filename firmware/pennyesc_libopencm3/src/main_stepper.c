@@ -427,13 +427,13 @@ static void handle_step_set(const uint8_t *payload, uint8_t len)
     int8_t step;
 
     if (len != 1u) {
-        send_status_response(PNY_CMD_STEP_SET, PNY_RESULT_BAD_ARG);
+        send_status_response(PNY_CMD_DEBUG, PNY_RESULT_BAD_ARG);
         return;
     }
 
     memcpy(&step, payload, sizeof(step));
     if (!step_valid(step)) {
-        send_status_response(PNY_CMD_STEP_SET, PNY_RESULT_RANGE);
+        send_status_response(PNY_CMD_DEBUG, PNY_RESULT_RANGE);
         return;
     }
 
@@ -442,7 +442,7 @@ static void handle_step_set(const uint8_t *payload, uint8_t len)
         reset_mct_driver();
     }
     set_step_direct(step);
-    send_status_response(PNY_CMD_STEP_SET, PNY_RESULT_OK);
+    send_status_response(PNY_CMD_DEBUG, PNY_RESULT_OK);
 }
 
 static void handle_step_transition(const uint8_t *payload, uint8_t len)
@@ -451,20 +451,40 @@ static void handle_step_transition(const uint8_t *payload, uint8_t len)
     uint16_t blank_ms;
 
     if (len != 3u) {
-        send_status_response(PNY_CMD_STEP_TRANSITION, PNY_RESULT_BAD_ARG);
+        send_status_response(PNY_CMD_DEBUG, PNY_RESULT_BAD_ARG);
         return;
     }
 
     memcpy(&step, payload, sizeof(step));
     memcpy(&blank_ms, &payload[1], sizeof(blank_ms));
     if (!step_valid(step)) {
-        send_status_response(PNY_CMD_STEP_TRANSITION, PNY_RESULT_RANGE);
+        send_status_response(PNY_CMD_DEBUG, PNY_RESULT_RANGE);
         return;
     }
 
     auto_walk = false;
     set_step_with_blank(step, blank_ms);
-    send_status_response(PNY_CMD_STEP_TRANSITION, PNY_RESULT_OK);
+    send_status_response(PNY_CMD_DEBUG, PNY_RESULT_OK);
+}
+
+static void handle_debug(const uint8_t *payload, uint8_t len)
+{
+    if (len == 0u) {
+        send_status_response(PNY_CMD_DEBUG, PNY_RESULT_BAD_ARG);
+        return;
+    }
+
+    switch (payload[0]) {
+    case PNY_DEBUG_STEP_SET:
+        handle_step_set(&payload[1], (uint8_t)(len - 1u));
+        break;
+    case PNY_DEBUG_STEP_TRANSITION:
+        handle_step_transition(&payload[1], (uint8_t)(len - 1u));
+        break;
+    default:
+        send_status_response(PNY_CMD_DEBUG, PNY_RESULT_BAD_ARG);
+        break;
+    }
 }
 
 static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
@@ -483,11 +503,8 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
     case PNY_CMD_SET_DUTY:
         handle_set_duty(payload, len);
         break;
-    case PNY_CMD_STEP_SET:
-        handle_step_set(payload, len);
-        break;
-    case PNY_CMD_STEP_TRANSITION:
-        handle_step_transition(payload, len);
+    case PNY_CMD_DEBUG:
+        handle_debug(payload, len);
         break;
     default:
         break;

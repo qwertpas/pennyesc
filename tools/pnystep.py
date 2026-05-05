@@ -16,16 +16,17 @@ if str(TOOLS_DIR) not in sys.path:
 
 from pennycal import EspBridge  # noqa: E402
 from pnyproto import (  # noqa: E402
-    CMD_EXT,
+    CMD_DEBUG,
     CMD_GET_STATUS,
     CMD_SET_ADVANCE,
     CMD_SET_DUTY,
-    CMD_STEP_SET,
-    CMD_STEP_TRANSITION,
-    EXT_CAPTURE_READ,
-    EXT_CAPTURE_START,
-    EXT_CAPTURE_STATUS,
-    EXT_SET_OBSERVER,
+    CMD_ZERO_POSITION,
+    DEBUG_CAPTURE_READ,
+    DEBUG_CAPTURE_START,
+    DEBUG_CAPTURE_STATUS,
+    DEBUG_SET_OBSERVER,
+    DEBUG_STEP_SET,
+    DEBUG_STEP_TRANSITION,
     OBSERVER_RAW,
     FRAME_MAX_PAYLOAD,
     FRAME_START,
@@ -167,26 +168,38 @@ class StepperClient:
     def set_advance(self, advance_deg: int) -> Status:
         return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg))))
 
-    def set_observer(self, lead_us: int, mode: int = OBSERVER_RAW) -> CaptureStatus:
-        return self._decode_capture_status(self.exchange_retry(CMD_EXT, struct.pack("<BhB", EXT_SET_OBSERVER, lead_us, mode)))
+    def zero_position(self) -> Status:
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_ZERO_POSITION)))
 
     def set_step(self, step: int) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange(CMD_STEP_SET, struct.pack("<b", step))))
+        return Status(
+            *struct.unpack(
+                "<BBBBhhhHiihHHHHHHIIIII",
+                self.exchange(CMD_DEBUG, struct.pack("<Bb", DEBUG_STEP_SET, step)),
+            )
+        )
 
     def transition_step(self, step: int, blank_ms: int) -> Status:
-        payload = struct.pack("<bH", step, blank_ms)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange(CMD_STEP_TRANSITION, payload, timeout=1.0)))
+        payload = struct.pack("<BbH", DEBUG_STEP_TRANSITION, step, blank_ms)
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange(CMD_DEBUG, payload, timeout=1.0)))
+
+    def set_observer(self, lead_us: int, mode: int = OBSERVER_RAW) -> CaptureStatus:
+        return self._decode_capture_status(
+            self.exchange_retry(CMD_DEBUG, struct.pack("<BhB", DEBUG_SET_OBSERVER, lead_us, mode))
+        )
 
     def capture_start(self, duty: int, advance_deg: int, duration_ms: int, sample_hz: int) -> CaptureStatus:
-        payload = struct.pack("<BhhHH", EXT_CAPTURE_START, duty, advance_deg, duration_ms, sample_hz)
-        return self._decode_capture_status(self.exchange(CMD_EXT, payload))
+        payload = struct.pack("<BhhHH", DEBUG_CAPTURE_START, duty, advance_deg, duration_ms, sample_hz)
+        return self._decode_capture_status(self.exchange(CMD_DEBUG, payload))
 
     def capture_status(self) -> CaptureStatus:
-        return self._decode_capture_status(self.exchange_retry(CMD_EXT, struct.pack("<B", EXT_CAPTURE_STATUS), attempts=2))
+        return self._decode_capture_status(
+            self.exchange_retry(CMD_DEBUG, struct.pack("<B", DEBUG_CAPTURE_STATUS), attempts=2)
+        )
 
     def capture_read(self, offset: int, count: int) -> list[tuple[int, int]]:
-        payload = self.exchange_retry(CMD_EXT, struct.pack("<BHB", EXT_CAPTURE_READ, offset, count))
-        if len(payload) < 5 or payload[0] != EXT_CAPTURE_READ:
+        payload = self.exchange_retry(CMD_DEBUG, struct.pack("<BHB", DEBUG_CAPTURE_READ, offset, count))
+        if len(payload) < 5 or payload[0] != DEBUG_CAPTURE_READ:
             raise RuntimeError("bad capture read response")
         result, resp_offset, resp_count = struct.unpack("<BHB", payload[1:5])
         if result != RESULT_OK:
@@ -205,7 +218,7 @@ class StepperClient:
 
     @staticmethod
     def _decode_capture_status(payload: bytes) -> CaptureStatus:
-        if len(payload) != struct.calcsize("<BBBBHHHHHH") or payload[0] != EXT_CAPTURE_STATUS:
+        if len(payload) != struct.calcsize("<BBBBHHHHHH") or payload[0] != DEBUG_CAPTURE_STATUS:
             raise RuntimeError("bad capture status response")
         fields = struct.unpack("<BBBBHHHHHH", payload)
         return CaptureStatus(*fields[1:])
@@ -274,11 +287,13 @@ def print_interactive_help() -> None:
     print("  status")
     print("  duty <value>")
     print("  advance <deg>")
+    print("  zero")
     print("  observer <lead_us> [mode]")
     print("  step <0..5|off>")
     print("  transition <0..5|off> [blank_ms]")
     print("  cycle [start] [count] [delay_ms] [blank_ms]")
     print("  capture <duty> [advance_deg] [duration_ms] [sample_hz]")
+    print("  stop")
     print("  off")
     print("  help")
     print("  quit")
@@ -390,6 +405,12 @@ def run_interactive(client: StepperClient) -> None:
                     continue
                 print_status(client.set_advance(int(args[0], 0)))
                 continue
+            if cmd == "zero":
+                if args:
+                    print("usage: zero")
+                    continue
+                print_status(client.zero_position())
+                continue
             if cmd == "observer":
                 if len(args) not in {1, 2}:
                     print("usage: observer <lead_us> [mode]")
@@ -431,6 +452,9 @@ def run_interactive(client: StepperClient) -> None:
                 sample_hz = int(args[3], 0) if len(args) >= 4 else 500
                 run_capture(client, duty, advance_deg, duration_ms, sample_hz)
                 continue
+            if cmd == "stop":
+                print_status(client.set_duty(0))
+                continue
             if cmd == "off":
                 print_status(client.set_step(-1))
                 print_status(client.set_duty(0))
@@ -455,6 +479,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     advance = sub.add_parser("advance")
     advance.add_argument("value", type=int)
+
+    sub.add_parser("zero")
 
     observer = sub.add_parser("observer")
     observer.add_argument("lead_us", type=int)
@@ -507,6 +533,10 @@ def main() -> None:
 
             if args.cmd == "advance":
                 print_status(client.set_advance(args.value))
+                return
+
+            if args.cmd == "zero":
+                print_status(client.zero_position())
                 return
 
             if args.cmd == "observer":

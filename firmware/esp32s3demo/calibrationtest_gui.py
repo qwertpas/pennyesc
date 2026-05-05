@@ -627,7 +627,7 @@ class Window:
 
         terminal = QtWidgets.QHBoxLayout()
         self.command_line = QtWidgets.QLineEdit()
-        self.command_line.setPlaceholderText("status | duty 120 | duty -120 | position 6.28 | stop | advance 90")
+        self.command_line.setPlaceholderText("status | duty 120 | position 6.28 | zero | stop | advance 90")
         self.command_line.returnPressed.connect(self.send_terminal_command)
         terminal.addWidget(self.command_line, stretch=1)
         self.command_button = QtWidgets.QPushButton("Send")
@@ -1193,7 +1193,7 @@ class Window:
         parts = text.split()
         cmd = parts[0].lower()
         if cmd == "help":
-            self.append_log("commands: status | duty <value> | duty -<value> | position <rad> | stop | advance <deg>")
+            self.append_log("commands: status | duty <value> | position <rad> | zero | stop | advance <deg>")
             return
 
         client = self.ensure_client()
@@ -1208,6 +1208,14 @@ class Window:
 
         if cmd == "stop":
             status = client.set_duty(0)
+            self.set_device_calibration_from_status(status)
+            self.append_status(status)
+            return
+
+        if cmd in ("zero", "zero_position", "zeropos"):
+            if len(parts) != 1:
+                raise ValueError("usage: zero")
+            status = client.zero_position()
             self.set_device_calibration_from_status(status)
             self.append_status(status)
             return

@@ -27,17 +27,19 @@ from pnyproto import (
     MODE_IDLE,
     MODE_RUN,
     RESULT_OK,
-    CMD_CAL_CLEAR,
-    CMD_CAL_COMMIT,
-    CMD_CAL_INFO,
-    CMD_CAL_READ_POINT,
-    CMD_CAL_START,
-    CMD_CAL_STATUS,
-    CMD_CAL_WRITE_BLOB,
+    CAL_CLEAR,
+    CAL_COMMIT,
+    CAL_INFO,
+    CAL_READ_POINT,
+    CAL_START,
+    CAL_STATUS,
+    CAL_WRITE_BLOB,
+    CMD_CAL,
     CMD_SET_ADVANCE,
     CMD_GET_STATUS,
     CMD_SET_DUTY,
     CMD_SET_POSITION,
+    CMD_ZERO_POSITION,
     crc8,
     decode_frame,
     encode_frame,
@@ -668,16 +670,20 @@ class Stm32Client:
     def set_position_rad(self, position_rad: float) -> Status:
         return self.set_position(int(round(position_rad * RAD_TO_TURN32)))
 
+    def zero_position(self) -> Status:
+        payload = self.exchange_retry(CMD_ZERO_POSITION, timeout=0.5)
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+
     def cal_start(self, sweep_dir: int) -> tuple[int, int]:
-        payload = self.exchange_retry(CMD_CAL_START, struct.pack("<B", sweep_dir), timeout=0.5)
+        payload = self.exchange_retry(CMD_CAL, struct.pack("<BB", CAL_START, sweep_dir), timeout=0.5)
         return struct.unpack("<BB", payload)
 
     def cal_status(self) -> CalStatus:
-        payload = self.exchange_retry(CMD_CAL_STATUS, timeout=0.5)
+        payload = self.exchange_retry(CMD_CAL, struct.pack("<B", CAL_STATUS), timeout=0.5)
         return CalStatus(*struct.unpack("<BBBB", payload))
 
     def cal_read_point(self, index: int, timeout: float = 2.0) -> CapturePoint:
-        payload = self.exchange_retry(CMD_CAL_READ_POINT, struct.pack("<B", index), timeout=timeout)
+        payload = self.exchange_retry(CMD_CAL, struct.pack("<BB", CAL_READ_POINT, index), timeout=timeout)
         result, point_index, step_index, sweep_dir, x, y, z, xy_radius, sample_spread, duty = struct.unpack(
             "<BBBBhhhHHh", payload
         )
@@ -686,19 +692,19 @@ class Stm32Client:
         return CapturePoint(point_index, step_index, sweep_dir, x, y, z, xy_radius, sample_spread, duty)
 
     def cal_write_blob(self, offset: int, chunk: bytes) -> tuple[int, int]:
-        payload = self.exchange_retry(CMD_CAL_WRITE_BLOB, struct.pack("<H", offset) + chunk, timeout=0.5)
+        payload = self.exchange_retry(CMD_CAL, struct.pack("<BH", CAL_WRITE_BLOB, offset) + chunk, timeout=0.5)
         return struct.unpack("<BH", payload)
 
     def cal_commit(self) -> tuple[int, int]:
-        payload = self.exchange_retry(CMD_CAL_COMMIT, timeout=0.5)
+        payload = self.exchange_retry(CMD_CAL, struct.pack("<B", CAL_COMMIT), timeout=0.5)
         return struct.unpack("<BB", payload)
 
     def cal_clear(self) -> tuple[int, int]:
-        payload = self.exchange_retry(CMD_CAL_CLEAR, timeout=0.5)
+        payload = self.exchange_retry(CMD_CAL, struct.pack("<B", CAL_CLEAR), timeout=0.5)
         return struct.unpack("<BB", payload)
 
     def cal_info(self) -> CalibrationInfo:
-        payload = self.exchange_retry(CMD_CAL_INFO, timeout=0.5)
+        payload = self.exchange_retry(CMD_CAL, struct.pack("<B", CAL_INFO), timeout=0.5)
         return CalibrationInfo(*struct.unpack("<BBHI", payload))
 
     def wait_until_ready(self, timeout: float = 8.0) -> Status:

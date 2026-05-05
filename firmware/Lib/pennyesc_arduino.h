@@ -158,6 +158,24 @@ public:
         return setPositionTurn32((int32_t)(position_rad * PENNYESC_RAD_TO_TURN32), status, timeout_ms);
     }
 
+    bool zeroPosition(PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
+    {
+        uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
+        uint8_t frame_len = 0u;
+
+        if (!sendFrame(PNY_CMD_ZERO_POSITION, 0, 0)) {
+            return false;
+        }
+        if (!readFrame(PNY_CMD_ZERO_POSITION, frame, sizeof(frame), frame_len, timeout_ms)) {
+            return false;
+        }
+        if (status != 0) {
+            return parseStatus(frame, frame_len, *status);
+        }
+        PennyEscStatus ignore;
+        return parseStatus(frame, frame_len, ignore);
+    }
+
     bool setAdvanceDeg(int16_t advance_deg, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
     {
         uint8_t payload[2];
