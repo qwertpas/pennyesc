@@ -39,6 +39,7 @@ from pennycal import (  # noqa: E402
     CAL_TOTAL_POINTS,
     DEFAULT_CHUNK_SIZE,
     CalibrationError,
+    Control,
     EspBridge,
     Stm32Client,
     apply_affine_q20,
@@ -531,6 +532,7 @@ class Window:
         self.scan_worker: ScanWorker | None = None
         self.bridge: EspBridge | None = None
         self.client: Stm32Client | None = None
+        self.control = Control()
         self.client_busy = False
         self.session: SessionData | None = None
         self.static_live_forward_x: list[int] = []
@@ -606,6 +608,9 @@ class Window:
         self.device_calibration_label = QtWidgets.QLabel(self.device_calibration_text)
         controls.addWidget(self.device_calibration_label)
 
+        self.control_label = QtWidgets.QLabel(self.control_text())
+        controls.addWidget(self.control_label)
+
         self.check_motor_button = QtWidgets.QPushButton("Check Motor")
         self.check_motor_button.clicked.connect(self.check_motor_calibration)
         controls.addWidget(self.check_motor_button)
@@ -627,7 +632,7 @@ class Window:
 
         terminal = QtWidgets.QHBoxLayout()
         self.command_line = QtWidgets.QLineEdit()
-        self.command_line.setPlaceholderText("status | duty 120 | position 6.28 | zero | stop | advance 90")
+        self.command_line.setPlaceholderText("mode pos | pos 100 | mode vel | rpm 12000 | mode duty 100")
         self.command_line.returnPressed.connect(self.send_terminal_command)
         terminal.addWidget(self.command_line, stretch=1)
         self.command_button = QtWidgets.QPushButton("Send")
@@ -653,6 +658,15 @@ class Window:
             QtCore.QTimer.singleShot(0, lambda: self.start_worker())
         else:
             QtCore.QTimer.singleShot(0, self.scan_addresses)
+
+    def control_text(self) -> str:
+        return (
+            "control: kp %.3g | kd %.3g | kv %.3g | kf %d | clip %d"
+            % (self.control.kp, self.control.kd, self.control.kv, self.control.kf, self.control.clip)
+        )
+
+    def update_control_label(self) -> None:
+        self.control_label.setText(self.control_text())
 
     def make_scroll_tab(self) -> tuple[QtWidgets.QWidget, QtWidgets.QVBoxLayout]:
         outer = QtWidgets.QWidget()
@@ -1193,7 +1207,12 @@ class Window:
         parts = text.split()
         cmd = parts[0].lower()
         if cmd == "help":
-            self.append_log("commands: status | duty <value> | position <rad> | zero | stop | advance <deg>")
+            self.append_log("commands: status | control | kp/kd/kv <gain> | kf <duty> | clip <duty> | pos <rad> | vel <rad/s> | rpm <rpm> | mode pos|vel|duty [duty] | zero | stop | advance <deg>")
+            self.append_log(self.control_text())
+            return
+
+        if cmd == "control":
+            self.append_log(self.control_text())
             return
 
         client = self.ensure_client()
@@ -1204,12 +1223,16 @@ class Window:
             self.set_device_calibration_from_status(status, info)
             self.append_status(status)
             self.append_log(self.device_calibration_text)
+            self.append_log(self.control_text())
             return
 
         if cmd == "stop":
-            status = client.set_duty(0)
+            self.control = Control(clip=self.control.clip)
+            self.update_control_label()
+            status = client.stop()
             self.set_device_calibration_from_status(status)
             self.append_status(status)
+            self.append_log(self.control_text())
             return
 
         if cmd in ("zero", "zero_position", "zeropos"):
@@ -1224,9 +1247,66 @@ class Window:
             if len(parts) != 2:
                 raise ValueError("usage: duty <value>")
             duty = int(parts[1], 0)
-            status = client.set_duty(duty)
+            self.control = Control(kf=duty, clip=250)
+            self.update_control_label()
+            status = client.set_control(self.control)
             self.set_device_calibration_from_status(status)
             self.append_status(status)
+            self.append_log(self.control_text())
+            return
+
+        if cmd in ("kp", "kd", "kv"):
+            if len(parts) != 2:
+                raise ValueError(f"usage: {cmd} <gain>")
+            setattr(self.control, cmd, float(parts[1]))
+            self.update_control_label()
+            status = client.set_control(self.control)
+            self.set_device_calibration_from_status(status)
+            self.append_status(status)
+            self.append_log(self.control_text())
+            return
+
+        if cmd == "kf":
+            if len(parts) != 2:
+                raise ValueError("usage: kf <duty>")
+            self.control.kf = int(parts[1], 0)
+            self.update_control_label()
+            status = client.set_control(self.control)
+            self.set_device_calibration_from_status(status)
+            self.append_status(status)
+            self.append_log(self.control_text())
+            return
+
+        if cmd == "clip":
+            if len(parts) != 2:
+                raise ValueError("usage: clip <duty>")
+            self.control.clip = int(parts[1], 0)
+            self.update_control_label()
+            status = client.set_control(self.control)
+            self.set_device_calibration_from_status(status)
+            self.append_status(status)
+            self.append_log(self.control_text())
+            return
+
+        if cmd == "mode":
+            if len(parts) not in (2, 3):
+                raise ValueError("usage: mode pos|vel|duty [duty]")
+            mode = parts[1].lower()
+            if mode == "pos":
+                self.control = Control(kp=100.0, kd=0.10, kv=0.0, kf=0, clip=150)
+                client.set_velocity_rad_s(0.0)
+            elif mode == "vel":
+                self.control = Control(kp=0.0, kd=0.10, kv=0.06, kf=0, clip=150)
+            elif mode == "duty":
+                duty = int(parts[2], 0) if len(parts) == 3 else 0
+                self.control = Control(kp=0.0, kd=0.0, kv=0.0, kf=duty, clip=250)
+            else:
+                raise ValueError("usage: mode pos|vel|duty [duty]")
+            self.update_control_label()
+            status = client.set_control(self.control)
+            self.set_device_calibration_from_status(status)
+            self.append_status(status)
+            self.append_log(self.control_text())
             return
 
         if cmd == "advance":
@@ -1245,6 +1325,22 @@ class Window:
             status = client.set_position_rad(float(parts[1]))
             self.set_device_calibration_from_status(status)
             self.append_log(format_status(status))
+            return
+
+        if cmd == "vel":
+            if len(parts) != 2:
+                raise ValueError("usage: vel <rad/s>")
+            status = client.set_velocity_rad_s(float(parts[1]))
+            self.set_device_calibration_from_status(status)
+            self.append_status(status)
+            return
+
+        if cmd == "rpm":
+            if len(parts) != 2:
+                raise ValueError("usage: rpm <rpm>")
+            status = client.set_velocity_rpm(float(parts[1]))
+            self.set_device_calibration_from_status(status)
+            self.append_status(status)
             return
 
         raise ValueError("unknown command")

@@ -36,9 +36,12 @@ from pnyproto import (
     CAL_WRITE_BLOB,
     CMD_CAL,
     CMD_SET_ADVANCE,
+    CMD_SET_CONTROL,
     CMD_GET_STATUS,
     CMD_SET_DUTY,
     CMD_SET_POSITION,
+    CMD_SET_VELOCITY,
+    CMD_STOP,
     CMD_ZERO_POSITION,
     crc8,
     decode_frame,
@@ -67,14 +70,15 @@ MAX_FIT_ERROR_DEG = 8.0
 MAX_SWEEP_DELTA_DEG = 12.5
 HOST_FRAME_BYTE_GAP_S = 0.0005
 POST_COMMIT_SETTLE_S = 2.0
-FORWARD_SIGN_TEST_DUTY = 120
+FORWARD_SIGN_TEST_DUTY = 150
 FORWARD_SIGN_TEST_ADVANCE_DEG = 90
-FORWARD_SIGN_TEST_RUN_S = 0.45
+FORWARD_SIGN_TEST_RUN_S = 0.8
 TURN32_PER_REV = 65536.0
 TURN32_TO_RAD = (2.0 * math.pi) / TURN32_PER_REV
 RAD_TO_TURN32 = TURN32_PER_REV / (2.0 * math.pi)
 FORWARD_SIGN_TEST_MIN_TURN32 = 834
 FORWARD_SIGN_TEST_ATTEMPTS = 3
+CONTROL_GAIN_SCALE = 256.0
 
 class CalibrationError(RuntimeError):
     pass
@@ -128,6 +132,25 @@ class CalStatus:
     active: int
     next_index: int
     total_points: int
+
+
+@dataclasses.dataclass
+class Control:
+    kp: float = 0.0
+    kd: float = 0.0
+    kv: float = 0.0
+    kf: int = 0
+    clip: int = 150
+
+    def payload(self) -> bytes:
+        return struct.pack(
+            "<hhhhh",
+            int(round(self.kp * CONTROL_GAIN_SCALE)),
+            int(round(self.kd * CONTROL_GAIN_SCALE)),
+            int(round(self.kv * CONTROL_GAIN_SCALE)),
+            int(self.kf),
+            int(self.clip),
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -659,6 +682,14 @@ class Stm32Client:
         payload = self.exchange_retry(CMD_SET_DUTY, struct.pack("<h", duty), timeout=0.5)
         return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
 
+    def stop(self) -> Status:
+        payload = self.exchange_retry(CMD_STOP, timeout=0.5)
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+
+    def set_control(self, control: Control) -> Status:
+        payload = self.exchange_retry(CMD_SET_CONTROL, control.payload(), timeout=0.5)
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+
     def set_advance_deg(self, advance_deg: int) -> Status:
         payload = self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg), timeout=0.75, attempts=5)
         return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
@@ -669,6 +700,16 @@ class Stm32Client:
 
     def set_position_rad(self, position_rad: float) -> Status:
         return self.set_position(int(round(position_rad * RAD_TO_TURN32)))
+
+    def set_velocity(self, velocity_turn32_per_s: int) -> Status:
+        payload = self.exchange_retry(CMD_SET_VELOCITY, struct.pack("<i", velocity_turn32_per_s), timeout=0.5)
+        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+
+    def set_velocity_rad_s(self, velocity_rad_s: float) -> Status:
+        return self.set_velocity(int(round(velocity_rad_s * RAD_TO_TURN32)))
+
+    def set_velocity_rpm(self, rpm: float) -> Status:
+        return self.set_velocity(int(round(rpm * TURN32_PER_REV / 60.0)))
 
     def zero_position(self) -> Status:
         payload = self.exchange_retry(CMD_ZERO_POSITION, timeout=0.5)
@@ -990,8 +1031,8 @@ def verify_calibration(client: Stm32Client, solved: SolvedCalibration | None = N
     return info
 
 
-def _run_forward_sign_candidate(client: Stm32Client, candidate_sign: int) -> ForwardSignTest:
-    advance_deg = FORWARD_SIGN_TEST_ADVANCE_DEG * candidate_sign
+def _run_forward_sign_test(client: Stm32Client) -> ForwardSignTest:
+    advance_deg = FORWARD_SIGN_TEST_ADVANCE_DEG
     client.set_duty(0)
     time.sleep(0.15)
     client.set_advance_deg(advance_deg)
@@ -1003,7 +1044,7 @@ def _run_forward_sign_candidate(client: Stm32Client, candidate_sign: int) -> For
     client.set_duty(0)
     time.sleep(0.15)
     return ForwardSignTest(
-        candidate_sign=int(candidate_sign),
+        candidate_sign=1,
         advance_deg=int(advance_deg),
         start_position_turn32=int(start.position_turn32),
         end_position_turn32=int(end.position_turn32),
@@ -1016,31 +1057,27 @@ def measure_forward_angle_sign(client: Stm32Client) -> ForwardSignResult:
     tests: list[ForwardSignTest] = []
     clean: list[ForwardSignTest] = []
     try:
-        for candidate_sign in (1, -1):
-            for _ in range(FORWARD_SIGN_TEST_ATTEMPTS):
-                test = _run_forward_sign_candidate(client, candidate_sign)
-                tests.append(test)
-                if test.faults == 0:
-                    clean.append(test)
-                    break
-                time.sleep(0.2)
+        for _ in range(FORWARD_SIGN_TEST_ATTEMPTS):
+            test = _run_forward_sign_test(client)
+            tests.append(test)
+            if test.faults == 0:
+                clean.append(test)
+                break
+            time.sleep(0.2)
     finally:
         try:
             client.set_duty(0)
         finally:
             client.set_advance_deg(FORWARD_SIGN_TEST_ADVANCE_DEG)
 
-    if len(clean) != 2:
+    if not clean:
         raise CalibrationError("forward sign test reported faults")
 
-    best = max(clean, key=lambda test: test.delta_turn32)
-    second = min(clean, key=lambda test: test.delta_turn32)
-    if best.delta_turn32 < FORWARD_SIGN_TEST_MIN_TURN32:
-        raise CalibrationError("forward sign test did not move in positive calibrated angle")
-    if best.delta_turn32 - second.delta_turn32 < FORWARD_SIGN_TEST_MIN_TURN32:
-        raise CalibrationError("forward sign test was ambiguous")
+    best = max(clean, key=lambda test: abs(test.delta_turn32))
+    if abs(best.delta_turn32) < FORWARD_SIGN_TEST_MIN_TURN32:
+        raise CalibrationError("forward sign test did not move enough")
 
-    return ForwardSignResult(forward_angle_sign=int(best.candidate_sign), tests=tuple(tests))
+    return ForwardSignResult(forward_angle_sign=1 if best.delta_turn32 > 0 else -1, tests=tuple(tests))
 
 
 def commit_calibration_blob(
