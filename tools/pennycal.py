@@ -36,6 +36,7 @@ from pnyproto import (
     CAL_WRITE_BLOB,
     CMD_CAL,
     CMD_GET_POS_VEL,
+    CMD_SEND_POSITION,
     CMD_SET_ADVANCE,
     CMD_SET_CONTROL,
     CMD_GET_STATUS,
@@ -71,7 +72,7 @@ DEFAULT_CHUNK_SIZE = 48
 BRIDGE_IDLE_S = 2.7
 MAX_FIT_ERROR_DEG = 8.0
 MAX_SWEEP_DELTA_DEG = 12.5
-HOST_FRAME_BYTE_GAP_S = 0.0005
+HOST_FRAME_BYTE_GAP_S = 0.0
 POST_COMMIT_SETTLE_S = 2.0
 TURN32_PER_REV = 65536.0
 TURN32_TO_RAD = (2.0 * math.pi) / TURN32_PER_REV
@@ -662,6 +663,7 @@ class EspBridge:
         self.command_prefix = "!#"
 
     def exit_bridge(self) -> None:
+        time.sleep(0.025)
         self.serial.reset_input_buffer()
         self.serial.reset_output_buffer()
         self.serial.write(f"{self.command_prefix or '!#'}bridge off\n".encode("utf-8"))
@@ -723,11 +725,8 @@ class Stm32Client:
 
     def exchange(self, cmd: int, payload: bytes = b"", timeout: float = 0.5) -> bytes:
         frame = encode_frame(self.address, cmd, payload)
-        for index, byte in enumerate(frame):
-            self.port.write(bytes((byte,)))
-            self.port.flush()
-            if index + 1 < len(frame):
-                time.sleep(HOST_FRAME_BYTE_GAP_S)
+        self.port.write(frame)
+        self.port.flush()
         return self._read_frame(cmd, timeout)
 
     def exchange_retry(self, cmd: int, payload: bytes = b"", timeout: float = 0.5, attempts: int = 3) -> bytes:
@@ -742,24 +741,24 @@ class Stm32Client:
             raise last_error
         raise TimeoutError(f"timeout waiting for command 0x{cmd:X} response")
 
-    def get_status(self, timeout: float = 0.5, attempts: int = 3) -> Status:
+    def get_status(self, timeout: float = 0.5, attempts: int = 1) -> Status:
         payload = self.exchange_retry(CMD_GET_STATUS, timeout=timeout, attempts=attempts)
         return unpack_status(payload)
 
-    def get_pos_vel(self, timeout: float = 0.2, attempts: int = 3) -> PosVel:
+    def get_pos_vel(self, timeout: float = 0.2, attempts: int = 1) -> PosVel:
         payload = self.exchange_retry(CMD_GET_POS_VEL, timeout=timeout, attempts=attempts)
         return PosVel(*struct.unpack("<ii", payload))
 
     def set_duty(self, duty: int) -> Status:
-        payload = self.exchange_retry(CMD_SET_DUTY, struct.pack("<h", duty), timeout=0.5)
+        payload = self.exchange(CMD_SET_DUTY, struct.pack("<h", duty), timeout=0.15)
         return unpack_status(payload)
 
     def stop(self) -> Status:
-        payload = self.exchange_retry(CMD_STOP, timeout=0.5)
+        payload = self.exchange(CMD_STOP, timeout=0.15)
         return unpack_status(payload)
 
     def set_control(self, control: Control) -> Status:
-        payload = self.exchange_retry(CMD_SET_CONTROL, control.payload(), timeout=0.5)
+        payload = self.exchange(CMD_SET_CONTROL, control.payload(), timeout=0.15)
         return unpack_status(payload)
 
     def set_advance_deg(self, advance_deg: int) -> Status:
@@ -767,14 +766,21 @@ class Stm32Client:
         return unpack_status(payload)
 
     def set_position(self, position_turn32: int) -> Status:
-        payload = self.exchange_retry(CMD_SET_POSITION, struct.pack("<i", position_turn32), timeout=0.5)
+        payload = self.exchange(CMD_SET_POSITION, struct.pack("<i", position_turn32), timeout=0.15)
         return unpack_status(payload)
 
     def set_position_rad(self, position_rad: float) -> Status:
         return self.set_position(int(round(position_rad * RAD_TO_TURN32)))
 
+    def send_position(self, position_turn32: int) -> None:
+        self.port.write(encode_frame(self.address, CMD_SEND_POSITION, struct.pack("<i", position_turn32)))
+        self.port.flush()
+
+    def send_position_rad(self, position_rad: float) -> None:
+        self.send_position(int(round(position_rad * RAD_TO_TURN32)))
+
     def set_velocity(self, velocity_turn32_per_s: int) -> Status:
-        payload = self.exchange_retry(CMD_SET_VELOCITY, struct.pack("<i", velocity_turn32_per_s), timeout=0.5)
+        payload = self.exchange(CMD_SET_VELOCITY, struct.pack("<i", velocity_turn32_per_s), timeout=0.15)
         return unpack_status(payload)
 
     def set_velocity_rad_s(self, velocity_rad_s: float) -> Status:

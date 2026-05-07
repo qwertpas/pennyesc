@@ -66,7 +66,7 @@ RESULTS_DIR = Path(__file__).resolve().parent / "calibrationtest_sessions"
 RAW_PLOT_WINDOW_S = 10.0
 RAW_POLL_MS = 100
 RAW_STATUS_TIMEOUT_S = 0.12
-RAW_STATUS_ATTEMPTS = 2
+RAW_STATUS_ATTEMPTS = 1
 TURN32_PER_REV = 65536.0
 TURN32_TO_RAD = (2.0 * math.pi) / TURN32_PER_REV
 RESULT_NAMES = {
@@ -1327,8 +1327,11 @@ class Window:
                 raise ValueError("usage: mode pos|vel|duty [duty]")
             mode = parts[1].lower()
             if mode == "pos":
+                status = client.stop()
+                self.set_device_calibration_from_status(status)
                 self.control = Control(kp=100.0, kd=0.10, kv=0.0, kf=0, clip=150)
-                client.set_velocity_rad_s(0.0)
+                status = client.set_position(status.position_turn32)
+                self.set_device_calibration_from_status(status)
             elif mode == "vel":
                 self.control = Control(kp=0.0, kd=0.10, kv=0.06, kf=0, clip=150)
             elif mode == "duty":
@@ -1356,9 +1359,9 @@ class Window:
         if cmd in ("position", "pos"):
             if len(parts) != 2:
                 raise ValueError("usage: position <rad>")
-            status = client.set_position_rad(float(parts[1]))
-            self.set_device_calibration_from_status(status)
-            self.append_log(format_status(status))
+            position_rad = float(parts[1])
+            client.send_position_rad(position_rad)
+            self.append_log(f"position sent {position_rad:g}")
             return
 
         if cmd == "vel":

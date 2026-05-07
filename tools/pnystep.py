@@ -36,7 +36,7 @@ from pnyproto import (  # noqa: E402
 )
 
 
-HOST_FRAME_BYTE_GAP_S = 0.0005
+HOST_FRAME_BYTE_GAP_S = 0.0
 
 
 @dataclass(frozen=True)
@@ -144,11 +144,8 @@ class StepperClient:
 
     def exchange(self, cmd: int, payload: bytes = b"", timeout: float = 1.0) -> bytes:
         frame = encode_frame(self.address, cmd, payload)
-        for index, byte in enumerate(frame):
-            self.port.write(bytes((byte,)))
-            self.port.flush()
-            if index + 1 < len(frame):
-                time.sleep(HOST_FRAME_BYTE_GAP_S)
+        self.port.write(frame)
+        self.port.flush()
         return self._read_frame(cmd, timeout=timeout)
 
     def exchange_retry(self, cmd: int, payload: bytes = b"", timeout: float = 1.0, attempts: int = 3) -> bytes:

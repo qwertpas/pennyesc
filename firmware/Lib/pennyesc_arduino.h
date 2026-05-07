@@ -741,13 +741,15 @@ private:
 
             char ch = (char)value;
             if (line_len_ == 0u) {
-                if (ch == '!') {
+                if (ch == '!' && (millis() - bridge_last_usb_ms_) > 20u) {
                     line_buf_[line_len_++] = ch;
                     bridge_escape_ms_ = millis();
+                    bridge_last_usb_ms_ = millis();
                     continue;
                 }
                 uint8_t byte = (uint8_t)ch;
                 uart().write(&byte, 1u);
+                bridge_last_usb_ms_ = millis();
                 continue;
             }
 
@@ -755,6 +757,7 @@ private:
                 flushBridgeEscape();
                 uint8_t byte = (uint8_t)ch;
                 uart().write(&byte, 1u);
+                bridge_last_usb_ms_ = millis();
                 continue;
             }
 
@@ -766,6 +769,7 @@ private:
                     flushBridgeEscape();
                     uint8_t byte = '\n';
                     uart().write(&byte, 1u);
+                    bridge_last_usb_ms_ = millis();
                 } else {
                     bridge_escape_ms_ = 0u;
                 }
@@ -781,6 +785,7 @@ private:
             flushBridgeEscape();
             uint8_t byte = (uint8_t)ch;
             uart().write(&byte, 1u);
+            bridge_last_usb_ms_ = millis();
         }
 
         if (line_len_ != 0u && (millis() - bridge_escape_ms_) > 2u) {
@@ -817,6 +822,7 @@ private:
     uint8_t bridge_mode_ = 0u;
     bool prefix_only_ = true;
     uint32_t bridge_escape_ms_ = 0u;
+    uint32_t bridge_last_usb_ms_ = 0u;
     char line_buf_[48];
     uint8_t line_len_ = 0u;
 #if defined(ARDUINO_ARCH_ESP32)

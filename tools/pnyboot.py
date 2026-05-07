@@ -241,6 +241,8 @@ class BootBridge:
         self.serial.reset_input_buffer()
         self.serial.reset_output_buffer()
         prefix = self.command_prefix
+        if prefix:
+            time.sleep(0.025)
         self.serial.write(f"{prefix}bridge {mode}\n".encode("utf-8"))
         self.serial.flush()
 
