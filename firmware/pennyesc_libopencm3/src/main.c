@@ -40,10 +40,11 @@
 #define CONTROL_GAIN_SCALE (1 << CONTROL_GAIN_Q)
 #define CONTROL_TURN32_NUM 25
 #define CONTROL_TURN32_SHIFT 26
-#define ADVANCE_DEG 90
+#define ADVANCE_DEG 30
 #define LEAD_DEFAULT_TURN16 ((int32_t)(((int32_t)ADVANCE_DEG * 65536 + 180) / 360))
 #define SECTOR_ALIGNMENT_DEG 240
 #define SECTOR_ALIGNMENT_TURN16 ((int32_t)(((int32_t)SECTOR_ALIGNMENT_DEG * 65536 + 180) / 360))
+#define REVERSE_HALL_PHASE_TURN16 32768
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
 #define OBSERVER_LEAD_US 0
@@ -594,11 +595,6 @@ static int32_t forward_position_from_sensor(int32_t position)
     return pennyesc_calibration_forward_angle_sign() < 0 ? -position : position;
 }
 
-static int32_t sensor_position_from_forward(int32_t position)
-{
-    return pennyesc_calibration_forward_angle_sign() < 0 ? -position : position;
-}
-
 static int32_t position_from_zero(int32_t position)
 {
     int64_t delta = (int64_t)position - position_zero_turn32;
@@ -801,20 +797,19 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
     comm_velocity_turn32_per_s += correction / beta_div;
 }
 
-static int32_t physical_phase_at_tick(uint16_t tick, int direction)
+static int32_t commutation_phase_at_tick(uint16_t tick, int direction)
 {
-    int32_t rotor_electrical = forward_position_from_sensor(observer_position_at_tick(tick)) * POLE_PAIRS;
-    return rotor_electrical + SECTOR_ALIGNMENT_TURN16 - ((int32_t)direction * current_lead_turn16);
-}
-
-static int32_t hall_phase_at_tick(uint16_t tick, int direction)
-{
-    return sensor_position_from_forward(physical_phase_at_tick(tick, direction));
+    int32_t rotor_electrical = observer_position_at_tick(tick) * POLE_PAIRS;
+    int32_t phase = rotor_electrical + SECTOR_ALIGNMENT_TURN16 - current_lead_turn16;
+    if (direction < 0) {
+        phase -= REVERSE_HALL_PHASE_TURN16;
+    }
+    return phase;
 }
 
 static uint8_t comm_sector_at_tick(uint16_t tick, int direction)
 {
-    uint16_t phase = (uint16_t)hall_phase_at_tick(tick, direction);
+    uint16_t phase = (uint16_t)commutation_phase_at_tick(tick, direction);
     return (uint8_t)(((uint32_t)phase * 6u) >> 16);
 }
 
@@ -838,7 +833,7 @@ static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
     }
 
     uint32_t speed = abs_u32(electrical_velocity);
-    uint16_t phase = (uint16_t)hall_phase_at_tick(now, direction);
+    uint16_t phase = (uint16_t)commutation_phase_at_tick(now, direction);
     uint8_t sector = (uint8_t)(((uint32_t)phase * 6u) >> 16);
     uint16_t phase_delta;
 
