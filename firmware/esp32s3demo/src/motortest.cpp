@@ -3,6 +3,7 @@
 #include "pennyesc_arduino.h"
 
 static PennyEsc esc(ESC0);
+static PennyEscBridge bridge;
 static PennyEscStatus last_status;
 static String input_line;
 static uint32_t pulse_end_ms = 0u;
@@ -96,6 +97,7 @@ void setup()
 {
     Serial.begin(115200);
     esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
+    bridge.begin(Serial, Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
     delay(100);
     Serial.println("pennyesc motortest");
     print_help();

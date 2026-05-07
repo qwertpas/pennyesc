@@ -10,7 +10,7 @@ void setup()
     pins.tx = 12;
 
     Serial.begin(115200);
-    bridge.begin(Serial, Serial1, pins, PENNYESC_BAUD_FAST);
+    bridge.begin(Serial, Serial1, pins, PENNYESC_BAUD_FAST, true, false, false);
 }
 
 void loop()

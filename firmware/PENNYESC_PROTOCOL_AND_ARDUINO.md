@@ -17,11 +17,13 @@ Minimal sketch:
 #include "pennyesc_arduino.h"
 
 PennyEsc esc(1);
+PennyEscBridge bridge;
 
 void setup()
 {
     Serial.begin(115200);
     esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
+    bridge.begin(Serial, Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
 }
 
 void loop()
@@ -135,3 +137,9 @@ All multi-byte fields are little-endian.
 - `PennyEsc` defaults to address `1`, matching the STM32 firmware default. Pass the address explicitly when using multiple ESCs.
 - The wrapper drops bytes before each send. That is simple, but less robust than the Python client when a delayed reply arrives after a timeout.
 - The ESP32 demo is status-only. It is safe, but it is not a complete interactive motor-control example.
+
+## Calibration GUI Bridge
+
+Add one global bridge object and call `bridge.begin(...)` in `setup()`. On ESP32 this starts a background bridge task, so the user sketch does not need bridge code in `loop()`.
+
+The bridge listens for reserved `!#...` commands from the host. Normal sketch serial input is left alone unless it starts with that bridge prefix. While bridge mode is active, `PennyEsc` commands from the sketch return `false` instead of writing to the ESC UART, leaving the calibration GUI in control until it sends `!#bridge off`.

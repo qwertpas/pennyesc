@@ -12,6 +12,8 @@ static const float PENNYESC_TURN32_PER_REV = 65536.0f;
 static const float PENNYESC_TURN32_TO_RAD = 6.2831853f / PENNYESC_TURN32_PER_REV;
 static const float PENNYESC_RAD_TO_TURN32 = PENNYESC_TURN32_PER_REV / 6.2831853f;
 
+static volatile bool pennyesc_bridge_active = false;
+
 struct PennyEscPins {
     int rx = 12;
     int tx = 13;
@@ -250,6 +252,9 @@ private:
     {
         uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
 
+        if (pennyesc_bridge_active) {
+            return false;
+        }
         if (payload_len > PNY_FRAME_MAX_PAYLOAD) {
             return false;
         }
@@ -364,18 +369,28 @@ private:
 
 class PennyEscBridge {
 public:
+    void setAddress(uint8_t address)
+    {
+        address_ = (uint8_t)(address & 0x0Fu);
+        esc_.setAddress(address_);
+    }
+
     void begin(
         Stream &usb,
         HardwareSerial &uart = Serial1,
         const PennyEscPins &pins = PennyEscPins(),
         uint32_t app_baud = PENNYESC_BAUD_UPDATE,
-        bool drive_power_pins = true
+        bool drive_power_pins = true,
+        bool background = true,
+        bool prefix_only = true
     )
     {
         usb_ = &usb;
         uart_ = &uart;
         pins_ = pins;
         app_baud_ = app_baud;
+        prefix_only_ = prefix_only;
+        esc_.setAddress(address_);
         if (drive_power_pins) {
             pinMode(pins_.gnd, OUTPUT);
             digitalWrite(pins_.gnd, LOW);
@@ -383,23 +398,50 @@ public:
             digitalWrite(pins_.pullup, HIGH);
         }
         beginApp();
+        esc_.begin(*uart_, pins_, app_baud_, false);
         delay(50);
-        usb_->println("pennyesc-bootbridge");
-        printHelp();
+        if (background) {
+            startTask();
+        } else {
+            usb_->println("pennyesc-bootbridge");
+            printHelp();
+        }
     }
 
-    void poll()
+    bool poll()
     {
         if (bridge_mode_ == 0u) {
-            shellPoll();
+            return shellPoll();
         } else if (bridge_mode_ == 2u) {
             rawBridgePoll();
         } else {
             bridgePoll();
         }
+        return true;
     }
 
 private:
+#if defined(ARDUINO_ARCH_ESP32)
+    static void taskMain(void *arg)
+    {
+        PennyEscBridge *bridge = (PennyEscBridge *)arg;
+        for (;;) {
+            bridge->poll();
+            delay(1);
+        }
+    }
+
+    void startTask()
+    {
+        if (task_ != 0) {
+            return;
+        }
+        xTaskCreatePinnedToCore(taskMain, "pnybridge", 4096, this, 1, &task_, 0);
+    }
+#else
+    void startTask() {}
+#endif
+
     void setUart(uint32_t baud, uint32_t config)
     {
         uart().end();
@@ -433,7 +475,25 @@ private:
 
     void printHelp()
     {
-        usb_->println("commands: help ping bridge app bridge handoff bridge upload bridge rom");
+        usb_->println("commands: help ping e<addr> s d<duty> bridge app bridge handoff bridge upload bridge rom");
+    }
+
+    void printStatus(const PennyEscStatus &status)
+    {
+        usb_->print("result=");
+        usb_->print(status.result);
+        usb_->print(" duty=");
+        usb_->print(status.duty);
+        usb_->print(" pos=");
+        usb_->print(status.positionRad(), 3);
+        usb_->print(" vel=");
+        usb_->print(status.velocityRpm(), 1);
+        usb_->print(" x=");
+        usb_->print(status.x);
+        usb_->print(" y=");
+        usb_->print(status.y);
+        usb_->print(" z=");
+        usb_->println(status.z);
     }
 
     void bridgeEnter(uint8_t mode)
@@ -443,6 +503,7 @@ private:
         }
         flushUartRx();
         bridge_mode_ = mode;
+        pennyesc_bridge_active = true;
         bridge_last_activity_ms_ = millis();
 
         if (mode == 4u) {
@@ -463,6 +524,7 @@ private:
     void bridgeExit()
     {
         bridge_mode_ = 0u;
+        pennyesc_bridge_active = false;
         beginApp();
         usb_->println("# bridge=off");
     }
@@ -478,6 +540,37 @@ private:
         }
         if (strcmp(line, "ping") == 0) {
             usb_->println("pong");
+            return;
+        }
+        if (line[0] == 'e') {
+            setAddress((uint8_t)atoi(line + 1));
+            PennyEscStatus status;
+            usb_->print("esc=");
+            usb_->print(address_);
+            if (esc_.getStatus(status, 100u)) {
+                usb_->print(" ok ");
+                printStatus(status);
+            } else {
+                usb_->println(" fail");
+            }
+            return;
+        }
+        if (strcmp(line, "s") == 0) {
+            PennyEscStatus status;
+            if (esc_.getStatus(status, 100u)) {
+                printStatus(status);
+            } else {
+                usb_->println("fail");
+            }
+            return;
+        }
+        if (line[0] == 'd') {
+            PennyEscStatus status;
+            if (esc_.setDuty((int16_t)atoi(line + 1), &status, 100u)) {
+                printStatus(status);
+            } else {
+                usb_->println("fail");
+            }
             return;
         }
         if (strcmp(line, "bridge app") == 0) {
@@ -503,8 +596,15 @@ private:
         usb_->println("err");
     }
 
-    void shellPoll()
+    bool shellPoll()
     {
+        if (usb_->available() <= 0) {
+            return line_len_ != 0u;
+        }
+        if (prefix_only_ && line_len_ == 0u && usb_->peek() != '!') {
+            return false;
+        }
+
         while (usb_->available() > 0) {
             int value = usb_->read();
             if (value < 0) {
@@ -517,14 +617,20 @@ private:
             }
             if (ch == '\n') {
                 line_buf_[line_len_] = '\0';
-                handleLine(line_buf_);
+                if (prefix_only_ && line_len_ >= 2u && line_buf_[0] == '!' && line_buf_[1] == '#') {
+                    handleLine(line_buf_ + 2u);
+                } else if (!prefix_only_) {
+                    handleLine(line_buf_);
+                }
                 line_len_ = 0u;
-                continue;
+                return true;
             }
             if (line_len_ + 1u < sizeof(line_buf_)) {
                 line_buf_[line_len_++] = ch;
             }
         }
+
+        return line_len_ != 0u;
     }
 
     void flushBridgeEscape()
@@ -634,14 +740,20 @@ private:
 
     Stream *usb_ = &Serial;
     HardwareSerial *uart_ = &Serial1;
+    PennyEsc esc_;
     PennyEscPins pins_;
     uint32_t app_baud_ = PENNYESC_BAUD_UPDATE;
+    uint8_t address_ = 1u;
     uint8_t bridge_mode_ = 0u;
     bool uart_is_rom_ = false;
+    bool prefix_only_ = true;
     uint32_t bridge_last_activity_ms_ = 0u;
     uint32_t bridge_escape_ms_ = 0u;
     char line_buf_[48];
     uint8_t line_len_ = 0u;
+#if defined(ARDUINO_ARCH_ESP32)
+    TaskHandle_t task_ = 0;
+#endif
 };
 
 #endif
