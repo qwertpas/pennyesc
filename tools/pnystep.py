@@ -14,7 +14,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from pennycal import EspBridge  # noqa: E402
+from pennycal import EspBridge, unpack_status  # noqa: E402
 from pnyproto import (  # noqa: E402
     CMD_DEBUG,
     CMD_GET_STATUS,
@@ -63,6 +63,8 @@ class Status:
     i2c_nack_count: int
     i2c_recover_count: int
     uart_overrun_errors: int
+    tmag_sample_count: int = 0
+    tmag_sample_dt_us: int = 0
 
     @property
     def step(self) -> int:
@@ -160,28 +162,23 @@ class StepperClient:
         raise last_error or TimeoutError(f"timeout waiting for command 0x{cmd:X}")
 
     def get_status(self) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_GET_STATUS)))
+        return unpack_status(self.exchange_retry(CMD_GET_STATUS))
 
     def set_duty(self, duty: int) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_SET_DUTY, struct.pack("<h", duty))))
+        return unpack_status(self.exchange_retry(CMD_SET_DUTY, struct.pack("<h", duty)))
 
     def set_advance(self, advance_deg: int) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg))))
+        return unpack_status(self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg)))
 
     def zero_position(self) -> Status:
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange_retry(CMD_ZERO_POSITION)))
+        return unpack_status(self.exchange_retry(CMD_ZERO_POSITION))
 
     def set_step(self, step: int) -> Status:
-        return Status(
-            *struct.unpack(
-                "<BBBBhhhHiihHHHHHHIIIII",
-                self.exchange(CMD_DEBUG, struct.pack("<Bb", DEBUG_STEP_SET, step)),
-            )
-        )
+        return unpack_status(self.exchange(CMD_DEBUG, struct.pack("<Bb", DEBUG_STEP_SET, step)))
 
     def transition_step(self, step: int, blank_ms: int) -> Status:
         payload = struct.pack("<BbH", DEBUG_STEP_TRANSITION, step, blank_ms)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", self.exchange(CMD_DEBUG, payload, timeout=1.0)))
+        return unpack_status(self.exchange(CMD_DEBUG, payload, timeout=1.0))
 
     def set_observer(self, lead_us: int, mode: int = OBSERVER_RAW) -> CaptureStatus:
         return self._decode_capture_status(

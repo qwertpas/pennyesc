@@ -35,6 +35,7 @@ from pnyproto import (
     CAL_STATUS,
     CAL_WRITE_BLOB,
     CMD_CAL,
+    CMD_GET_POS_VEL,
     CMD_SET_ADVANCE,
     CMD_SET_CONTROL,
     CMD_GET_STATUS,
@@ -105,6 +106,8 @@ class Status:
     i2c_nack_count: int
     i2c_recover_count: int
     uart_overrun_errors: int
+    tmag_sample_count: int = 0
+    tmag_sample_dt_us: int = 0
 
     @property
     def calibrated(self) -> bool:
@@ -121,6 +124,34 @@ class Status:
     @property
     def velocity_rpm(self) -> float:
         return float(self.velocity_turn32_per_s) * 60.0 / TURN32_PER_REV
+
+
+@dataclasses.dataclass(frozen=True)
+class PosVel:
+    position_turn32: int
+    velocity_turn32_per_s: int
+
+    @property
+    def position_rad(self) -> float:
+        return float(self.position_turn32) * TURN32_TO_RAD
+
+    @property
+    def velocity_rad_s(self) -> float:
+        return float(self.velocity_turn32_per_s) * TURN32_TO_RAD
+
+    @property
+    def velocity_rpm(self) -> float:
+        return float(self.velocity_turn32_per_s) * 60.0 / TURN32_PER_REV
+
+
+STATUS_BASE_FORMAT = "<BBBBhhhHiihHHHHHHIIIII"
+STATUS_FAST_FORMAT = "<BBBBhhhHiihHHHHHHIIIIIIH"
+
+
+def unpack_status(payload: bytes) -> Status:
+    if len(payload) == struct.calcsize(STATUS_FAST_FORMAT):
+        return Status(*struct.unpack(STATUS_FAST_FORMAT, payload))
+    return Status(*struct.unpack(STATUS_BASE_FORMAT, payload))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -713,34 +744,38 @@ class Stm32Client:
 
     def get_status(self, timeout: float = 0.5, attempts: int = 3) -> Status:
         payload = self.exchange_retry(CMD_GET_STATUS, timeout=timeout, attempts=attempts)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+        return unpack_status(payload)
+
+    def get_pos_vel(self, timeout: float = 0.2, attempts: int = 3) -> PosVel:
+        payload = self.exchange_retry(CMD_GET_POS_VEL, timeout=timeout, attempts=attempts)
+        return PosVel(*struct.unpack("<ii", payload))
 
     def set_duty(self, duty: int) -> Status:
         payload = self.exchange_retry(CMD_SET_DUTY, struct.pack("<h", duty), timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+        return unpack_status(payload)
 
     def stop(self) -> Status:
         payload = self.exchange_retry(CMD_STOP, timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+        return unpack_status(payload)
 
     def set_control(self, control: Control) -> Status:
         payload = self.exchange_retry(CMD_SET_CONTROL, control.payload(), timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+        return unpack_status(payload)
 
     def set_advance_deg(self, advance_deg: int) -> Status:
         payload = self.exchange_retry(CMD_SET_ADVANCE, struct.pack("<h", advance_deg), timeout=0.75, attempts=5)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+        return unpack_status(payload)
 
     def set_position(self, position_turn32: int) -> Status:
         payload = self.exchange_retry(CMD_SET_POSITION, struct.pack("<i", position_turn32), timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+        return unpack_status(payload)
 
     def set_position_rad(self, position_rad: float) -> Status:
         return self.set_position(int(round(position_rad * RAD_TO_TURN32)))
 
     def set_velocity(self, velocity_turn32_per_s: int) -> Status:
         payload = self.exchange_retry(CMD_SET_VELOCITY, struct.pack("<i", velocity_turn32_per_s), timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+        return unpack_status(payload)
 
     def set_velocity_rad_s(self, velocity_rad_s: float) -> Status:
         return self.set_velocity(int(round(velocity_rad_s * RAD_TO_TURN32)))
@@ -750,7 +785,7 @@ class Stm32Client:
 
     def zero_position(self) -> Status:
         payload = self.exchange_retry(CMD_ZERO_POSITION, timeout=0.5)
-        return Status(*struct.unpack("<BBBBhhhHiihHHHHHHIIIII", payload))
+        return unpack_status(payload)
 
     def cal_start(self, sweep_dir: int) -> tuple[int, int]:
         payload = self.exchange_retry(CMD_CAL, struct.pack("<BB", CAL_START, sweep_dir), timeout=0.5)
@@ -827,6 +862,11 @@ def print_status(status: Status) -> None:
             status.uart_overrun_errors,
         )
     )
+    if status.tmag_sample_count or status.tmag_sample_dt_us:
+        print(
+            "tmag_samples=%u tmag_dt=%dus"
+            % (status.tmag_sample_count, status.tmag_sample_dt_us)
+        )
 
 
 def read_capture_points(

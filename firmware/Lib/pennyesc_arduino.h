@@ -102,6 +102,22 @@ public:
         return parseStatus(frame, frame_len, status);
     }
 
+    bool getPosVel(PennyEscEncoderData &data, uint32_t timeout_ms = 20u)
+    {
+        uint8_t frame[sizeof(pny_pos_vel_payload_t) + 4u];
+        uint8_t frame_len = 0u;
+
+        if (!sendFrame(PNY_CMD_GET_POS_VEL, 0, 0)) {
+            data.valid = false;
+            return false;
+        }
+        if (!readFrame(PNY_CMD_GET_POS_VEL, frame, sizeof(frame), frame_len, timeout_ms)) {
+            data.valid = false;
+            return false;
+        }
+        return parsePosVel(frame, frame_len, data);
+    }
+
     bool setDuty(int16_t duty, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
     {
         uint8_t payload[2];
@@ -391,6 +407,22 @@ private:
         status.position_turn32 = payload.position_turn32;
         status.velocity_turn32_per_s = payload.velocity_turn32_per_s;
         status.duty = payload.duty;
+        return true;
+    }
+
+    static bool parsePosVel(const uint8_t *frame, uint8_t frame_len, PennyEscEncoderData &data)
+    {
+        pny_pos_vel_payload_t payload;
+
+        if (frame_len != (uint8_t)(sizeof(payload) + 4u) || frame[2] != sizeof(payload)) {
+            data.valid = false;
+            return false;
+        }
+
+        memcpy(&payload, &frame[3], sizeof(payload));
+        data.valid = true;
+        data.position_turn32 = payload.position_turn32;
+        data.velocity_turn32_per_s = payload.velocity_turn32_per_s;
         return true;
     }
 

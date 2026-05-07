@@ -24,6 +24,9 @@ typedef struct {
     uint32_t timeout_count;
     uint32_t nack_count;
     uint32_t recover_count;
+    uint32_t sample_count;
+    uint32_t busy_count;
+    uint16_t sample_dt_us;
 } tmag5273_stats_t;
 
 typedef struct {

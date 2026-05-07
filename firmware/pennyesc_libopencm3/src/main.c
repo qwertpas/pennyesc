@@ -6,6 +6,7 @@
 #include <libopencm3/stm32/i2c.h>
 #include <libopencm3/stm32/pwr.h>
 #include <libopencm3/stm32/rcc.h>
+#include <libopencm3/stm32/syscfg.h>
 #include <libopencm3/stm32/timer.h>
 #include <libopencm3/stm32/usart.h>
 #include <stdbool.h>
@@ -50,18 +51,13 @@
 #define OBSERVER_LEAD_MAX_US 1000
 #define ISR_FREQ_HZ 10000
 #define SENSOR_TICK_US (1000000u / ISR_FREQ_HZ)
-#define TMAG_READ_PERIOD_US SENSOR_TICK_US
 #define SCHED_TIMER_PERIOD 0xffffu
 #define SENSOR_STALE_US 10000u
 #define SENSOR_START_RETRIES 4u
 #define COMM_MIN_EVENT_US 2u
 #define COMM_MAX_EVENT_US 60000u
 #define VEL_UPDATE_SAMPLES (ISR_FREQ_HZ / 1000u)
-#define VELOCITY_WINDOW_SAMPLES 32u
-#define VELOCITY_WINDOW_MASK (VELOCITY_WINDOW_SAMPLES - 1u)
-#define VELOCITY_DELTA_SHIFT 4u
-#define VELOCITY_SLOPE_DIVISOR 341
-#define COMM_VELOCITY_SAMPLES 3u
+#define COMM_VELOCITY_SAMPLES 5u
 
 #define CAL_DUTY 100
 #define CAL_SETTLE_MS 180u
@@ -146,7 +142,6 @@ typedef struct {
 typedef struct {
     volatile uint8_t sector;
     volatile uint16_t next_sensor_tick;
-    volatile uint16_t next_tmag_tick;
     volatile uint16_t next_comm_tick;
     volatile uint16_t position_tick;
     int16_t last_duty;
@@ -217,8 +212,6 @@ static volatile int debug_comm_step;
 static work_state_t work_state;
 static observer_state_t observer_state;
 static comm_scheduler_t comm_scheduler;
-static int32_t velocity_positions[VELOCITY_WINDOW_SAMPLES];
-static uint8_t velocity_position_index;
 static int32_t comm_velocity_positions[COMM_VELOCITY_SAMPLES];
 static uint16_t comm_velocity_ticks[COMM_VELOCITY_SAMPLES];
 static uint8_t comm_velocity_index;
@@ -252,6 +245,7 @@ static void clock_setup(void)
     rcc_periph_clock_enable(RCC_GPIOC);
     rcc_periph_clock_enable(RCC_USART2);
     rcc_periph_clock_enable(RCC_I2C1);
+    rcc_periph_clock_enable(RCC_SYSCFG);
     rcc_periph_clock_enable(RCC_TIM2);
     rcc_periph_clock_enable(RCC_TIM21);
     rcc_periph_clock_enable(RCC_DMA);
@@ -412,8 +406,9 @@ static void i2c1_setup(void)
     gpio_set_af(GPIOB, GPIO_AF1, GPIO6 | GPIO7);
     gpio_mode_setup(GPIOB, GPIO_MODE_AF, GPIO_PUPD_PULLUP, GPIO6 | GPIO7);
     gpio_set_output_options(GPIOB, GPIO_OTYPE_OD, GPIO_OSPEED_HIGH, GPIO6 | GPIO7);
+    SYSCFG_CFGR2 |= SYSCFG_CFGR2_I2C_PB6_FMP | SYSCFG_CFGR2_I2C_PB7_FMP | SYSCFG_CFGR2_I2C1_FMP;
     i2c_peripheral_disable(I2C1);
-    I2C_TIMINGR(I2C1) = 0x00100109;
+    I2C_TIMINGR(I2C1) = 0x00100107;
     i2c_peripheral_enable(I2C1);
     nvic_enable_irq(NVIC_I2C1_IRQ);
     nvic_set_priority(NVIC_I2C1_IRQ, 0);
@@ -515,14 +510,10 @@ static void apply_pwm_duty(int16_t duty)
 
 static void velocity_reset(int32_t position)
 {
-    for (uint8_t i = 0; i < VELOCITY_WINDOW_SAMPLES; i++) {
-        velocity_positions[i] = position;
-    }
     for (uint8_t i = 0; i < COMM_VELOCITY_SAMPLES; i++) {
         comm_velocity_positions[i] = position;
         comm_velocity_ticks[i] = sched_now_us();
     }
-    velocity_position_index = 0;
     comm_velocity_index = 0;
     comm_velocity_count = 0;
     velocity_turn32_per_s = 0;
@@ -539,38 +530,19 @@ static int32_t comm_velocity_update(int32_t position, uint16_t tick)
         return comm_velocity_turn32_per_s;
     }
 
-    uint8_t newest = (uint8_t)((comm_velocity_index + COMM_VELOCITY_SAMPLES - 1u) % COMM_VELOCITY_SAMPLES);
     uint8_t oldest = comm_velocity_index;
-    int32_t delta = comm_velocity_positions[newest] - comm_velocity_positions[oldest];
-    uint16_t dt_us = (uint16_t)(comm_velocity_ticks[newest] - comm_velocity_ticks[oldest]);
+    uint8_t i0 = oldest;
+    uint8_t i1 = (uint8_t)((oldest + 1u) % COMM_VELOCITY_SAMPLES);
+    uint8_t i3 = (uint8_t)((oldest + 3u) % COMM_VELOCITY_SAMPLES);
+    uint8_t i4 = (uint8_t)((oldest + 4u) % COMM_VELOCITY_SAMPLES);
+    uint16_t dt_us = (uint16_t)(comm_velocity_ticks[i4] - comm_velocity_ticks[i0]);
     if (dt_us == 0u || dt_us >= SENSOR_STALE_US) {
         return comm_velocity_turn32_per_s;
     }
-    return ((delta * 1000) / (int32_t)dt_us) * 1000;
-}
 
-static int32_t velocity_sum_to_turn32_per_s(int32_t sum)
-{
-    int32_t whole = sum / VELOCITY_SLOPE_DIVISOR;
-    int32_t rem = sum % VELOCITY_SLOPE_DIVISOR;
-    return (whole * (int32_t)ISR_FREQ_HZ) +
-           ((rem * (int32_t)ISR_FREQ_HZ) / (int32_t)VELOCITY_SLOPE_DIVISOR);
-}
-
-static int32_t velocity_update(int32_t position)
-{
-    velocity_positions[velocity_position_index] = position;
-    velocity_position_index = (uint8_t)((velocity_position_index + 1u) & VELOCITY_WINDOW_MASK);
-
-    int32_t newest = velocity_positions[(uint8_t)((velocity_position_index - 1u) & VELOCITY_WINDOW_MASK)];
-    int32_t sum = 0;
-    for (uint8_t i = 0; i < VELOCITY_WINDOW_SAMPLES; i++) {
-        uint8_t index = (uint8_t)((velocity_position_index + i) & VELOCITY_WINDOW_MASK);
-        int32_t weight = ((int32_t)i * 2) - ((int32_t)VELOCITY_WINDOW_SAMPLES - 1);
-        int32_t delta = (velocity_positions[index] - newest) >> VELOCITY_DELTA_SHIFT;
-        sum += weight * delta;
-    }
-    return velocity_sum_to_turn32_per_s(sum);
+    int32_t sum = (2 * (comm_velocity_positions[i4] - comm_velocity_positions[i0])) +
+                  (comm_velocity_positions[i3] - comm_velocity_positions[i1]);
+    return ((sum * 2000) / (int32_t)(5u * dt_us)) * 1000;
 }
 
 static void update_position_from_angle(uint16_t angle_turn16)
@@ -710,26 +682,20 @@ static bool refresh_sensor_xy(bool update_position)
     return true;
 }
 
-static bool take_sensor_xy_async(bool update_position)
+static void apply_sensor_xy_sample(const tmag5273_xy_sample_t *sample, bool update_position)
 {
-    tmag5273_xy_sample_t sample;
-    if (!tmag5273_async_take_xy(&sample)) {
-        return false;
-    }
-
     sensor_ready = true;
-    sensor_x = sample.x;
-    sensor_y = sample.y;
+    sensor_x = sample->x;
+    sensor_y = sample->y;
     sensor_z = 0;
-    sensor_i2c_start_us = sample.start_phase_us;
-    sensor_i2c_end_us = sample.end_phase_us;
-    sensor_i2c_us = phase_delta_us(sample.start_phase_us, sample.end_phase_us);
-    uint16_t angle = pennyesc_calibration_angle_turn16(sample.x, sample.y);
+    sensor_i2c_start_us = sample->start_phase_us;
+    sensor_i2c_end_us = sample->end_phase_us;
+    sensor_i2c_us = phase_delta_us(sample->start_phase_us, sample->end_phase_us);
+    uint16_t angle = pennyesc_calibration_angle_turn16(sample->x, sample->y);
     current_angle_turn16 = angle;
     if (update_position) {
         update_position_from_angle(angle);
     }
-    return true;
 }
 
 static void stop_motor_outputs(void)
@@ -883,8 +849,8 @@ static void comm_scheduler_start(void)
     comm_scheduler.position_tick = now;
     comm_scheduler.last_duty = INT16_MIN;
     comm_scheduler.next_sensor_tick = (uint16_t)(now + SENSOR_TICK_US);
-    comm_scheduler.next_tmag_tick = now;
     comm_scheduler.next_comm_tick = now;
+    tmag5273_async_start_xy(now);
     TIM_CCR1(TIM21) = comm_scheduler.next_sensor_tick;
     timer_clear_flag(TIM21, TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC1OF | TIM_SR_CC2OF | TIM_SR_UIF);
     TIM_DIER(TIM21) |= TIM_DIER_CC1IE;
@@ -1258,6 +1224,8 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->i2c_nack_count = tmag_stats.nack_count;
     payload->i2c_recover_count = tmag_stats.recover_count;
     payload->uart_overrun_errors = uart_overrun_errors;
+    payload->tmag_sample_count = tmag_stats.sample_count;
+    payload->tmag_sample_dt_us = tmag_stats.sample_dt_us;
 }
 
 static void refresh_status_sensor(void)
@@ -1528,15 +1496,11 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
 
     int32_t last_position = absolute_position_turn32;
     uint16_t last_tick = comm_scheduler.position_tick;
-    bool have_sample = take_sensor_xy_async(true);
-
-    if ((int16_t)(scheduled_tick - comm_scheduler.next_tmag_tick) >= 0) {
-        if (tmag5273_async_start_xy(scheduled_tick)) {
-            comm_scheduler.next_tmag_tick = (uint16_t)(scheduled_tick + TMAG_READ_PERIOD_US);
-        }
-    }
+    tmag5273_xy_sample_t sample;
+    bool have_sample = tmag5273_async_take_xy(&sample);
 
     if (have_sample) {
+        apply_sensor_xy_sample(&sample, true);
         uint16_t sample_tick = sensor_i2c_start_us;
         uint16_t sample_dt = (uint16_t)(sample_tick - last_tick);
         int32_t sample_velocity = comm_velocity_turn32_per_s;
@@ -1544,7 +1508,6 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
             sample_velocity = ((absolute_position_turn32 - last_position) * 1000) / (int32_t)sample_dt * 1000;
         }
         int32_t secant_velocity = comm_velocity_update(absolute_position_turn32, sample_tick);
-        velocity_turn32_per_s = velocity_update(absolute_position_turn32);
         bool velocity_updated = false;
         switch (observer_mode) {
         case PNY_OBSERVER_AB3:
@@ -1579,6 +1542,7 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
                 comm_velocity_turn32_per_s += (sample_velocity - comm_velocity_turn32_per_s) / 2;
             }
         }
+        velocity_turn32_per_s = comm_velocity_turn32_per_s;
         comm_scheduler.position_tick = sample_tick;
     }
 
@@ -2162,6 +2126,14 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
     case PNY_CMD_GET_STATUS:
         handle_get_status();
         break;
+    case PNY_CMD_GET_POS_VEL:
+    {
+        pny_pos_vel_payload_t out;
+        out.position_turn32 = position_from_zero(absolute_position_turn32);
+        out.velocity_turn32_per_s = forward_position_from_sensor(velocity_turn32_per_s);
+        send_frame(PNY_CMD_GET_POS_VEL, &out, sizeof(out));
+        break;
+    }
     case PNY_CMD_ZERO_POSITION:
         handle_zero_position(payload, len);
         break;

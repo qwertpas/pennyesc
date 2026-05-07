@@ -1281,7 +1281,7 @@ class Window:
             if len(parts) != 2:
                 raise ValueError("usage: duty <value>")
             duty = int(parts[1], 0)
-            self.control = Control(kf=duty, clip=250)
+            self.control = Control(kf=duty, clip=self.control.clip)
             self.update_control_label()
             status = client.set_control(self.control)
             self.set_device_calibration_from_status(status)
@@ -1333,7 +1333,7 @@ class Window:
                 self.control = Control(kp=0.0, kd=0.10, kv=0.06, kf=0, clip=150)
             elif mode == "duty":
                 duty = int(parts[2], 0) if len(parts) == 3 else 0
-                self.control = Control(kp=0.0, kd=0.0, kv=0.0, kf=duty, clip=250)
+                self.control = Control(kp=0.0, kd=0.0, kv=0.0, kf=duty, clip=self.control.clip)
             else:
                 raise ValueError("usage: mode pos|vel|duty [duty]")
             self.update_control_label()

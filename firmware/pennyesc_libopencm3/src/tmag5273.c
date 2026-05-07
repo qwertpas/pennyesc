@@ -16,6 +16,10 @@
 #define CONV_AVG_SHIFT          2
 #define CONV_AVG_1X             0x0
 #define CONV_AVG_2X             0x1
+#define I2C_RD_STANDARD         0x0
+#define I2C_RD_16BIT            0x1
+#define I2C_RD_8BIT             0x2
+#define ASYNC_READ_LEN          2u
 #define SLEEPTIME_SHIFT         0
 #define MAG_CH_EN_SHIFT         4
 #define MAG_CH_XY               0x3
@@ -28,23 +32,23 @@
 #define OP_CONTINUOUS           0x2
 
 #define I2C_WAIT_LIMIT          40000u
-#define I2C1_TIMING_VALUE       0x00100109u
+#define I2C1_TIMING_VALUE       0x00100107u
 #define ASYNC_IRQS              (I2C_CR1_ERRIE | I2C_CR1_NACKIE | I2C_CR1_STOPIE | I2C_CR1_TCIE | I2C_CR1_RXIE | I2C_CR1_TXIE)
 
 typedef enum {
     ASYNC_IDLE = 0,
-    ASYNC_WRITE_REG,
     ASYNC_READ_DATA,
 } async_state_t;
 
 static volatile tmag5273_stats_t tmag_stats;
 static volatile async_state_t async_state;
-static volatile uint8_t async_rx[4];
+static volatile uint8_t async_rx[ASYNC_READ_LEN];
 static volatile uint8_t async_rx_index;
 static volatile tmag5273_xy_sample_t async_sample;
 static volatile uint32_t async_sequence;
 static volatile bool async_sample_ready;
 static volatile uint16_t async_start_phase_us;
+static volatile uint16_t last_sample_start_us;
 
 static void i2c1_recover(void);
 
@@ -177,9 +181,34 @@ static bool write_reg_checked(uint8_t reg, uint8_t value)
     return true;
 }
 
-static bool write_mode_regs(uint8_t avg, uint8_t channels, uint8_t op_mode)
+static bool direct_read(uint8_t *data, uint8_t len)
 {
-    return write_reg_checked(REG_DEVICE_CONFIG_1, avg << CONV_AVG_SHIFT) &&
+    tmag5273_async_cancel();
+    i2c_set_7bit_address(I2C1, TMAG5273_I2C_ADDR);
+    i2c_set_read_transfer_dir(I2C1);
+    i2c_set_bytes_to_transfer(I2C1, len);
+    i2c_enable_autoend(I2C1);
+    i2c_send_start(I2C1);
+
+    for (uint8_t i = 0; i < len; i++) {
+        if (!wait_isr(I2C_ISR_RXNE)) {
+            i2c1_recover();
+            return false;
+        }
+        data[i] = i2c_get_data(I2C1);
+    }
+
+    if (!wait_isr(I2C_ISR_STOPF)) {
+        i2c1_recover();
+        return false;
+    }
+    i2c_clear_stop(I2C1);
+    return true;
+}
+
+static bool write_mode_regs(uint8_t avg, uint8_t read_mode, uint8_t channels, uint8_t op_mode)
+{
+    return write_reg_checked(REG_DEVICE_CONFIG_1, (avg << CONV_AVG_SHIFT) | read_mode) &&
            write_reg_checked(REG_SENSOR_CONFIG_1,
                (0u << SLEEPTIME_SHIFT) | (channels << MAG_CH_EN_SHIFT)) &&
            write_reg_checked(REG_SENSOR_CONFIG_2,
@@ -214,9 +243,9 @@ bool tmag5273_init(void)
 bool tmag5273_set_mode(tmag5273_mode_t mode)
 {
     if (mode == TMAG5273_MODE_FAST_XY) {
-        return write_mode_regs(CONV_AVG_1X, MAG_CH_XY, OP_CONTINUOUS);
+        return write_mode_regs(CONV_AVG_1X, I2C_RD_8BIT, MAG_CH_XY, OP_CONTINUOUS);
     } else {
-        return write_mode_regs(CONV_AVG_2X, MAG_CH_XYZ, OP_CONTINUOUS);
+        return write_mode_regs(CONV_AVG_2X, I2C_RD_STANDARD, MAG_CH_XYZ, OP_CONTINUOUS);
     }
 }
 
@@ -268,6 +297,9 @@ void tmag5273_get_stats(tmag5273_stats_t *out)
     out->timeout_count = tmag_stats.timeout_count;
     out->nack_count = tmag_stats.nack_count;
     out->recover_count = tmag_stats.recover_count;
+    out->sample_count = tmag_stats.sample_count;
+    out->busy_count = tmag_stats.busy_count;
+    out->sample_dt_us = tmag_stats.sample_dt_us;
 }
 
 void tmag5273_async_cancel(void)
@@ -286,15 +318,16 @@ void tmag5273_async_cancel(void)
 bool tmag5273_async_start_xy(uint16_t start_phase_us)
 {
     if (async_state != ASYNC_IDLE || (I2C_ISR(I2C1) & I2C_ISR_BUSY) != 0u) {
+        tmag_stats.busy_count++;
         return false;
     }
 
     async_start_phase_us = start_phase_us;
     async_rx_index = 0;
-    async_state = ASYNC_WRITE_REG;
+    async_state = ASYNC_READ_DATA;
     async_clear_flags();
     I2C_CR1(I2C1) |= ASYNC_IRQS;
-    async_set_transfer(false, 1u, false);
+    async_set_transfer(true, ASYNC_READ_LEN, true);
     return true;
 }
 
@@ -322,18 +355,6 @@ void tmag5273_i2c1_isr(void)
         return;
     }
 
-    if (async_state == ASYNC_WRITE_REG && (isr & I2C_ISR_TXIS) != 0u) {
-        I2C_TXDR(I2C1) = 0x12u;
-        return;
-    }
-
-    if (async_state == ASYNC_WRITE_REG && (isr & I2C_ISR_TC) != 0u) {
-        async_state = ASYNC_READ_DATA;
-        async_rx_index = 0;
-        async_set_transfer(true, 4u, true);
-        return;
-    }
-
     if (async_state == ASYNC_READ_DATA && (isr & I2C_ISR_RXNE) != 0u) {
         uint8_t index = async_rx_index;
         if (index < sizeof(async_rx)) {
@@ -347,13 +368,20 @@ void tmag5273_i2c1_isr(void)
 
     if ((isr & I2C_ISR_STOPF) != 0u) {
         async_clear_flags();
-        if (async_state == ASYNC_READ_DATA && async_rx_index == sizeof(async_rx)) {
-            async_sample.x = (int16_t)((async_rx[0] << 8) | async_rx[1]);
-            async_sample.y = (int16_t)((async_rx[2] << 8) | async_rx[3]);
+        if (async_state == ASYNC_READ_DATA && async_rx_index >= sizeof(async_rx)) {
+            async_sample.x = (int16_t)(async_rx[0] << 8);
+            async_sample.y = (int16_t)(async_rx[1] << 8);
             async_sample.start_phase_us = async_start_phase_us;
             async_sample.end_phase_us = (uint16_t)timer_get_counter(TIM21);
             async_sample.sequence = ++async_sequence;
             async_sample_ready = true;
+            tmag_stats.sample_dt_us = (uint16_t)(async_start_phase_us - last_sample_start_us);
+            last_sample_start_us = async_start_phase_us;
+            tmag_stats.sample_count++;
+            async_start_phase_us = (uint16_t)timer_get_counter(TIM21);
+            async_rx_index = 0;
+            async_set_transfer(true, ASYNC_READ_LEN, true);
+            return;
         }
         async_disable();
         async_state = ASYNC_IDLE;
@@ -363,15 +391,14 @@ void tmag5273_i2c1_isr(void)
 /* Fast read: X and Y only (4 bytes instead of 6, no float math) */
 bool tmag5273_read_xy_fast(int16_t *x, int16_t *y)
 {
-    uint8_t raw[4];
-    
-    /* Burst read starting at X_MSB (register 0x12): X_MSB, X_LSB, Y_MSB, Y_LSB */
-    if (!transfer_regs(0x12u, raw, 4, false)) {
+    uint8_t raw[ASYNC_READ_LEN];
+
+    if (!direct_read(raw, sizeof(raw))) {
         return false;
     }
-    
-    *x = (int16_t)((raw[0] << 8) | raw[1]);
-    *y = (int16_t)((raw[2] << 8) | raw[3]);
+
+    *x = (int16_t)(raw[0] << 8);
+    *y = (int16_t)(raw[1] << 8);
     return true;
 }
 

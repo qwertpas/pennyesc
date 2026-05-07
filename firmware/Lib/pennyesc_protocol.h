@@ -28,6 +28,7 @@ enum {
     PNY_CMD_ENTER_BOOT = 0xB,
     PNY_CMD_SET_ADVANCE = 0xC,
     PNY_CMD_SET_QUIET = 0xD,
+    PNY_CMD_GET_POS_VEL = 0xE,
 };
 
 enum {
@@ -122,7 +123,14 @@ typedef struct __attribute__((packed)) {
     uint32_t i2c_nack_count;
     uint32_t i2c_recover_count;
     uint32_t uart_overrun_errors;
+    uint32_t tmag_sample_count;
+    uint16_t tmag_sample_dt_us;
 } pny_status_payload_t;
+
+typedef struct __attribute__((packed)) {
+    int32_t position_turn32;
+    int32_t velocity_turn32_per_s;
+} pny_pos_vel_payload_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t result;
