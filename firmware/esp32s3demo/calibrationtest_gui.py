@@ -412,7 +412,7 @@ class ScanWorker(QtCore.QThread):
 class TestWorker(QtCore.QThread):
     log = Signal(str)
     capture_status = Signal(int, int, int)
-    capture_sample = Signal(int, int, int, int, int)
+    capture_sample = Signal(int, int, int, int, int, int)
     upload = Signal(int, int)
     progress = Signal(int)
     session_ready = Signal(object)
@@ -450,6 +450,10 @@ class TestWorker(QtCore.QThread):
                     client = Stm32Client(bridge.serial, address=self.address)
 
                     self.progress.emit(1)
+                    self.log.emit("stop motor")
+                    status = client.stop()
+                    if status.result != RESULT_OK:
+                        raise CalibrationError(f"STOP failed with result {status.result}")
                     raw_points = capture_points(
                         client,
                         status_cb=self.on_capture_status,
@@ -511,8 +515,15 @@ class TestWorker(QtCore.QThread):
         if status.total_points > 0:
             self.progress.emit((status.next_index * 60) // status.total_points)
 
-    def on_capture_sample(self, _point_index: int, _step_index: int, sweep_dir: int, status) -> None:
-        self.capture_sample.emit(int(sweep_dir), int(status.x), int(status.y), int(status.z), int(status.faults))
+    def on_capture_sample(self, _point_index: int, step_index: int, sweep_dir: int, status) -> None:
+        self.capture_sample.emit(
+            int(step_index),
+            int(sweep_dir),
+            int(status.x),
+            int(status.y),
+            int(status.z),
+            int(status.faults),
+        )
 
     def on_upload(self, done: int, total: int) -> None:
         self.upload.emit(done, total)
@@ -539,6 +550,8 @@ class Window:
         self.static_live_forward_y: list[int] = []
         self.static_live_reverse_x: list[int] = []
         self.static_live_reverse_y: list[int] = []
+        self.static_live_forward_step: list[int] = []
+        self.static_live_reverse_step: list[int] = []
         self.raw_times: deque[float] = deque()
         self.raw_x_vals: deque[int] = deque()
         self.raw_y_vals: deque[int] = deque()
@@ -693,6 +706,82 @@ class Window:
         if legend is not None:
             legend.clear()
 
+    def add_static_live_curves(self) -> None:
+        self.static_live_forward_curve = self.raw_xy_plot.plot(
+            [],
+            [],
+            pen=None,
+            symbol="o",
+            symbolSize=5,
+            symbolBrush=pg.mkBrush(46, 204, 113, 140),
+            name="forward live",
+        )
+        self.static_live_reverse_curve = self.raw_xy_plot.plot(
+            [],
+            [],
+            pen=None,
+            symbol="o",
+            symbolSize=5,
+            symbolBrush=pg.mkBrush(231, 76, 60, 140),
+            name="reverse live",
+        )
+        self.static_live_forward_x_curve = self.step_mag_plot.plot(
+            [],
+            [],
+            pen=None,
+            symbol="o",
+            symbolSize=4,
+            symbolBrush=pg.mkBrush(46, 204, 113, 140),
+            name="forward live X",
+        )
+        self.static_live_forward_y_curve = self.step_mag_plot.plot(
+            [],
+            [],
+            pen=None,
+            symbol="t",
+            symbolSize=4,
+            symbolBrush=pg.mkBrush(46, 134, 171, 140),
+            name="forward live Y",
+        )
+        self.static_live_reverse_x_curve = self.step_mag_plot.plot(
+            [],
+            [],
+            pen=None,
+            symbol="o",
+            symbolSize=4,
+            symbolBrush=pg.mkBrush(192, 57, 43, 140),
+            name="reverse live X",
+        )
+        self.static_live_reverse_y_curve = self.step_mag_plot.plot(
+            [],
+            [],
+            pen=None,
+            symbol="t",
+            symbolSize=4,
+            symbolBrush=pg.mkBrush(142, 68, 173, 140),
+            name="reverse live Y",
+        )
+
+    def clear_static_live_data(self) -> None:
+        self.static_live_forward_x.clear()
+        self.static_live_forward_y.clear()
+        self.static_live_reverse_x.clear()
+        self.static_live_reverse_y.clear()
+        self.static_live_forward_step.clear()
+        self.static_live_reverse_step.clear()
+        self.static_live_forward_curve.setData([], [])
+        self.static_live_reverse_curve.setData([], [])
+        self.static_live_forward_x_curve.setData([], [])
+        self.static_live_forward_y_curve.setData([], [])
+        self.static_live_reverse_x_curve.setData([], [])
+        self.static_live_reverse_y_curve.setData([], [])
+
+    def reset_static_live_plots(self) -> None:
+        self.reset_plot(self.raw_xy_plot)
+        self.reset_plot(self.step_mag_plot)
+        self.add_static_live_curves()
+        self.clear_static_live_data()
+
     def build_raw_tab(self) -> None:
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
@@ -759,34 +848,17 @@ class Window:
         geometry_tab = QtWidgets.QWidget()
         geometry_grid = QtWidgets.QGridLayout(geometry_tab)
 
-        self.raw_xy_plot = self.add_plot(geometry_grid, 0, 0, "Raw XY Loci", "static_raw_xy")
+        self.raw_xy_plot = self.add_plot(geometry_grid, 0, 0, "Magnetic Field XY", "static_raw_xy")
         self.raw_xy_plot.setLabel("bottom", "X")
         self.raw_xy_plot.setLabel("left", "Y")
         self.raw_xy_plot.setAspectLocked(True)
         self.raw_xy_plot.addLegend()
-        self.static_live_forward_curve = self.raw_xy_plot.plot(
-            [],
-            [],
-            pen=None,
-            symbol="o",
-            symbolSize=5,
-            symbolBrush=pg.mkBrush(46, 204, 113, 140),
-            name="forward live",
-        )
-        self.static_live_reverse_curve = self.raw_xy_plot.plot(
-            [],
-            [],
-            pen=None,
-            symbol="o",
-            symbolSize=5,
-            symbolBrush=pg.mkBrush(231, 76, 60, 140),
-            name="reverse live",
-        )
 
-        self.step_mag_plot = self.add_plot(geometry_grid, 0, 1, "Reduced Field vs Step", "static_step_mag")
+        self.step_mag_plot = self.add_plot(geometry_grid, 0, 1, "Magnetic Field vs Step", "static_step_mag")
         self.step_mag_plot.setLabel("bottom", "Step")
         self.step_mag_plot.setLabel("left", "Raw Field")
         self.step_mag_plot.addLegend()
+        self.add_static_live_curves()
         subtabs.addTab(geometry_tab, "Geometry")
 
         residual_tab = QtWidgets.QWidget()
@@ -832,28 +904,8 @@ class Window:
         self.summary_box.setPlainText("")
         for _, plot in self.plot_widgets:
             self.reset_plot(plot)
-        self.static_live_forward_x.clear()
-        self.static_live_forward_y.clear()
-        self.static_live_reverse_x.clear()
-        self.static_live_reverse_y.clear()
-        self.static_live_forward_curve = self.raw_xy_plot.plot(
-            [],
-            [],
-            pen=None,
-            symbol="o",
-            symbolSize=5,
-            symbolBrush=pg.mkBrush(46, 204, 113, 140),
-            name="forward live",
-        )
-        self.static_live_reverse_curve = self.raw_xy_plot.plot(
-            [],
-            [],
-            pen=None,
-            symbol="o",
-            symbolSize=5,
-            symbolBrush=pg.mkBrush(231, 76, 60, 140),
-            name="reverse live",
-        )
+        self.add_static_live_curves()
+        self.clear_static_live_data()
         self.raw_x_curve = self.raw_mag_plot.plot(name="X", pen=pg.mkPen("#e74c3c", width=2))
         self.raw_y_curve = self.raw_mag_plot.plot(name="Y", pen=pg.mkPen("#2ecc71", width=2))
         self.raw_z_curve = self.raw_mag_plot.plot(name="Z", pen=pg.mkPen("#3498db", width=2))
@@ -1352,12 +1404,7 @@ class Window:
         self.close_client()
         self.capture_count = 0
         self.bin_count = 0
-        self.static_live_forward_x.clear()
-        self.static_live_forward_y.clear()
-        self.static_live_reverse_x.clear()
-        self.static_live_reverse_y.clear()
-        self.static_live_forward_curve.setData([], [])
-        self.static_live_reverse_curve.setData([], [])
+        self.reset_static_live_plots()
         self.address = int(self.esc_box.currentData())
         self.port = self.selected_port()
         self.stage_text = "calibration start"
@@ -1392,15 +1439,21 @@ class Window:
         self.stage_text = calibration_progress_text(next_index, CAL_CAPTURE_TOTAL_POINTS) if active else "capture done"
         self.refresh_status()
 
-    def on_capture_sample(self, sweep_dir: int, x: int, y: int, _z: int, _faults: int) -> None:
+    def on_capture_sample(self, step_index: int, sweep_dir: int, x: int, y: int, _z: int, _faults: int) -> None:
         if sweep_dir == 0:
+            self.static_live_forward_step.append(step_index)
             self.static_live_forward_x.append(x)
             self.static_live_forward_y.append(y)
             self.static_live_forward_curve.setData(self.static_live_forward_x, self.static_live_forward_y)
+            self.static_live_forward_x_curve.setData(self.static_live_forward_step, self.static_live_forward_x)
+            self.static_live_forward_y_curve.setData(self.static_live_forward_step, self.static_live_forward_y)
         else:
+            self.static_live_reverse_step.append(step_index)
             self.static_live_reverse_x.append(x)
             self.static_live_reverse_y.append(y)
             self.static_live_reverse_curve.setData(self.static_live_reverse_x, self.static_live_reverse_y)
+            self.static_live_reverse_x_curve.setData(self.static_live_reverse_step, self.static_live_reverse_x)
+            self.static_live_reverse_y_curve.setData(self.static_live_reverse_step, self.static_live_reverse_y)
 
     def on_upload(self, done: int, total: int) -> None:
         self.stage_text = "upload"
@@ -1483,23 +1536,14 @@ class Window:
             name="reverse reduced",
         )
 
-        if static.affine_q20 is None or static.angle_lut is None:
-            self.bin_count = len(static.reduced_points)
-            self.refresh_status()
-            return
-
         self.reset_plot(self.step_mag_plot)
-        self.reset_plot(self.residual_plot)
-        coeffs = static.affine_q20
-        lut = static.angle_lut
-
-        step_x = list(range(CAL_POINTS_PER_SWEEP))
         for rows, prefix, x_color, y_color in (
             (fwd, "forward", "#27ae60", "#2e86ab"),
             (rev, "reverse", "#c0392b", "#8e44ad"),
         ):
+            steps = [row["step_index"] for row in rows]
             self.step_mag_plot.plot(
-                step_x,
+                steps,
                 [row["x"] for row in rows],
                 pen=pg.mkPen(x_color, width=2),
                 symbol="o",
@@ -1507,7 +1551,7 @@ class Window:
                 name=f"{prefix} X",
             )
             self.step_mag_plot.plot(
-                step_x,
+                steps,
                 [row["y"] for row in rows],
                 pen=pg.mkPen(y_color, width=2),
                 symbol="t",
@@ -1515,6 +1559,16 @@ class Window:
                 name=f"{prefix} Y",
             )
 
+        if static.affine_q20 is None or static.angle_lut is None:
+            self.bin_count = len(static.reduced_points)
+            self.refresh_status()
+            return
+
+        self.reset_plot(self.residual_plot)
+        coeffs = static.affine_q20
+        lut = static.angle_lut
+
+        step_x = list(range(CAL_POINTS_PER_SWEEP))
         forward_err: list[float] = []
         reverse_err: list[float] = []
         target_turn16 = np.arange(CAL_POINTS_PER_SWEEP, dtype=np.float64) * (65536.0 / CAL_POINTS_PER_SWEEP)

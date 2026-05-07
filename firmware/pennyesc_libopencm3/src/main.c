@@ -40,10 +40,10 @@
 #define CONTROL_GAIN_SCALE (1 << CONTROL_GAIN_Q)
 #define CONTROL_TURN32_NUM 25
 #define CONTROL_TURN32_SHIFT 26
-#define ADVANCE_DEG 30
+#define ADVANCE_DEG 90
 #define LEAD_DEFAULT_TURN16 ((int32_t)(((int32_t)ADVANCE_DEG * 65536 + 180) / 360))
-#define SECTOR_ALIGNMENT_DEG 240
-#define SECTOR_ALIGNMENT_TURN16 ((int32_t)(((int32_t)SECTOR_ALIGNMENT_DEG * 65536 + 180) / 360))
+#define COMMUTATION_ALIGNMENT_DEG 300
+#define COMMUTATION_ALIGNMENT_TURN16 ((int32_t)(((int32_t)COMMUTATION_ALIGNMENT_DEG * 65536 + 180) / 360))
 #define REVERSE_HALL_PHASE_TURN16 32768
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
@@ -800,7 +800,7 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
 static int32_t commutation_phase_at_tick(uint16_t tick, int direction)
 {
     int32_t rotor_electrical = observer_position_at_tick(tick) * POLE_PAIRS;
-    int32_t phase = rotor_electrical + SECTOR_ALIGNMENT_TURN16 - current_lead_turn16;
+    int32_t phase = rotor_electrical + COMMUTATION_ALIGNMENT_TURN16 - current_lead_turn16;
     if (direction < 0) {
         phase -= REVERSE_HALL_PHASE_TURN16;
     }
