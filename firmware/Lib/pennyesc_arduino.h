@@ -59,7 +59,7 @@ struct PennyEscEncoderData {
 
 class PennyEsc {
 public:
-    PennyEsc(uint8_t address = 0) : address_(address) {}
+    PennyEsc(uint8_t address = 1) : address_(address) {}
 
     void begin(
         HardwareSerial &serial = Serial1,
@@ -359,7 +359,7 @@ private:
     PennyEscPins pins_;
     uint32_t baud_ = PENNYESC_BAUD_UPDATE;
     uint32_t config_ = SERIAL_8N1;
-    uint8_t address_ = 0u;
+    uint8_t address_ = 1u;
 };
 
 class PennyEscBridge {

@@ -6,7 +6,7 @@ import sys
 
 # Configuration
 SERIAL_PORT = "/dev/cu.usbmodem1101"  # Adjust as needed
-BAUD_RATE = 921600 # Matches src/main.cpp
+BAUD_RATE = 115200 # Matches ESP32 Serial.begin()
 UDP_IP = "127.0.0.1"
 UDP_PORT = 9870
 
@@ -76,4 +76,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

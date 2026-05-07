@@ -7,7 +7,7 @@ static PennyEsc esc(ESC0);
 void setup()
 {
     Serial.begin(115200);
-    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_UPDATE);
+    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
     delay(100);
     Serial.println("pennyesc demo");
 }

@@ -6,7 +6,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pennycal import (  # noqa: E402
+    CAL_CAPTURE_POINTS_PER_DIR,
+    CAL_CAPTURE_TOTAL_POINTS,
     CAL_POINTS_PER_SWEEP,
+    CAL_ROTATIONS_PER_DIR,
     CAL_TOTAL_POINTS,
     CapturePoint,
     CalibrationError,
@@ -14,6 +17,7 @@ from pennycal import (  # noqa: E402
     circular_mean_turn16,
     commutation_step_center_turn16,
     pseudo_index,
+    reduce_capture_points,
     solve_capture,
     solve_legacy_csv,
 )
@@ -48,6 +52,39 @@ class SolverTests(unittest.TestCase):
 
         with self.assertRaises(CalibrationError):
             solve_capture(points)
+
+    def test_reduce_capture_preserves_step_labels(self) -> None:
+        points = []
+        for sweep_dir in (0, 1):
+            base = 0 if sweep_dir == 0 else CAL_CAPTURE_POINTS_PER_DIR
+            for rotation in range(CAL_ROTATIONS_PER_DIR):
+                for local in range(CAL_POINTS_PER_SWEEP):
+                    raw_index = base + rotation * CAL_POINTS_PER_SWEEP + local
+                    step = local if sweep_dir == 0 else CAL_POINTS_PER_SWEEP - 1 - local
+                    x = step * 100 + rotation
+                    y = step * -100 - rotation
+                    points.append(CapturePoint(raw_index, step, sweep_dir, x, y, 0, 0, 0, 0))
+
+        self.assertEqual(len(points), CAL_CAPTURE_TOTAL_POINTS)
+        reduced = reduce_capture_points(points)
+        self.assertEqual(len(reduced), CAL_TOTAL_POINTS)
+        for point in reduced:
+            self.assertEqual(point.x, point.step_index * 100 + 1)
+            self.assertEqual(point.y, point.step_index * -100 - 1)
+
+    def test_reduce_capture_rejects_noisy_sample_window(self) -> None:
+        points = []
+        for sweep_dir in (0, 1):
+            base = 0 if sweep_dir == 0 else CAL_CAPTURE_POINTS_PER_DIR
+            for rotation in range(CAL_ROTATIONS_PER_DIR):
+                for local in range(CAL_POINTS_PER_SWEEP):
+                    raw_index = base + rotation * CAL_POINTS_PER_SWEEP + local
+                    step = local if sweep_dir == 0 else CAL_POINTS_PER_SWEEP - 1 - local
+                    spread = 20000 if raw_index == 0 else 0
+                    points.append(CapturePoint(raw_index, step, sweep_dir, 0, 0, 0, 0, spread, 0))
+
+        with self.assertRaisesRegex(CalibrationError, "capture sample spread too high"):
+            reduce_capture_points(points)
 
     def test_pseudo_index_range(self) -> None:
         values = {pseudo_index(1000, 0), pseudo_index(0, 1000), pseudo_index(-1000, 0), pseudo_index(0, -1000)}

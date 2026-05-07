@@ -9,7 +9,7 @@
 | GPIO 13 (TX) | PA10 (USART2 RX) |
 | GPIO 11 | GND |
 
-The main control firmware uses **921600 baud, 8N1** between them.
+The current UART app uses **230400 baud, 8N1** by default. The update/boot path uses **115200 baud**.
 
 ## 2. Flash Firmware
 
@@ -52,11 +52,11 @@ ESP32 sketches can use [`Lib/pennyesc_arduino.h`](Lib/pennyesc_arduino.h) direct
 ```cpp
 #include "pennyesc_arduino.h"
 
-PennyEsc esc(0);
+PennyEsc esc(1);
 
 void setup() {
     Serial.begin(115200);
-    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_UPDATE);
+    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
 }
 
 void loop() {
@@ -77,7 +77,7 @@ Open ESP32 serial monitor at 115200 baud:
 pio device monitor -b 115200
 ```
 
-You should see: `BLDC Controller Ready`
+The default `main` environment prints periodic status. For an interactive motor test, build and flash the `motortest` environment.
 
 ### Command Reference
 
@@ -160,100 +160,7 @@ p-300         # Reverse pulse
 
 ## 4. Serial Protocol Reference
 
-**UART Settings:** 921600 baud, 8N1, no flow control
-
-**CRC-8:** Polynomial 0x07 (CRC-8/CCITT), initial value 0x00
-
-### Packet Structure
-
-All packets start with `0xAA` and end with a CRC-8 byte computed over all preceding bytes.
-
-```
-TX: [START=0xAA] [CMD] [PAYLOAD...] [CRC8]
-RX: [START=0xAA] [STATUS] [POS_0..3] [VEL_0..3] [CRC8]
-```
-
-### Commands (Host to PennyESC)
-
-| Command | Code | Payload | Total Length |
-|---------|------|---------|--------------|
-| Poll | 0x03 | none | 3 bytes |
-| Set Duty | 0x02 | int16 (little-endian) | 5 bytes |
-| Set Position | 0x01 | int32 turn32 (LE, 65536 = 1 rev) | 7 bytes |
-
-### Response (PennyESC to Host)
-
-Always 11 bytes:
-
-| Byte | Field | Description |
-|------|-------|-------------|
-| 0 | START | 0xAA |
-| 1 | STATUS | Bit 0: position reached, Bit 1: error |
-| 2-5 | position | int32 turn32, 65536 = 1 mechanical revolution |
-| 6-9 | velocity | int32 turn32/second |
-| 10 | CRC8 | CRC of bytes 0-9 |
-
-### Byte-Level Examples
-
-**Example 1: Poll Command**
-
-Request current position and velocity:
-
-```
-TX: AA 03 8E
-     │  │  └── CRC8 of [AA 03]
-     │  └───── CMD_POLL
-     └──────── START_BYTE
-```
-
-**Example 2: Set Duty = 150**
-
-Duty 150 = 0x0096 (little-endian: 96 00):
-
-```
-TX: AA 02 96 00 E7
-     │  │  └──┴── int16 duty = 150
-     │  └──────── CMD_SET_DUTY
-     └─────────── START_BYTE
-```
-
-**Example 3: Set Duty = -150**
-
-Duty -150 = 0xFF6A (little-endian: 6A FF):
-
-```
-TX: AA 02 6A FF 2C
-     │  │  └──┴── int16 duty = -150
-     │  └──────── CMD_SET_DUTY
-     └─────────── START_BYTE
-```
-
-**Example 4: Set Position = 1 revolution**
-
-Position 65536 = 0x00010000 (little-endian: 00 00 01 00):
-
-```
-TX: AA 01 00 00 01 00 xx
-     │  │  └────────┴── int32 position_turn32 = 65536
-     │  └────────────── CMD_SET_POSITION
-     └───────────────── START_BYTE
-```
-
-**Example 5: Response Parsing**
-
-Response when motor is at position 1 rev, velocity 2 rev/s:
-
-```
-RX: AA 00 00 00 01 00 00 00 02 00 xx
-     │  │  └────────┴── position_turn32 = 65536 = 1 rev
-     │  │              └────────┴── velocity_turn32_per_s = 131072 = 2 rev/s
-     │  └── status = 0 (moving)
-     └───── START_BYTE
-
-Position reached (status bit 0 set):
-RX: AA 01 ...
-     │  └── status = 1 (position reached)
-```
+See [`PENNYESC_PROTOCOL_AND_ARDUINO.md`](PENNYESC_PROTOCOL_AND_ARDUINO.md) for the current ESP32 Arduino API, packet format, command table, safe first tests, and learning outline.
 
 ### Units
 

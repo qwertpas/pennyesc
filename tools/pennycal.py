@@ -58,6 +58,7 @@ CAL_TOTAL_POINTS = CAL_POINTS_PER_SWEEP * CAL_SWEEP_COUNT
 CAL_ROTATIONS_PER_DIR = 3
 CAL_CAPTURE_POINTS_PER_DIR = CAL_POINTS_PER_SWEEP * CAL_ROTATIONS_PER_DIR
 CAL_CAPTURE_TOTAL_POINTS = CAL_TOTAL_POINTS * CAL_ROTATIONS_PER_DIR
+MAX_CAPTURE_SAMPLE_SPREAD = 10000
 
 CAL_MAGIC = 0x314C4143
 CAL_VERSION = 3
@@ -939,6 +940,13 @@ def reduce_capture_points(points: Sequence[CapturePoint]) -> list[CapturePoint]:
         raise CalibrationError(f"capture did not return all {CAL_CAPTURE_TOTAL_POINTS} points")
     if [point.index for point in ordered] != list(range(CAL_CAPTURE_TOTAL_POINTS)):
         raise CalibrationError("capture indices are incomplete")
+    noisy = [point for point in ordered if point.sample_spread > MAX_CAPTURE_SAMPLE_SPREAD]
+    if noisy:
+        point = noisy[0]
+        raise CalibrationError(
+            "capture sample spread too high at index %d step %d: %d"
+            % (point.index, point.step_index, point.sample_spread)
+        )
 
     data = {}
     for sweep_dir in (0, 1):
@@ -972,27 +980,6 @@ def reduce_capture_points(points: Sequence[CapturePoint]) -> list[CapturePoint]:
         xs, ys, zs, radii, spreads, duties, seen = data[sweep_dir]
         if not np.all(seen):
             raise CalibrationError("missing sweep samples")
-
-        ref_x = xs[0].astype(np.float64)
-        ref_y = ys[0].astype(np.float64)
-        for rotation in range(1, CAL_ROTATIONS_PER_DIR):
-            best_shift = 0
-            best_score: float | None = None
-            for shift in range(CAL_POINTS_PER_SWEEP):
-                sx = np.roll(xs[rotation], shift)
-                sy = np.roll(ys[rotation], shift)
-                score = float(np.sum((sx - ref_x) ** 2 + (sy - ref_y) ** 2))
-                if best_score is None or score < best_score:
-                    best_score = score
-                    best_shift = shift
-            xs[rotation] = np.roll(xs[rotation], best_shift)
-            ys[rotation] = np.roll(ys[rotation], best_shift)
-            zs[rotation] = np.roll(zs[rotation], best_shift)
-            radii[rotation] = np.roll(radii[rotation], best_shift)
-            spreads[rotation] = np.roll(spreads[rotation], best_shift)
-            duties[rotation] = np.roll(duties[rotation], best_shift)
-            ref_x = np.mean(xs[: rotation + 1], axis=0)
-            ref_y = np.mean(ys[: rotation + 1], axis=0)
 
         avg_x = np.rint(np.mean(xs, axis=0)).astype(np.int64)
         avg_y = np.rint(np.mean(ys, axis=0)).astype(np.int64)
