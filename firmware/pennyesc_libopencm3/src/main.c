@@ -40,10 +40,8 @@
 #define CONTROL_GAIN_SCALE (1 << CONTROL_GAIN_Q)
 #define CONTROL_TURN32_NUM 25
 #define CONTROL_TURN32_SHIFT 26
-#define ADVANCE_DEG 90
+#define ADVANCE_DEG 15
 #define LEAD_DEFAULT_TURN16 ((int32_t)(((int32_t)ADVANCE_DEG * 65536 + 180) / 360))
-#define COMMUTATION_ALIGNMENT_DEG 300
-#define COMMUTATION_ALIGNMENT_TURN16 ((int32_t)(((int32_t)COMMUTATION_ALIGNMENT_DEG * 65536 + 180) / 360))
 #define REVERSE_HALL_PHASE_TURN16 32768
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
@@ -592,7 +590,7 @@ static void update_position_from_angle(uint16_t angle_turn16)
 
 static int32_t forward_position_from_sensor(int32_t position)
 {
-    return pennyesc_calibration_forward_angle_sign() < 0 ? -position : position;
+    return position;
 }
 
 static int32_t position_from_zero(int32_t position)
@@ -800,7 +798,9 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
 static int32_t commutation_phase_at_tick(uint16_t tick, int direction)
 {
     int32_t rotor_electrical = observer_position_at_tick(tick) * POLE_PAIRS;
-    int32_t phase = rotor_electrical + COMMUTATION_ALIGNMENT_TURN16 - current_lead_turn16;
+    int32_t phase = rotor_electrical +
+                    pennyesc_calibration_commutation_alignment_turn16() +
+                    current_lead_turn16;
     if (direction < 0) {
         phase -= REVERSE_HALL_PHASE_TURN16;
     }
@@ -1446,7 +1446,7 @@ static void capture_tick_1ms(void)
         return;
     }
 
-    int16_t rpm = turn32_per_s_to_rpm(velocity_turn32_per_s);
+    int16_t rpm = turn32_per_s_to_rpm(forward_position_from_sensor(velocity_turn32_per_s));
     capture_state.elapsed_ms++;
 
     capture_state.sample_ticks++;
@@ -1929,6 +1929,7 @@ static void handle_cal_info(void)
     out.valid = blob ? 1u : 0u;
     out.blob_size = blob ? blob->size : 0u;
     out.blob_crc32 = blob ? blob->crc32 : 0u;
+    out.commutation_alignment_turn16 = blob ? blob->commutation_alignment_turn16 : 0u;
     send_frame(PNY_CMD_CAL, &out, sizeof(out));
 }
 

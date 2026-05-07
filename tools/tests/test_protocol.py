@@ -78,11 +78,13 @@ class ProtocolTests(unittest.TestCase):
     def test_blob_pack_and_validate(self) -> None:
         affine_q20 = (100, 0, 0, 0, 100, 0)
         angle_lut = tuple(range(256))
-        blob = build_blob(affine_q20, angle_lut, 1.25, 0.75, -1)
+        blob = build_blob(affine_q20, angle_lut, 1.25, 0.75, 12345, -1)
         self.assertEqual(len(blob), CAL_BLOB_SIZE)
         valid, crc32 = validate_blob(blob)
         self.assertTrue(valid)
         self.assertNotEqual(crc32, 0)
+        self.assertEqual(int.from_bytes(blob[552:554], "little"), 12345)
+        self.assertEqual(int.from_bytes(blob[554:555], "little", signed=True), -1)
 
     def test_blob_chunks_reassemble(self) -> None:
         data = bytes(range(256)) * 2 + bytes(range(128))

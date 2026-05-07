@@ -145,6 +145,11 @@ int8_t pennyesc_calibration_forward_angle_sign(void)
     return active_valid ? active_blob->forward_angle_sign : 1;
 }
 
+uint16_t pennyesc_calibration_commutation_alignment_turn16(void)
+{
+    return active_valid ? active_blob->commutation_alignment_turn16 : 0u;
+}
+
 uint32_t pennyesc_calibration_crc32(const void *data, uint32_t len)
 {
     const uint8_t *bytes = (const uint8_t *)data;

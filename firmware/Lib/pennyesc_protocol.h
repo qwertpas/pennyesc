@@ -163,6 +163,7 @@ typedef struct __attribute__((packed)) {
     uint8_t valid;
     uint16_t blob_size;
     uint32_t blob_crc32;
+    uint16_t commutation_alignment_turn16;
 } pny_cal_info_payload_t;
 
 typedef struct __attribute__((packed)) {

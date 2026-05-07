@@ -60,24 +60,20 @@ CAL_CAPTURE_POINTS_PER_DIR = CAL_POINTS_PER_SWEEP * CAL_ROTATIONS_PER_DIR
 CAL_CAPTURE_TOTAL_POINTS = CAL_TOTAL_POINTS * CAL_ROTATIONS_PER_DIR
 
 CAL_MAGIC = 0x314C4143
-CAL_VERSION = 2
+CAL_VERSION = 3
 CAL_BLOB_SIZE = 640
 AFFINE_SHIFT = 20
 AFFINE_TARGET_SCALE = 16384.0
+POLE_PAIRS = 6
 DEFAULT_CHUNK_SIZE = 48
 BRIDGE_IDLE_S = 2.7
 MAX_FIT_ERROR_DEG = 8.0
 MAX_SWEEP_DELTA_DEG = 12.5
 HOST_FRAME_BYTE_GAP_S = 0.0005
 POST_COMMIT_SETTLE_S = 2.0
-FORWARD_SIGN_TEST_DUTY = 150
-FORWARD_SIGN_TEST_ADVANCE_DEG = 90
-FORWARD_SIGN_TEST_RUN_S = 0.8
 TURN32_PER_REV = 65536.0
 TURN32_TO_RAD = (2.0 * math.pi) / TURN32_PER_REV
 RAD_TO_TURN32 = TURN32_PER_REV / (2.0 * math.pi)
-FORWARD_SIGN_TEST_MIN_TURN32 = 834
-FORWARD_SIGN_TEST_ATTEMPTS = 3
 CONTROL_GAIN_SCALE = 256.0
 
 class CalibrationError(RuntimeError):
@@ -172,6 +168,7 @@ class CalibrationInfo:
     valid: int
     blob_size: int
     blob_crc32: int
+    commutation_alignment_turn16: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -180,25 +177,10 @@ class SolvedCalibration:
     angle_lut: tuple[int, ...]
     fit_max_error_deg: float
     sweep_delta_deg: float
+    commutation_alignment_turn16: int
     forward_angle_sign: int
     blob: bytes
     blob_crc32: int
-
-
-@dataclasses.dataclass(frozen=True)
-class ForwardSignTest:
-    candidate_sign: int
-    advance_deg: int
-    start_position_turn32: int
-    end_position_turn32: int
-    delta_turn32: int
-    faults: int
-
-
-@dataclasses.dataclass(frozen=True)
-class ForwardSignResult:
-    forward_angle_sign: int
-    tests: tuple[ForwardSignTest, ...]
 
 
 def cal_point_step_index(point_index: int) -> int:
@@ -229,27 +211,32 @@ def cal_capture_step_index(raw_index: int) -> int:
     return CAL_POINTS_PER_SWEEP - 1 - local
 
 
-def pseudo_index(x: int, y: int) -> int:
+def pseudo_lookup(x: int, y: int) -> tuple[int, int]:
     ax = abs(x)
     ay = abs(y)
+    scale = SEGMENT_SIZE << 8
     if ax > ay:
         if x >= 0:
             octant = 0 if y >= 0 else 7
         else:
             octant = 3 if y >= 0 else 4
-        ratio = 0 if ax == 0 else (ay * SEGMENT_SIZE) // ax
+        ratio = 0 if ax == 0 else (ay * scale) // ax
     else:
         if y >= 0:
             octant = 1 if x >= 0 else 2
         else:
             octant = 6 if x >= 0 else 5
-        ratio = 0 if ay == 0 else (ax * SEGMENT_SIZE) // ay
+        ratio = 0 if ay == 0 else (ax * scale) // ay
 
-    if ratio >= SEGMENT_SIZE:
-        ratio = SEGMENT_SIZE - 1
+    if ratio >= scale:
+        ratio = scale - 1
     if octant & 1:
-        ratio = (SEGMENT_SIZE - 1) - ratio
-    return (octant << LUT_BITS) | ratio
+        ratio = (scale - 1) - ratio
+    return (octant << LUT_BITS) | (ratio >> 8), ratio & 0xFF
+
+
+def pseudo_index(x: int, y: int) -> int:
+    return pseudo_lookup(x, y)[0]
 
 
 def apply_affine_q20(x: np.ndarray, y: np.ndarray, coeffs_q20: Sequence[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -262,6 +249,53 @@ def apply_affine_q20(x: np.ndarray, y: np.ndarray, coeffs_q20: Sequence[int]) ->
 def turn16_error_deg(measured: int, target: float) -> float:
     delta = ((measured - target + 32768.0) % 65536.0) - 32768.0
     return abs(delta) * 360.0 / 65536.0
+
+
+def blend_angle_turn16(a: int, b: int, frac: int) -> int:
+    delta = ((b - a + 32768) & 0xFFFF) - 32768
+    value = delta * frac
+    if value >= 0:
+        value = (value + 128) >> 8
+    else:
+        value = -(((-value) + 128) >> 8)
+    return (a + value) & 0xFFFF
+
+
+def calibrated_angle_turn16(x: int, y: int, affine_q20: Sequence[int], angle_lut: Sequence[int]) -> int:
+    coeffs = tuple(int(value) for value in affine_q20)
+    u = ((int(x) * coeffs[0]) + (int(y) * coeffs[1]) + coeffs[2]) >> AFFINE_SHIFT
+    v = ((int(x) * coeffs[3]) + (int(y) * coeffs[4]) + coeffs[5]) >> AFFINE_SHIFT
+    index, frac = pseudo_lookup(u, v)
+    next_index = (index + 1) & (LUT_SIZE - 1)
+    return blend_angle_turn16(int(angle_lut[index]), int(angle_lut[next_index]), frac)
+
+
+def commutation_step_center_turn16(step_index: int) -> int:
+    return int(round((((step_index % 6) + 0.5) * 65536.0) / 6.0)) & 0xFFFF
+
+
+def circular_mean_turn16(values: Sequence[int]) -> int:
+    if not values:
+        raise CalibrationError("no angles to average")
+    total_x = sum(math.cos((int(value) & 0xFFFF) * (2.0 * math.pi / 65536.0)) for value in values)
+    total_y = sum(math.sin((int(value) & 0xFFFF) * (2.0 * math.pi / 65536.0)) for value in values)
+    if abs(total_x) < 1e-9 and abs(total_y) < 1e-9:
+        raise CalibrationError("alignment average is ambiguous")
+    return int(round((math.atan2(total_y, total_x) % (2.0 * math.pi)) * (65536.0 / (2.0 * math.pi)))) & 0xFFFF
+
+
+def solve_commutation_alignment(
+    points: Sequence[CapturePoint],
+    affine_q20: Sequence[int],
+    angle_lut: Sequence[int],
+) -> int:
+    offsets = []
+    for point in points:
+        angle = calibrated_angle_turn16(point.x, point.y, affine_q20, angle_lut)
+        rotor_electrical = (angle * POLE_PAIRS) & 0xFFFF
+        target = commutation_step_center_turn16(point.step_index)
+        offsets.append((target - rotor_electrical) & 0xFFFF)
+    return circular_mean_turn16(offsets)
 
 
 def _build_lut(anchor_indices: np.ndarray, anchor_turn16: np.ndarray) -> np.ndarray:
@@ -319,12 +353,15 @@ def build_blob(
     angle_lut: Sequence[int],
     fit_max_error_deg: float,
     sweep_delta_deg: float,
+    commutation_alignment_turn16: int,
     forward_angle_sign: int,
 ) -> bytes:
     if len(affine_q20) != 6:
         raise ValueError("expected 6 affine coefficients")
     if len(angle_lut) != LUT_SIZE:
         raise ValueError("expected 256 LUT entries")
+    if not 0 <= commutation_alignment_turn16 <= 0xFFFF:
+        raise ValueError("commutation_alignment_turn16 out of range")
     if forward_angle_sign not in (-1, 1):
         raise ValueError("forward_angle_sign must be -1 or 1")
 
@@ -332,11 +369,12 @@ def build_blob(
     sweep_x100 = max(0, min(0xFFFF, int(round(sweep_delta_deg * 100.0))))
 
     body = struct.pack(
-        "<6i256H2Hb87x",
+        "<6i256H3Hb85x",
         *affine_q20,
         *angle_lut,
         fit_x100,
         sweep_x100,
+        int(commutation_alignment_turn16),
         int(forward_angle_sign),
     )
     crc32 = zlib.crc32(body) & 0xFFFFFFFF
@@ -352,28 +390,11 @@ def validate_blob(blob: bytes) -> tuple[bool, int]:
     magic, version, size, crc32 = struct.unpack_from("<IHHI", blob, 0)
     if magic != CAL_MAGIC or version != CAL_VERSION or size != CAL_BLOB_SIZE:
         return False, 0
-    forward_angle_sign = struct.unpack_from("<b", blob, 552)[0]
+    forward_angle_sign = struct.unpack_from("<b", blob, 554)[0]
     if forward_angle_sign not in (-1, 1):
         return False, 0
     calc = zlib.crc32(blob[12:]) & 0xFFFFFFFF
     return calc == crc32, crc32
-
-
-def set_forward_angle_sign(solved: SolvedCalibration, forward_angle_sign: int) -> SolvedCalibration:
-    blob = build_blob(
-        solved.affine_q20,
-        solved.angle_lut,
-        solved.fit_max_error_deg,
-        solved.sweep_delta_deg,
-        forward_angle_sign,
-    )
-    _, blob_crc32 = validate_blob(blob)
-    return dataclasses.replace(
-        solved,
-        forward_angle_sign=int(forward_angle_sign),
-        blob=blob,
-        blob_crc32=blob_crc32,
-    )
 
 
 def iter_blob_chunks(blob: bytes, chunk_size: int = DEFAULT_CHUNK_SIZE) -> Iterable[tuple[int, bytes]]:
@@ -438,13 +459,22 @@ def solve_capture(points: Sequence[CapturePoint]) -> SolvedCalibration:
     if sweep_delta_deg > MAX_SWEEP_DELTA_DEG:
         raise CalibrationError(f"sweep disagreement too high: {sweep_delta_deg:.2f} deg")
 
-    blob = build_blob(affine_q20, angle_lut, fit_max_error_deg, sweep_delta_deg, 1)
+    commutation_alignment_turn16 = solve_commutation_alignment(ordered, affine_q20, angle_lut)
+    blob = build_blob(
+        affine_q20,
+        angle_lut,
+        fit_max_error_deg,
+        sweep_delta_deg,
+        commutation_alignment_turn16,
+        1,
+    )
     _, blob_crc32 = validate_blob(blob)
     return SolvedCalibration(
         affine_q20=affine_q20,
         angle_lut=angle_lut,
         fit_max_error_deg=fit_max_error_deg,
         sweep_delta_deg=sweep_delta_deg,
+        commutation_alignment_turn16=commutation_alignment_turn16,
         forward_angle_sign=1,
         blob=blob,
         blob_crc32=blob_crc32,
@@ -475,13 +505,19 @@ def solve_legacy_csv(path: Path) -> SolvedCalibration:
     xs = np.array([int(round(np.mean([pair[0] for pair in step_groups[idx]]))) for idx in range(CAL_POINTS_PER_SWEEP)])
     ys = np.array([int(round(np.mean([pair[1] for pair in step_groups[idx]]))) for idx in range(CAL_POINTS_PER_SWEEP)])
     affine_q20, angle_lut, fit_max_error_deg = _solve_anchor_set(xs, ys)
-    blob = build_blob(affine_q20, angle_lut, fit_max_error_deg, 0.0, 1)
+    legacy_points = [
+        CapturePoint(index, index, 0, int(xs[index]), int(ys[index]), 0, 0, 0, 0)
+        for index in range(CAL_POINTS_PER_SWEEP)
+    ]
+    commutation_alignment_turn16 = solve_commutation_alignment(legacy_points, affine_q20, angle_lut)
+    blob = build_blob(affine_q20, angle_lut, fit_max_error_deg, 0.0, commutation_alignment_turn16, 1)
     _, blob_crc32 = validate_blob(blob)
     return SolvedCalibration(
         affine_q20=affine_q20,
         angle_lut=angle_lut,
         fit_max_error_deg=fit_max_error_deg,
         sweep_delta_deg=0.0,
+        commutation_alignment_turn16=commutation_alignment_turn16,
         forward_angle_sign=1,
         blob=blob,
         blob_crc32=blob_crc32,
@@ -746,7 +782,7 @@ class Stm32Client:
 
     def cal_info(self) -> CalibrationInfo:
         payload = self.exchange_retry(CMD_CAL, struct.pack("<B", CAL_INFO), timeout=0.5)
-        return CalibrationInfo(*struct.unpack("<BBHI", payload))
+        return CalibrationInfo(*struct.unpack("<BBHIH", payload))
 
     def wait_until_ready(self, timeout: float = 8.0) -> Status:
         self.port.reset_input_buffer()
@@ -1028,56 +1064,9 @@ def verify_calibration(client: Stm32Client, solved: SolvedCalibration | None = N
         raise CalibrationError("stm32 reports invalid calibration blob")
     if solved is not None and info.blob_crc32 != solved.blob_crc32:
         raise CalibrationError("blob crc mismatch after commit")
+    if solved is not None and info.commutation_alignment_turn16 != solved.commutation_alignment_turn16:
+        raise CalibrationError("blob alignment mismatch after commit")
     return info
-
-
-def _run_forward_sign_test(client: Stm32Client) -> ForwardSignTest:
-    advance_deg = FORWARD_SIGN_TEST_ADVANCE_DEG
-    client.set_duty(0)
-    time.sleep(0.15)
-    client.set_advance_deg(advance_deg)
-    time.sleep(0.05)
-    start = client.get_status()
-    client.set_duty(FORWARD_SIGN_TEST_DUTY)
-    time.sleep(FORWARD_SIGN_TEST_RUN_S)
-    end = client.get_status()
-    client.set_duty(0)
-    time.sleep(0.15)
-    return ForwardSignTest(
-        candidate_sign=1,
-        advance_deg=int(advance_deg),
-        start_position_turn32=int(start.position_turn32),
-        end_position_turn32=int(end.position_turn32),
-        delta_turn32=int(end.position_turn32 - start.position_turn32),
-        faults=int(start.faults | end.faults),
-    )
-
-
-def measure_forward_angle_sign(client: Stm32Client) -> ForwardSignResult:
-    tests: list[ForwardSignTest] = []
-    clean: list[ForwardSignTest] = []
-    try:
-        for _ in range(FORWARD_SIGN_TEST_ATTEMPTS):
-            test = _run_forward_sign_test(client)
-            tests.append(test)
-            if test.faults == 0:
-                clean.append(test)
-                break
-            time.sleep(0.2)
-    finally:
-        try:
-            client.set_duty(0)
-        finally:
-            client.set_advance_deg(FORWARD_SIGN_TEST_ADVANCE_DEG)
-
-    if not clean:
-        raise CalibrationError("forward sign test reported faults")
-
-    best = max(clean, key=lambda test: abs(test.delta_turn32))
-    if abs(best.delta_turn32) < FORWARD_SIGN_TEST_MIN_TURN32:
-        raise CalibrationError("forward sign test did not move enough")
-
-    return ForwardSignResult(forward_angle_sign=1 if best.delta_turn32 > 0 else -1, tests=tuple(tests))
 
 
 def commit_calibration_blob(
@@ -1110,9 +1099,6 @@ def run_calibration(
 
     solved = solve_capture(points)
     commit_calibration_blob(client, solved, chunk_size, upload_cb=upload_cb)
-    forward_sign = measure_forward_angle_sign(client)
-    solved = set_forward_angle_sign(solved, forward_sign.forward_angle_sign)
-    commit_calibration_blob(client, solved, chunk_size, upload_cb=upload_cb)
     return solved
 
 
@@ -1128,17 +1114,24 @@ def command_calibrate(args: argparse.Namespace) -> int:
                 upload_cb=lambda done, total: print(f"upload {done}/{total}"),
             )
             print(
-                "solve fit_max_error=%.2fdeg sweep_delta=%.2fdeg forward_sign=%+d crc32=0x%08X"
+                "solve fit_max_error=%.2fdeg sweep_delta=%.2fdeg align=%u forward_sign=%+d crc32=0x%08X"
                 % (
                     solved.fit_max_error_deg,
                     solved.sweep_delta_deg,
+                    solved.commutation_alignment_turn16,
                     solved.forward_angle_sign,
                     solved.blob_crc32,
                 )
             )
             print(
-                "calibrated crc32=0x%08X fit=%.2fdeg sweep=%.2fdeg forward_sign=%+d"
-                % (solved.blob_crc32, solved.fit_max_error_deg, solved.sweep_delta_deg, solved.forward_angle_sign)
+                "calibrated crc32=0x%08X fit=%.2fdeg sweep=%.2fdeg align=%u forward_sign=%+d"
+                % (
+                    solved.blob_crc32,
+                    solved.fit_max_error_deg,
+                    solved.sweep_delta_deg,
+                    solved.commutation_alignment_turn16,
+                    solved.forward_angle_sign,
+                )
             )
         finally:
             bridge.exit_bridge()
@@ -1156,7 +1149,10 @@ def command_info(args: argparse.Namespace) -> int:
             bridge.exit_bridge()
 
     print_status(status)
-    print("blob_valid=%d blob_size=%d blob_crc32=0x%08X" % (info.valid, info.blob_size, info.blob_crc32))
+    print(
+        "blob_valid=%d blob_size=%d blob_crc32=0x%08X align=%u"
+        % (info.valid, info.blob_size, info.blob_crc32, info.commutation_alignment_turn16)
+    )
     return 0
 
 
@@ -1193,7 +1189,10 @@ def command_verify(args: argparse.Namespace) -> int:
         raise CalibrationError(f"verification saw faults 0x{status.faults:02X}")
 
     print_status(status)
-    print("verified crc32=0x%08X size=%d" % (info.blob_crc32, info.blob_size))
+    print(
+        "verified crc32=0x%08X size=%d align=%u"
+        % (info.blob_crc32, info.blob_size, info.commutation_alignment_turn16)
+    )
     return 0
 
 

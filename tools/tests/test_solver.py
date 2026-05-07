@@ -11,6 +11,8 @@ from pennycal import (  # noqa: E402
     CapturePoint,
     CalibrationError,
     LUT_SIZE,
+    circular_mean_turn16,
+    commutation_step_center_turn16,
     pseudo_index,
     solve_capture,
     solve_legacy_csv,
@@ -51,6 +53,14 @@ class SolverTests(unittest.TestCase):
         values = {pseudo_index(1000, 0), pseudo_index(0, 1000), pseudo_index(-1000, 0), pseudo_index(0, -1000)}
         self.assertTrue(all(0 <= value < LUT_SIZE for value in values))
         self.assertEqual(len(values), 4)
+
+    def test_alignment_average_wraparound(self) -> None:
+        mean = circular_mean_turn16((65530, 4, 8))
+        self.assertTrue(mean < 16 or mean > 65520)
+
+    def test_step_center_alignment(self) -> None:
+        self.assertEqual(commutation_step_center_turn16(0), 5461)
+        self.assertEqual(commutation_step_center_turn16(6), 5461)
 
 
 if __name__ == "__main__":

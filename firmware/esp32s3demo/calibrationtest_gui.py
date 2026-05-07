@@ -45,10 +45,8 @@ from pennycal import (  # noqa: E402
     apply_affine_q20,
     capture_points,
     commit_calibration_blob,
-    measure_forward_angle_sign,
     pseudo_index,
     reduce_capture_points,
-    set_forward_angle_sign,
     solve_capture,
 )
 from pnyproto import (  # noqa: E402
@@ -469,23 +467,7 @@ class TestWorker(QtCore.QThread):
                         "fit %.2f deg sweep %.2f deg crc32 0x%08X"
                         % (solved.fit_max_error_deg, solved.sweep_delta_deg, solved.blob_crc32)
                     )
-                    self.log.emit("upload temporary calibration")
-                    info = commit_calibration_blob(client, solved, self.chunk_size, upload_cb=self.on_upload)
-                    self.log.emit("measure forward advance sign")
-                    forward_sign = measure_forward_angle_sign(client)
-                    for test in forward_sign.tests:
-                        self.log.emit(
-                            "direction sign=%+d advance=%+d delta_turn32=%d"
-                            % (test.candidate_sign, test.advance_deg, test.delta_turn32)
-                        )
-                    solved = set_forward_angle_sign(solved, forward_sign.forward_angle_sign)
-                    session.static = build_static_result(raw_points, reduced_points, solved)
-                    if session.static is not None:
-                        session.static.forward_sign_tests = [
-                            dataclasses.asdict(test) for test in forward_sign.tests
-                        ]
-                    self.log.emit("direction sign=%+d" % solved.forward_angle_sign)
-                    self.log.emit("upload final calibration")
+                    self.log.emit("upload calibration")
                     info = commit_calibration_blob(client, solved, self.chunk_size, upload_cb=self.on_upload)
                     if session.static is not None:
                         session.static.blob_size = int(info.blob_size)
