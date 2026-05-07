@@ -8,7 +8,7 @@
 | GPIO 12 (RX) | PA9 (USART2 TX) |
 | GPIO 13 (TX) | PA10 (USART2 RX) |
 
-The current UART app uses **230400 baud, 8N1** by default. The update/boot path uses **115200 baud**.
+The current UART app uses **921600 baud, 8N1** by default. The update/boot path uses **115200 baud**.
 
 ## 2. Flash Firmware
 

@@ -68,7 +68,7 @@
 #define CAL_SAMPLE_INTERVAL_MS 2u
 #define CAL_SAMPLE_COUNT 16u
 #define UART_FRAME_TIMEOUT_MS 10u
-#define UART_APP_BAUD 230400u
+#define UART_APP_BAUD 921600u
 #define UART_DMA_RX_BUF_SIZE 64u
 #define UART_DMA_RX_BUF_MASK (UART_DMA_RX_BUF_SIZE - 1u)
 #define MCT_RUN_CHECK_MS 500u
@@ -1739,6 +1739,22 @@ static void handle_set_position(const uint8_t *payload, uint8_t len)
     send_status_response(PNY_CMD_SET_POSITION, control_apply());
 }
 
+static void handle_send_position(const uint8_t *payload, uint8_t len)
+{
+    if (len != 4u) {
+        return;
+    }
+
+    int32_t position_turn32;
+    memcpy(&position_turn32, payload, sizeof(position_turn32));
+
+    target_position_turn32 = position_turn32;
+    target_position_set = true;
+    if (current_mode != PNY_MODE_RUN) {
+        control_apply();
+    }
+}
+
 static void handle_set_velocity(const uint8_t *payload, uint8_t len)
 {
     if (len != 4u) {
@@ -2157,6 +2173,9 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
         break;
     case PNY_CMD_SET_POSITION:
         handle_set_position(payload, len);
+        break;
+    case PNY_CMD_SEND_POSITION:
+        handle_send_position(payload, len);
         break;
     case PNY_CMD_SET_VELOCITY:
         handle_set_velocity(payload, len);

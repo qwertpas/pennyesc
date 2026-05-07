@@ -6,7 +6,7 @@
 #include "pennyesc_protocol.h"
 
 static const uint32_t PENNYESC_BAUD_UPDATE = 115200u;
-static const uint32_t PENNYESC_BAUD_FAST = 230400u;
+static const uint32_t PENNYESC_BAUD_FAST = 921600u;
 static const uint32_t PENNYESC_ROM_BAUD = 115200u;
 static const float PENNYESC_TURN32_PER_REV = 65536.0f;
 static const float PENNYESC_TURN32_TO_RAD = 6.2831853f / PENNYESC_TURN32_PER_REV;
@@ -147,6 +147,19 @@ public:
         return setPositionTurn32((int32_t)(position_rad * PENNYESC_RAD_TO_TURN32), status, timeout_ms);
     }
 
+    bool sendPositionTurn32(int32_t position_turn32)
+    {
+        uint8_t payload[4];
+
+        memcpy(payload, &position_turn32, sizeof(position_turn32));
+        return sendFrame(PNY_CMD_SEND_POSITION, payload, sizeof(payload), false);
+    }
+
+    bool sendPositionRad(float position_rad)
+    {
+        return sendPositionTurn32((int32_t)(position_rad * PENNYESC_RAD_TO_TURN32));
+    }
+
     bool zeroPosition(PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
     {
         uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
@@ -176,6 +189,38 @@ public:
             return false;
         }
         if (!readFrame(PNY_CMD_SET_ADVANCE, frame, sizeof(frame), frame_len, timeout_ms)) {
+            return false;
+        }
+        if (status != 0) {
+            return parseStatus(frame, frame_len, *status);
+        }
+        PennyEscStatus ignore;
+        return parseStatus(frame, frame_len, ignore);
+    }
+
+    bool setControl(
+        float kp,
+        float kd,
+        float kv,
+        int16_t kf,
+        int16_t clip,
+        PennyEscStatus *status = 0,
+        uint32_t timeout_ms = 20u
+    )
+    {
+        pny_control_payload_t payload;
+        uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
+        uint8_t frame_len = 0u;
+
+        payload.kp_q8 = (int16_t)(kp * 256.0f);
+        payload.kd_q8 = (int16_t)(kd * 256.0f);
+        payload.kv_q8 = (int16_t)(kv * 256.0f);
+        payload.kf = kf;
+        payload.clip = clip;
+        if (!sendFrame(PNY_CMD_SET_CONTROL, &payload, sizeof(payload))) {
+            return false;
+        }
+        if (!readFrame(PNY_CMD_SET_CONTROL, frame, sizeof(frame), frame_len, timeout_ms)) {
             return false;
         }
         if (status != 0) {
@@ -235,7 +280,7 @@ public:
     }
 
 private:
-    bool sendFrame(uint8_t cmd, const void *payload, uint8_t payload_len)
+    bool sendFrame(uint8_t cmd, const void *payload, uint8_t payload_len, bool wait_for_tx = true)
     {
         uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
 
@@ -256,7 +301,9 @@ private:
 
         clearRx();
         serial().write(frame, (size_t)(4u + payload_len));
-        serial().flush();
+        if (wait_for_tx) {
+            serial().flush();
+        }
         return true;
     }
 

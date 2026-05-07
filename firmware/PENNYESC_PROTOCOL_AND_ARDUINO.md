@@ -57,6 +57,7 @@ Use `PennyEsc` unless you are writing host tools or bootloader code.
 | `getStatus(status)` | Reads position, velocity, duty, flags, faults, and sensor values. |
 | `setDuty(duty)` | Runs open-loop duty from `-799` to `799`. Start low. |
 | `setPositionRad(rad)` | Commands an absolute position in radians relative to the current zero. |
+| `sendPositionRad(rad)` | Sends a high-rate position target without waiting for a reply. |
 | `zeroPosition()` | Sets the current shaft position as zero. |
 | `setAdvanceDeg(deg)` | Sets commutation advance from `-180` to `180` degrees. |
 | `pollEncoder(data)` | Convenience wrapper around `getStatus()` for encoder-style reads. |
@@ -108,6 +109,7 @@ Commands are defined in `firmware/Lib/pennyesc_protocol.h`.
 | `PNY_CMD_SET_VELOCITY` | `0x7` | `int32 velocity_turn32_per_s` | `pny_status_payload_t` |
 | `PNY_CMD_SET_CONTROL` | `0x8` | `pny_control_payload_t` | `pny_status_payload_t` |
 | `PNY_CMD_STOP` | `0x9` | none | `pny_status_payload_t` |
+| `PNY_CMD_SEND_POSITION` | `0xA` | `int32 position_turn32` | none |
 | `PNY_CMD_ENTER_BOOT` | `0xB` | `uint32 PNY_BOOT_MAGIC` | result byte |
 | `PNY_CMD_SET_ADVANCE` | `0xC` | `int16 advance_deg` | `pny_status_payload_t` |
 | `PNY_CMD_SET_QUIET` | `0xD` | `uint16 hold_ms` | result byte |
