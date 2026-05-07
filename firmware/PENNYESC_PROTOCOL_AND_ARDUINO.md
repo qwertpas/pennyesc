@@ -6,7 +6,7 @@ This is the current guide for controlling PennyESC from an ESP32 Arduino sketch.
 
 1. Wire ESP32-S3 `RX=GPIO12` to PennyESC `PA9/TX`.
 2. Wire ESP32-S3 `TX=GPIO13` to PennyESC `PA10/RX`.
-3. Share ground. The default `PennyEscPins` also drives `GPIO11` low and `GPIO9` high for the existing test wiring.
+3. Share ground.
 4. Use `firmware/Lib/pennyesc_arduino.h` from the ESP32 PlatformIO project.
 5. Match the ESC address. The STM32 firmware default is address `1` unless built with a different `PNY_ESC_ADDRESS`.
 
@@ -22,8 +22,8 @@ PennyEscBridge bridge;
 void setup()
 {
     Serial.begin(115200);
-    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
-    bridge.begin(Serial, Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
+    esc.begin(Serial1);
+    bridge.beginBackground(Serial, Serial1);
 }
 
 void loop()
@@ -50,7 +50,10 @@ Use `PennyEsc` unless you are writing host tools or bootloader code.
 
 | Call | What it does |
 | --- | --- |
-| `begin(serial, pins, baud)` | Starts the ESC UART. Use `PENNYESC_BAUD_FAST` for the normal app. |
+| `begin(serial)` | Starts the ESC UART with default `RX=12`, `TX=13`, and fast baud. |
+| `begin(serial, rx, tx)` | Starts the ESC UART with custom pins and fast baud. |
+| `bridge.begin(usb, uart, rx, tx, address)` | Starts the serial-monitor bridge shell. |
+| `bridge.beginBackground(usb, uart, rx, tx, address)` | Starts the GUI bridge in the background using reserved `!#...` commands. |
 | `getStatus(status)` | Reads position, velocity, duty, flags, faults, and sensor values. |
 | `setDuty(duty)` | Runs open-loop duty from `-799` to `799`. Start low. |
 | `setPositionRad(rad)` | Commands an absolute position in radians relative to the current zero. |
@@ -140,6 +143,23 @@ All multi-byte fields are little-endian.
 
 ## Calibration GUI Bridge
 
-Add one global bridge object and call `bridge.begin(...)` in `setup()`. On ESP32 this starts a background bridge task, so the user sketch does not need bridge code in `loop()`.
+For dedicated bridge firmware, add one global bridge object, call `bridge.begin(...)` in `setup()`, and call `bridge.poll()` in `loop()`.
+
+```cpp
+PennyEscBridge bridge;
+
+void setup()
+{
+    Serial.begin(115200);
+    bridge.begin(Serial, Serial1, 13, 12, 2);
+}
+
+void loop()
+{
+    bridge.poll();
+}
+```
+
+For a bridge embedded inside another sketch, use `beginBackground(...)` so it runs as a background task and only consumes reserved `!#...` host commands.
 
 The bridge listens for reserved `!#...` commands from the host. Normal sketch serial input is left alone unless it starts with that bridge prefix. While bridge mode is active, `PennyEsc` commands from the sketch return `false` instead of writing to the ESC UART, leaving the calibration GUI in control until it sends `!#bridge off`.

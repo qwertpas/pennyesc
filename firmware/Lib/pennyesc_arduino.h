@@ -14,13 +14,6 @@ static const float PENNYESC_RAD_TO_TURN32 = PENNYESC_TURN32_PER_REV / 6.2831853f
 
 static volatile bool pennyesc_bridge_active = false;
 
-struct PennyEscPins {
-    int rx = 12;
-    int tx = 13;
-    int gnd = 11;
-    int pullup = 9;
-};
-
 struct PennyEscStatus {
     bool valid = false;
     uint8_t result = 0;
@@ -65,20 +58,14 @@ public:
 
     void begin(
         HardwareSerial &serial = Serial1,
-        const PennyEscPins &pins = PennyEscPins(),
-        uint32_t baud = PENNYESC_BAUD_UPDATE,
-        bool drive_power_pins = true
+        int rx = 12,
+        int tx = 13
     )
     {
         serial_ = &serial;
-        pins_ = pins;
-        if (drive_power_pins) {
-            pinMode(pins_.gnd, OUTPUT);
-            digitalWrite(pins_.gnd, LOW);
-            pinMode(pins_.pullup, OUTPUT);
-            digitalWrite(pins_.pullup, HIGH);
-        }
-        beginUart(baud, SERIAL_8N1);
+        rx_ = rx;
+        tx_ = tx;
+        beginUart(PENNYESC_BAUD_FAST, SERIAL_8N1);
     }
 
     void beginUart(uint32_t baud, uint32_t config)
@@ -86,7 +73,7 @@ public:
         baud_ = baud;
         config_ = config;
         serial().end();
-        serial().begin(baud_, config_, pins_.rx, pins_.tx);
+        serial().begin(baud_, config_, rx_, tx_);
     }
 
     void clearRx()
@@ -361,8 +348,9 @@ private:
     }
 
     HardwareSerial *serial_ = &Serial1;
-    PennyEscPins pins_;
-    uint32_t baud_ = PENNYESC_BAUD_UPDATE;
+    int rx_ = 12;
+    int tx_ = 13;
+    uint32_t baud_ = PENNYESC_BAUD_FAST;
     uint32_t config_ = SERIAL_8N1;
     uint8_t address_ = 1u;
 };
@@ -378,34 +366,23 @@ public:
     void begin(
         Stream &usb,
         HardwareSerial &uart = Serial1,
-        const PennyEscPins &pins = PennyEscPins(),
-        uint32_t app_baud = PENNYESC_BAUD_UPDATE,
-        bool drive_power_pins = true,
-        bool background = true,
-        bool prefix_only = true
+        int rx = 12,
+        int tx = 13,
+        uint8_t address = 1
     )
     {
-        usb_ = &usb;
-        uart_ = &uart;
-        pins_ = pins;
-        app_baud_ = app_baud;
-        prefix_only_ = prefix_only;
-        esc_.setAddress(address_);
-        if (drive_power_pins) {
-            pinMode(pins_.gnd, OUTPUT);
-            digitalWrite(pins_.gnd, LOW);
-            pinMode(pins_.pullup, OUTPUT);
-            digitalWrite(pins_.pullup, HIGH);
-        }
-        beginApp();
-        esc_.begin(*uart_, pins_, app_baud_, false);
-        delay(50);
-        if (background) {
-            startTask();
-        } else {
-            usb_->println("pennyesc-bootbridge");
-            printHelp();
-        }
+        beginMode(usb, uart, rx, tx, address, false, false);
+    }
+
+    void beginBackground(
+        Stream &usb,
+        HardwareSerial &uart = Serial1,
+        int rx = 12,
+        int tx = 13,
+        uint8_t address = 1
+    )
+    {
+        beginMode(usb, uart, rx, tx, address, true, true);
     }
 
     bool poll()
@@ -421,6 +398,32 @@ public:
     }
 
 private:
+    void beginMode(
+        Stream &usb,
+        HardwareSerial &uart,
+        int rx,
+        int tx,
+        uint8_t address,
+        bool background,
+        bool prefix_only
+    )
+    {
+        usb_ = &usb;
+        uart_ = &uart;
+        rx_ = rx;
+        tx_ = tx;
+        prefix_only_ = prefix_only;
+        setAddress(address);
+        beginApp();
+        esc_.begin(*uart_, rx_, tx_);
+        delay(50);
+        if (background) {
+            startTask();
+        } else {
+            usb_->println("pennyesc-bootbridge");
+            printHelp();
+        }
+    }
 #if defined(ARDUINO_ARCH_ESP32)
     static void taskMain(void *arg)
     {
@@ -445,25 +448,22 @@ private:
     void setUart(uint32_t baud, uint32_t config)
     {
         uart().end();
-        uart().begin(baud, config, pins_.rx, pins_.tx);
+        uart().begin(baud, config, rx_, tx_);
     }
 
     void beginApp()
     {
-        setUart(app_baud_, SERIAL_8N1);
-        uart_is_rom_ = false;
+        setUart(PENNYESC_BAUD_FAST, SERIAL_8N1);
     }
 
     void beginBoot()
     {
         setUart(PENNYESC_BAUD_UPDATE, SERIAL_8N1);
-        uart_is_rom_ = false;
     }
 
     void beginRom()
     {
         setUart(PENNYESC_ROM_BAUD, SERIAL_8E1);
-        uart_is_rom_ = true;
     }
 
     void flushUartRx()
@@ -504,7 +504,6 @@ private:
         flushUartRx();
         bridge_mode_ = mode;
         pennyesc_bridge_active = true;
-        bridge_last_activity_ms_ = millis();
 
         if (mode == 4u) {
             beginApp();
@@ -639,7 +638,6 @@ private:
             return;
         }
         uart().write((const uint8_t *)line_buf_, line_len_);
-        bridge_last_activity_ms_ = millis();
         bridge_escape_ms_ = 0u;
         line_len_ = 0u;
     }
@@ -671,7 +669,6 @@ private:
                 }
                 uint8_t byte = (uint8_t)ch;
                 uart().write(&byte, 1u);
-                bridge_last_activity_ms_ = millis();
                 continue;
             }
 
@@ -679,7 +676,6 @@ private:
                 flushBridgeEscape();
                 uint8_t byte = (uint8_t)ch;
                 uart().write(&byte, 1u);
-                bridge_last_activity_ms_ = millis();
                 continue;
             }
 
@@ -691,7 +687,6 @@ private:
                     flushBridgeEscape();
                     uint8_t byte = '\n';
                     uart().write(&byte, 1u);
-                    bridge_last_activity_ms_ = millis();
                 } else {
                     bridge_escape_ms_ = 0u;
                 }
@@ -707,7 +702,6 @@ private:
             flushBridgeEscape();
             uint8_t byte = (uint8_t)ch;
             uart().write(&byte, 1u);
-            bridge_last_activity_ms_ = millis();
         }
 
         if (line_len_ != 0u && (millis() - bridge_escape_ms_) > 2u) {
@@ -717,7 +711,6 @@ private:
         while (uart().available() > 0) {
             uint8_t byte = (uint8_t)uart().read();
             usb_->write(&byte, 1u);
-            bridge_last_activity_ms_ = millis();
         }
     }
 
@@ -726,13 +719,11 @@ private:
         while (usb_->available() > 0) {
             uint8_t byte = (uint8_t)usb_->read();
             uart().write(&byte, 1u);
-            bridge_last_activity_ms_ = millis();
         }
 
         while (uart().available() > 0) {
             uint8_t byte = (uint8_t)uart().read();
             usb_->write(&byte, 1u);
-            bridge_last_activity_ms_ = millis();
         }
     }
 
@@ -741,13 +732,11 @@ private:
     Stream *usb_ = &Serial;
     HardwareSerial *uart_ = &Serial1;
     PennyEsc esc_;
-    PennyEscPins pins_;
-    uint32_t app_baud_ = PENNYESC_BAUD_UPDATE;
+    int rx_ = 12;
+    int tx_ = 13;
     uint8_t address_ = 1u;
     uint8_t bridge_mode_ = 0u;
-    bool uart_is_rom_ = false;
     bool prefix_only_ = true;
-    uint32_t bridge_last_activity_ms_ = 0u;
     uint32_t bridge_escape_ms_ = 0u;
     char line_buf_[48];
     uint8_t line_len_ = 0u;

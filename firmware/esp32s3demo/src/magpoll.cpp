@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include "esc_address.h"
 #include "pennyesc_arduino.h"
 
 static PennyEsc esc(1);
@@ -46,7 +45,7 @@ static void handle_line(String line)
 void setup()
 {
     Serial.begin(115200);
-    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
+    esc.begin(Serial1);
     delay(100);
     print_help();
     Serial.printf("# esc=%u\n", esc.address());

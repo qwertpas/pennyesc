@@ -21,12 +21,10 @@
 #include "tmag5273.h"
 #include "angleLUT.h"
 
-#include "esc_address.h"
-
 #include <assert.h>
 // ============================================================================ 
 //Change this for every ESC you flash, maximum value of 15
-#define ESC_ADDRESS ESC0
+#define ESC_ADDRESS 1
 
 //WARNING: STATUS AND CMD fields for response and command packets can only be 4 bits wide
 #if ESC_ADDRESS > 0xF

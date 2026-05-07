@@ -7,7 +7,6 @@
 |----------|----------------------|
 | GPIO 12 (RX) | PA9 (USART2 TX) |
 | GPIO 13 (TX) | PA10 (USART2 RX) |
-| GPIO 11 | GND |
 
 The current UART app uses **230400 baud, 8N1** by default. The update/boot path uses **115200 baud**.
 
@@ -56,7 +55,7 @@ PennyEsc esc(1);
 
 void setup() {
     Serial.begin(115200);
-    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
+    esc.begin(Serial1);
 }
 
 void loop() {

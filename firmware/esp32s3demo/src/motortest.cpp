@@ -1,8 +1,7 @@
 #include <Arduino.h>
-#include "esc_address.h"
 #include "pennyesc_arduino.h"
 
-static PennyEsc esc(ESC0);
+static PennyEsc esc(1);
 static PennyEscBridge bridge;
 static PennyEscStatus last_status;
 static String input_line;
@@ -96,8 +95,8 @@ static void handle_line(String line)
 void setup()
 {
     Serial.begin(115200);
-    esc.begin(Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
-    bridge.begin(Serial, Serial1, PennyEscPins(), PENNYESC_BAUD_FAST);
+    esc.begin(Serial1);
+    bridge.beginBackground(Serial, Serial1);
     delay(100);
     Serial.println("pennyesc motortest");
     print_help();
