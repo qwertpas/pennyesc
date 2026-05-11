@@ -182,7 +182,7 @@ static volatile int16_t control_kf;
 static volatile int16_t control_clip = DEFAULT_CONTROL_CLIP;
 static volatile int32_t current_lead_turn16 = LEAD_DEFAULT_TURN16;
 static volatile int16_t observer_lead_us = OBSERVER_LEAD_US;
-static volatile uint8_t observer_mode = PNY_OBSERVER_LP4;
+static volatile uint8_t observer_mode = PNY_OBSERVER_AB_FAST;
 static volatile uint32_t pending_reset_ms;
 
 static volatile uint32_t isr_duration_us;
@@ -746,7 +746,7 @@ static int32_t clamp_position_error(int32_t error)
     return error;
 }
 
-static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, uint8_t alpha_div, uint8_t beta_div)
+static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, uint8_t alpha_div, uint16_t beta_div)
 {
     uint16_t dt_us = (uint16_t)(sample_tick - comm_scheduler.position_tick);
     if (dt_us == 0u || dt_us >= SENSOR_STALE_US) {
@@ -1510,16 +1510,16 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
         int32_t secant_velocity = comm_velocity_update(absolute_position_turn32, sample_tick);
         bool velocity_updated = false;
         switch (observer_mode) {
-        case PNY_OBSERVER_AB3:
-            observer_ab_update(absolute_position_turn32, sample_tick, 2u, 4u);
+        case PNY_OBSERVER_AB_FAST:
+            observer_ab_update(absolute_position_turn32, sample_tick, 8u, 128u);
             velocity_updated = true;
             break;
-        case PNY_OBSERVER_KCV1:
-            observer_ab_update(absolute_position_turn32, sample_tick, 2u, 8u);
+        case PNY_OBSERVER_AB_MID:
+            observer_ab_update(absolute_position_turn32, sample_tick, 12u, 192u);
             velocity_updated = true;
             break;
-        case PNY_OBSERVER_KCV2:
-            observer_ab_update(absolute_position_turn32, sample_tick, 4u, 8u);
+        case PNY_OBSERVER_AB_SLOW:
+            observer_ab_update(absolute_position_turn32, sample_tick, 16u, 256u);
             velocity_updated = true;
             break;
         default:
@@ -1528,15 +1528,15 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
         }
 
         if (!velocity_updated) {
-            if (observer_mode == PNY_OBSERVER_LP2 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
+            if (observer_mode == PNY_OBSERVER_SECANT && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
                 comm_velocity_turn32_per_s = secant_velocity;
-            } else if (observer_mode == PNY_OBSERVER_LP4 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
+            } else if (observer_mode == PNY_OBSERVER_SECANT_LP2 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
                 comm_velocity_turn32_per_s += (secant_velocity - comm_velocity_turn32_per_s) / 2;
-            } else if (observer_mode == PNY_OBSERVER_LP8 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
+            } else if (observer_mode == PNY_OBSERVER_SECANT_LP4 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
                 comm_velocity_turn32_per_s += (secant_velocity - comm_velocity_turn32_per_s) / 4;
-            } else if (observer_mode == PNY_OBSERVER_AB1 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
+            } else if (observer_mode == PNY_OBSERVER_SECANT_LP8 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
                 comm_velocity_turn32_per_s += (secant_velocity - comm_velocity_turn32_per_s) / 8;
-            } else if (observer_mode == PNY_OBSERVER_AB2 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
+            } else if (observer_mode == PNY_OBSERVER_SECANT_LP16 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
                 comm_velocity_turn32_per_s += (secant_velocity - comm_velocity_turn32_per_s) / 16;
             } else {
                 comm_velocity_turn32_per_s += (sample_velocity - comm_velocity_turn32_per_s) / 2;

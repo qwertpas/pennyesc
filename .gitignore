@@ -36,4 +36,6 @@ __pycache__
 
 
 tools/__pycache__
+tools/observer_step_sessions
+tools/observer_tune_sessions
 .pytest_cache

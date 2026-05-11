@@ -27,7 +27,7 @@ from pnyproto import (  # noqa: E402
     DEBUG_SET_OBSERVER,
     DEBUG_STEP_SET,
     DEBUG_STEP_TRANSITION,
-    OBSERVER_RAW,
+    OBSERVER_SAMPLE_LP2,
     FRAME_MAX_PAYLOAD,
     FRAME_START,
     RESULT_OK,
@@ -177,7 +177,7 @@ class StepperClient:
         payload = struct.pack("<BbH", DEBUG_STEP_TRANSITION, step, blank_ms)
         return unpack_status(self.exchange(CMD_DEBUG, payload, timeout=1.0))
 
-    def set_observer(self, lead_us: int, mode: int = OBSERVER_RAW) -> CaptureStatus:
+    def set_observer(self, lead_us: int, mode: int = OBSERVER_SAMPLE_LP2) -> CaptureStatus:
         return self._decode_capture_status(
             self.exchange_retry(CMD_DEBUG, struct.pack("<BhB", DEBUG_SET_OBSERVER, lead_us, mode))
         )
@@ -409,7 +409,7 @@ def run_interactive(client: StepperClient) -> None:
                 if len(args) not in {1, 2}:
                     print("usage: observer <lead_us> [mode]")
                     continue
-                mode = int(args[1], 0) if len(args) == 2 else OBSERVER_RAW
+                mode = int(args[1], 0) if len(args) == 2 else OBSERVER_SAMPLE_LP2
                 print_capture_status(client.set_observer(int(args[0], 0), mode))
                 continue
             if cmd in {"step", "hold"}:
@@ -478,7 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     observer = sub.add_parser("observer")
     observer.add_argument("lead_us", type=int)
-    observer.add_argument("--mode", type=int, default=OBSERVER_RAW)
+    observer.add_argument("--mode", type=int, default=OBSERVER_SAMPLE_LP2)
 
     step = sub.add_parser("step")
     step.add_argument("value", type=parse_step)

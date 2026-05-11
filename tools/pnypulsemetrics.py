@@ -17,7 +17,7 @@ if str(TOOLS_DIR) not in sys.path:
 
 from pennycal import EspBridge  # noqa: E402
 from pnystep import CaptureSample, StepperClient  # noqa: E402
-from pnyproto import OBSERVER_LP4, RESULT_OK  # noqa: E402
+from pnyproto import OBSERVER_SECANT_LP2, RESULT_OK  # noqa: E402
 
 ADVANCES = [30, 50, 70, 90, 110, 130, 150]
 DIRECTIONS = [1, -1]
@@ -395,7 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baseline-observer-lead-us", type=int, default=0)
     parser.add_argument("--baseline-observer-mode", type=int, default=0)
     parser.add_argument("--restore-observer-lead-us", type=int, default=450)
-    parser.add_argument("--restore-observer-mode", type=int, default=OBSERVER_LP4)
+    parser.add_argument("--restore-observer-mode", type=int, default=OBSERVER_SECANT_LP2)
     parser.add_argument("--baseline-ms", type=int, default=700)
     parser.add_argument("--baseline-average-ms", type=int, default=200)
     parser.add_argument("--pulse-ms", type=int, default=300)
@@ -419,7 +419,7 @@ def main() -> int:
     advances = args.advances if args.advances is not None else ADVANCES
     pulse_duties = args.pulse_duties if args.pulse_duties is not None else [args.pulse_duty]
     observer_leads = args.observer_leads if args.observer_leads is not None else [args.observer_lead_us]
-    observer_modes = args.observer_modes if args.observer_modes is not None else [OBSERVER_LP4]
+    observer_modes = args.observer_modes if args.observer_modes is not None else [OBSERVER_SECANT_LP2]
     with EspBridge(args.port) as bridge:
         bridge.enter_bridge(args.bridge_mode)
         client = StepperClient(bridge.serial, args.address)
