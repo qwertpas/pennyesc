@@ -45,7 +45,6 @@ static volatile async_state_t async_state;
 static volatile uint8_t async_rx[ASYNC_READ_LEN];
 static volatile uint8_t async_rx_index;
 static volatile tmag5273_xy_sample_t async_sample;
-static volatile uint32_t async_sequence;
 static volatile bool async_sample_ready;
 static volatile uint16_t async_start_phase_us;
 static volatile uint16_t last_sample_start_us;
@@ -298,7 +297,6 @@ void tmag5273_get_stats(tmag5273_stats_t *out)
     out->nack_count = tmag_stats.nack_count;
     out->recover_count = tmag_stats.recover_count;
     out->sample_count = tmag_stats.sample_count;
-    out->busy_count = tmag_stats.busy_count;
     out->sample_dt_us = tmag_stats.sample_dt_us;
 }
 
@@ -318,7 +316,6 @@ void tmag5273_async_cancel(void)
 bool tmag5273_async_start_xy(uint16_t start_phase_us)
 {
     if (async_state != ASYNC_IDLE || (I2C_ISR(I2C1) & I2C_ISR_BUSY) != 0u) {
-        tmag_stats.busy_count++;
         return false;
     }
 
@@ -341,7 +338,6 @@ bool tmag5273_async_take_xy(tmag5273_xy_sample_t *out)
     out->y = async_sample.y;
     out->start_phase_us = async_sample.start_phase_us;
     out->end_phase_us = async_sample.end_phase_us;
-    out->sequence = async_sample.sequence;
     async_sample_ready = false;
     return true;
 }
@@ -373,7 +369,6 @@ void tmag5273_i2c1_isr(void)
             async_sample.y = (int16_t)(async_rx[1] << 8);
             async_sample.start_phase_us = async_start_phase_us;
             async_sample.end_phase_us = (uint16_t)timer_get_counter(TIM21);
-            async_sample.sequence = ++async_sequence;
             async_sample_ready = true;
             tmag_stats.sample_dt_us = (uint16_t)(async_start_phase_us - last_sample_start_us);
             last_sample_start_us = async_start_phase_us;

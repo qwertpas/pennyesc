@@ -25,7 +25,6 @@ typedef struct {
     uint32_t nack_count;
     uint32_t recover_count;
     uint32_t sample_count;
-    uint32_t busy_count;
     uint16_t sample_dt_us;
 } tmag5273_stats_t;
 
@@ -34,7 +33,6 @@ typedef struct {
     int16_t y;
     uint16_t start_phase_us;
     uint16_t end_phase_us;
-    uint32_t sequence;
 } tmag5273_xy_sample_t;
 
 /**
