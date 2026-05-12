@@ -34,6 +34,7 @@ firmware/.cproject
 firmware/.mxproject
 firmware/pennyesc_libopencm3/test_results/
 firmware/esp32s3demo/__pycache__
+firmware/penny-gui-sessions/
 
 __pycache__
 *.py[cod]
