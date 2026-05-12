@@ -48,6 +48,7 @@ Other examples in `firmware/esp32s3demo_example`:
 
 - `src/bridge.cpp`: USB serial bridge using `PennyEscBridge`.
 - `src/position_sweep.cpp`: zeros the ESC, sets control gains, alternates position targets, and prints status.
+- `src/capture.cpp`: captures angle and RPM in firmware at up to 1000 Hz for 200 ms, then prints CSV.
 
 Common calls:
 
@@ -56,6 +57,9 @@ Common calls:
 | `esc.begin(Serial1, RX_pin, TX_pin)` | Start ESC UART on custom pins. |
 | `esc.getStatus(status)` | Read position, velocity, duty, sensor data, flags, and faults. |
 | `esc.getPosVel(data)` | Fast read of only encoder position and velocity. |
+| `esc.captureStart(duty, advance, ms, hz, capture)` | Start firmware RPM capture (1000 Hz for 200 ms). |
+| `esc.captureStatus(capture)` | Poll capture progress and sample count. |
+| `esc.captureRead(offset, samples, count, got)` | Read up to 14 captured samples. |
 | `esc.setDuty(duty)` | Set open-loop duty, `-799..799`. Start low. |
 | `esc.sendPositionRad(rad)` | Move to an absolute position relative to current zero. |
 | `esc.zeroPosition()` | Set the current shaft position as zero. |
@@ -157,6 +161,16 @@ Commands are defined in `firmware/Lib/pennyesc_protocol.h`.
 | `PNY_CMD_GET_POS_VEL` | `0xE` | none | `pny_pos_vel_payload_t` |
 
 All multi-byte fields are little-endian.
+
+Debug capture subcommands:
+
+| Subcommand | Code | Request | Response |
+| --- | ---: | --- | --- |
+| `PNY_DEBUG_CAPTURE_START` | `0x1` | `pny_capture_start_payload_t` | `pny_capture_status_payload_t` |
+| `PNY_DEBUG_CAPTURE_STATUS` | `0x2` | subcommand byte | `pny_capture_status_payload_t` |
+| `PNY_DEBUG_CAPTURE_READ` | `0x3` | subcommand, `uint16 offset`, `uint8 count` | `pny_capture_read_payload_t` chunk |
+
+The capture buffer stores 200 samples. `PNY_DEBUG_CAPTURE_READ` returns at most 14 samples per frame.
 
 ## Units
 

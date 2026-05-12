@@ -13,6 +13,8 @@
 #define PNY_CAL_POINTS_PER_SWEEP 36
 #define PNY_CAL_SWEEP_COUNT 2
 #define PNY_CAL_TOTAL_POINTS (PNY_CAL_POINTS_PER_SWEEP * PNY_CAL_SWEEP_COUNT)
+#define PNY_CAPTURE_MAX_SAMPLES 200
+#define PNY_CAPTURE_READ_MAX_SAMPLES 14
 
 enum {
     PNY_CMD_GET_STATUS = 0x1,
@@ -210,7 +212,7 @@ typedef struct __attribute__((packed)) {
     uint8_t result;
     uint16_t offset;
     uint8_t count;
-    pny_capture_sample_t samples[14];
+    pny_capture_sample_t samples[PNY_CAPTURE_READ_MAX_SAMPLES];
 } pny_capture_read_payload_t;
 
 typedef struct __attribute__((packed)) {

@@ -70,7 +70,6 @@
 #define MCT_RUN_CHECK_MS 500u
 #define MCT_RUN_BAD_LIMIT 3u
 
-#define CAPTURE_MAX_SAMPLES 160u
 #define CAPTURE_MAX_DURATION_MS 2000u
 #define MCT_IC_STATUS_NPOR (1u << 3)
 #define MCT_EXPECTED_CONTROL2A (MCT8316Z_CONTROL2A_RESERVED | MCT8316Z_PWM_MODE_SYNC_DIG)
@@ -143,7 +142,7 @@ typedef struct {
     volatile uint16_t sample_ticks;
     volatile uint16_t sample_count;
     volatile uint16_t missed_count;
-    volatile pny_capture_sample_t samples[CAPTURE_MAX_SAMPLES];
+    volatile pny_capture_sample_t samples[PNY_CAPTURE_MAX_SAMPLES];
 } capture_state_t;
 
 typedef struct {
@@ -1371,7 +1370,7 @@ static void capture_tick_1ms(void)
     if (capture_state.sample_ticks >= capture_state.sample_period_ms) {
         capture_state.sample_ticks = 0;
         uint16_t index = capture_state.sample_count;
-        if (index < CAPTURE_MAX_SAMPLES) {
+        if (index < PNY_CAPTURE_MAX_SAMPLES) {
             capture_state.samples[index].angle_turn16 = current_angle_turn16;
             capture_state.samples[index].rpm = rpm;
             capture_state.sample_count = (uint16_t)(index + 1u);
@@ -1934,7 +1933,7 @@ static void handle_capture_read(const uint8_t *payload, uint8_t len)
     memset(&out, 0, sizeof(out));
     out.subcmd = PNY_DEBUG_CAPTURE_READ;
 
-    if (len != 4u || payload[0] != PNY_DEBUG_CAPTURE_READ || payload[3] > 14u) {
+    if (len != 4u || payload[0] != PNY_DEBUG_CAPTURE_READ || payload[3] > PNY_CAPTURE_READ_MAX_SAMPLES) {
         out.result = PNY_RESULT_BAD_ARG;
         send_frame(PNY_CMD_DEBUG, &out, 5u);
         return;

@@ -52,6 +52,26 @@ struct PennyEscEncoderData {
     float velocityRpm() const { return (float)velocity_turn32_per_s * 60.0f / PENNYESC_TURN32_PER_REV; }
 };
 
+struct PennyEscCaptureStatus {
+    bool valid = false;
+    uint8_t result = 0;
+    bool active = false;
+    bool done = false;
+    uint16_t sample_hz = 0;
+    uint16_t duration_ms = 0;
+    uint16_t elapsed_ms = 0;
+    uint16_t sample_count = 0;
+    uint16_t missed_count = 0;
+    uint16_t mct_fault_count = 0;
+};
+
+struct PennyEscCaptureSample {
+    uint16_t angle_turn16 = 0;
+    int16_t rpm = 0;
+
+    float angleRad() const { return ((float)angle_turn16 * 6.2831853f) / 65536.0f; }
+};
+
 class PennyEsc {
 public:
     PennyEsc(uint8_t address = 1) : address_(address) {}
@@ -116,6 +136,81 @@ public:
             return false;
         }
         return parsePosVel(frame, frame_len, data);
+    }
+
+    bool captureStart(
+        int16_t duty,
+        int16_t advance_deg,
+        uint16_t duration_ms,
+        uint16_t sample_hz,
+        PennyEscCaptureStatus &status,
+        uint32_t timeout_ms = 20u
+    )
+    {
+        pny_capture_start_payload_t payload;
+        uint8_t frame[sizeof(pny_capture_status_payload_t) + 4u];
+        uint8_t frame_len = 0u;
+
+        payload.subcmd = PNY_DEBUG_CAPTURE_START;
+        payload.duty = duty;
+        payload.advance_deg = advance_deg;
+        payload.duration_ms = duration_ms;
+        payload.sample_hz = sample_hz;
+        if (!sendFrame(PNY_CMD_DEBUG, &payload, sizeof(payload))) {
+            status.valid = false;
+            return false;
+        }
+        if (!readFrame(PNY_CMD_DEBUG, frame, sizeof(frame), frame_len, timeout_ms)) {
+            status.valid = false;
+            return false;
+        }
+        return parseCaptureStatus(frame, frame_len, status);
+    }
+
+    bool captureStatus(PennyEscCaptureStatus &status, uint32_t timeout_ms = 20u)
+    {
+        uint8_t subcmd = PNY_DEBUG_CAPTURE_STATUS;
+        uint8_t frame[sizeof(pny_capture_status_payload_t) + 4u];
+        uint8_t frame_len = 0u;
+
+        if (!sendFrame(PNY_CMD_DEBUG, &subcmd, sizeof(subcmd))) {
+            status.valid = false;
+            return false;
+        }
+        if (!readFrame(PNY_CMD_DEBUG, frame, sizeof(frame), frame_len, timeout_ms)) {
+            status.valid = false;
+            return false;
+        }
+        return parseCaptureStatus(frame, frame_len, status);
+    }
+
+    bool captureRead(
+        uint16_t offset,
+        PennyEscCaptureSample *samples,
+        uint8_t count,
+        uint8_t &read_count,
+        uint32_t timeout_ms = 20u
+    )
+    {
+        uint8_t payload[4];
+        uint8_t frame[sizeof(pny_capture_read_payload_t) + 4u];
+        uint8_t frame_len = 0u;
+
+        read_count = 0u;
+        if (samples == 0 || count == 0u || count > PNY_CAPTURE_READ_MAX_SAMPLES) {
+            return false;
+        }
+
+        payload[0] = PNY_DEBUG_CAPTURE_READ;
+        memcpy(&payload[1], &offset, sizeof(offset));
+        payload[3] = count;
+        if (!sendFrame(PNY_CMD_DEBUG, payload, sizeof(payload))) {
+            return false;
+        }
+        if (!readFrame(PNY_CMD_DEBUG, frame, sizeof(frame), frame_len, timeout_ms)) {
+            return false;
+        }
+        return parseCaptureRead(frame, frame_len, offset, samples, count, read_count);
     }
 
     bool setDuty(int16_t duty, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
@@ -423,6 +518,74 @@ private:
         data.valid = true;
         data.position_turn32 = payload.position_turn32;
         data.velocity_turn32_per_s = payload.velocity_turn32_per_s;
+        return true;
+    }
+
+    static bool parseCaptureStatus(const uint8_t *frame, uint8_t frame_len, PennyEscCaptureStatus &status)
+    {
+        pny_capture_status_payload_t payload;
+
+        if (frame_len != (uint8_t)(sizeof(payload) + 4u) || frame[2] != sizeof(payload)) {
+            status.valid = false;
+            return false;
+        }
+
+        memcpy(&payload, &frame[3], sizeof(payload));
+        if (payload.subcmd != PNY_DEBUG_CAPTURE_STATUS) {
+            status.valid = false;
+            return false;
+        }
+
+        status.valid = true;
+        status.result = payload.result;
+        status.active = payload.active != 0u;
+        status.done = payload.done != 0u;
+        status.sample_hz = payload.sample_hz;
+        status.duration_ms = payload.duration_ms;
+        status.elapsed_ms = payload.elapsed_ms;
+        status.sample_count = payload.sample_count;
+        status.missed_count = payload.missed_count;
+        status.mct_fault_count = payload.mct_fault_count;
+        return true;
+    }
+
+    static bool parseCaptureRead(
+        const uint8_t *frame,
+        uint8_t frame_len,
+        uint16_t offset,
+        PennyEscCaptureSample *samples,
+        uint8_t max_count,
+        uint8_t &read_count
+    )
+    {
+        if (frame_len < 9u || frame[2] < 5u) {
+            return false;
+        }
+        if (frame[3] != PNY_DEBUG_CAPTURE_READ || frame[4] != PNY_RESULT_OK) {
+            return false;
+        }
+
+        uint16_t response_offset;
+        memcpy(&response_offset, &frame[5], sizeof(response_offset));
+        read_count = frame[7];
+        if (response_offset != offset || read_count > max_count || read_count > PNY_CAPTURE_READ_MAX_SAMPLES) {
+            read_count = 0u;
+            return false;
+        }
+        if (frame[2] != (uint8_t)(5u + (read_count * sizeof(pny_capture_sample_t))) ||
+            frame_len != (uint8_t)(frame[2] + 4u)) {
+            read_count = 0u;
+            return false;
+        }
+
+        const uint8_t *src = &frame[8];
+        for (uint8_t i = 0; i < read_count; i++) {
+            pny_capture_sample_t sample;
+            memcpy(&sample, src, sizeof(sample));
+            samples[i].angle_turn16 = sample.angle_turn16;
+            samples[i].rpm = sample.rpm;
+            src += sizeof(sample);
+        }
         return true;
     }
 
