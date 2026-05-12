@@ -10,6 +10,8 @@ PennyESC requires 4 wires (in order on the PennyESC PCB):
 
 Multiple PennyESCs can be daisy chained on the same UART bus because it is implemented with open-drain outputs. So, the TX line requires a pull-up resistor to 3.3V. Each PennyESC on the same bus must have a unique address. See the Flashing section on changing the address.
 
+A large capacitor (>100uF) is recommended between the power input and GND. Without it, the driver may turn off during high current (mct_faults will increment in the motor status in the GUI).
+
 <img src="../pics/wiring.jpg" alt="Wiring" width="600"/>
 
 ## Arduino API
