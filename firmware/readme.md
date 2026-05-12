@@ -125,6 +125,8 @@ python3 -m platformio run -d firmware/pennyesc_libopencm3 -e seed -t seed_upload
 
 ## Low-level Protocol
 
+If you only need to communicate with the ESC using the Arduino API or calibration/testing GUI, you do not need to worry about this protocol. 
+
 Frames are addressed, length-prefixed, and CRC checked:
 
 ```text
