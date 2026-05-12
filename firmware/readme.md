@@ -1,267 +1,177 @@
-# PennyESC Motor Quickstart Guide
+# PennyESC Firmware
 
+## Wiring
 
-## 1. Wiring
+PennyESC requires 4 wires (in order on the PennyESC PCB):
+- GND
+- UART RX (RX of ESC, TX of your microcontroller)
+- UART TX (TX of ESC, RX of your microcontroller)
+- 5-15V power input
 
-| ESP32-S3 | STM32L011 (PennyESC) |
-|----------|----------------------|
-| GPIO 12 (RX) | PA9 (USART2 TX) |
-| GPIO 13 (TX) | PA10 (USART2 RX) |
+Multiple PennyESCs can be daisy chained on the same UART bus because it is implemented with open-drain outputs. So, the TX line requires a pull-up resistor to 3.3V. Each PennyESC on the same bus must have a unique address. See the Flashing section on changing the address.
 
-The current UART app uses **921600 baud, 8N1** by default. The update/boot path uses **115200 baud**.
+<img src="../pics/wiring.jpg" alt="Wiring" width="600"/>
 
-## 2. Flash Firmware
+## Arduino API
 
-**STM32 (PennyESC):**
+PennyESC can be commanded over UART and I've provided a Arduino API.
 
-```bash
-cd pennyesc_libopencm3
-pio run -t upload
-```
-
-**ESP32-S3:**
-
-```bash
-cd esp32s3demo
-pio run -t upload
-```
-
-**UART bootloader path:**
-
-```bash
-cd pennyesc_libopencm3
-pio run -e pennyesc_uart -t seed_upload
-
-cd ../esp32s3demo
-pio run -e bootbridge -t upload --upload-port /dev/cu.usbmodem101
-
-cd ..
-BRIDGE_PORT=/dev/cu.usbmodem1301 ESC_ADDRESS=3 \
-python3.11 -m platformio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
-```
-
-`uart_upload` now checks the bridge port, bridge shell, and target address before it starts a build. If the normal app-to-bootloader handoff is unavailable, it fails quickly and leaves recovery to `uart_recover`.
-
-See [`UART_UPDATE.md`](UART_UPDATE.md) for the reusable setup.
-
-## ESP32 Library
-
-ESP32 sketches can use [`Lib/pennyesc_arduino.h`](Lib/pennyesc_arduino.h) directly:
+Minimal code to spin:
 
 ```cpp
+#include <Arduino.h>
 #include "pennyesc_arduino.h"
-
-PennyEsc esc(1);
-
+PennyEsc esc(1); // ESC address 1
 void setup() {
-    Serial.begin(115200);
-    esc.begin(Serial1);
+  esc.begin(Serial1, 13, 12); // RX pin 13, TX pin 12
 }
-
 void loop() {
-    PennyEscStatus status;
-    if (esc.getStatus(status)) {
-        Serial.println(status.positionRad());
-    }
+  esc.setDuty(100); // duty ranges from -799 to 799
+  delay(1000);
+  esc.setDuty(0);
+  delay(1000);
 }
 ```
 
-The same header also provides `esc.setDuty(...)`, `esc.setPositionRad(...)`, `esc.pollEncoder(...)`, and `PennyEscBridge` for the USB boot/update bridge.
+Encoder read:
 
-## 3. Spin the Motor
+```cpp
+PennyEscEncoderData data;
+esc.getPosVel(data);
+float pos = data.positionRad();
+float rpm = data.velocityRpm();
+```
 
-Open ESP32 serial monitor at 115200 baud:
+Other examples in `firmware/esp32s3demo_example`:
+
+- `src/bridge.cpp`: USB serial bridge using `PennyEscBridge`.
+- `src/position_sweep.cpp`: zeros the ESC, sets control gains, alternates position targets, and prints status.
+
+Common calls:
+
+| Call | Use |
+| --- | --- |
+| `esc.begin(Serial1, RX_pin, TX_pin)` | Start ESC UART on custom pins. |
+| `esc.getStatus(status)` | Read position, velocity, duty, sensor data, flags, and faults. |
+| `esc.getPosVel(data)` | Fast read of only encoder position and velocity. |
+| `esc.setDuty(duty)` | Set open-loop duty, `-799..799`. Start low. |
+| `esc.sendPositionRad(rad)` | Move to an absolute position relative to current zero. |
+| `esc.zeroPosition()` | Set the current shaft position as zero. |
+
+
+## Calibration and Test GUI
+
+I recommend using the GUI for calibration and testing. Calibration must be done whenever the encoder magnet is moved. Calibration persists between power cycles.
+
+Run the main calibration and test GUI:
 
 ```bash
-pio device monitor -b 115200
+python3 firmware/penny-gui.py
 ```
 
-The default `main` environment prints periodic status. For an interactive motor test, build and flash the `motortest` environment.
+The GUI can run static calibration, status checks, duty commands, stop, and advance commands. Sessions are saved under `firmware/penny-gui-sessions/`.
 
-### Command Reference
+<img src="../pics/calibration.jpg" alt="Calibration Screenshot" width="600"/>
 
-| Command | Description |
-|---------|-------------|
-| `d<duty>` | Set duty cycle continuously (-799 to 799) |
-| `p<duty>` | Pulse: run at duty for 0.5s then stop |
-| `t<rad>` | Move to target position in radians |
-| `?` | Show current stats |
-| `h` | Show help |
+Command line calibration is also available:
 
-### Example Commands
-
-**Basic motor test:**
-
-```
-p100          # Pulse forward at low power for 0.5s
-p-100         # Pulse reverse
+```bash
+python3 firmware/tools/pennycal.py --address 1 info
+python3 firmware/tools/pennycal.py --address 1 calibrate
+python3 firmware/tools/pennycal.py --address 1 verify
 ```
 
-**Continuous spinning:**
 
-```
-d150          # Spin forward at duty=150
-d300          # Faster
-d-200         # Reverse direction
-d0            # Stop
-```
+## Flashing:
 
-**Position control:**
+To update the firmware running on the PennyESC itself, it is meant to be flashed over UART. To do so, it must be connected to an ESP32 with the bridge firmware. 
 
-```
-t0            # Go to zero position
-t3.14         # Go to pi radians (half turn)
-t6.28         # Go to 2*pi radians (one full turn)
-t-6.28        # Go to -2*pi (one turn backwards)
-t62.8         # Go to 10 full turns
+If you need to calibrate or configure the pennyesc, flash the ESP32 bridge firmware from `firmware/esp32s3demo_example/src/bridge.cpp`:
+
+```bash
+python3 -m platformio run -d firmware/esp32s3demo_example -e bridge -t upload
 ```
 
-**Position control with custom speed:**
+Scan for connected PennyESC addresses:
 
-The position controller uses the last set duty as its speed. Set duty first, then position:
-
-```
-d100          # Set slow speed
-t6.28         # Move to 2*pi slowly
-
-d200          # Set faster speed  
-t0            # Return to zero faster
+```bash
+python3 firmware/tools/pnyboot.py scan
 ```
 
-If no duty was set, position control defaults to duty=150.
+Update PennyESC firmware over UART after it has been seeded and connected to the ESP32 bridge:
 
-**Pulse with specific duty and duration:**
-
-The `p` command runs for a fixed 0.5 seconds:
-
-```
-p50           # Gentle pulse (low duty cycle)
-p200          # Medium pulse
-p500          # Strong pulse
-p-300         # Reverse pulse
+```bash
+ESC_ADDRESS=1 \
+python3 -m platformio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
 ```
 
-**Check status:**
+Change a board from one ESC address to another, then use the new address for later commands:
 
+```bash
+CURRENT_ESC_ADDRESS=1 NEW_ESC_ADDRESS=2 \
+python3 -m platformio run -d firmware/pennyesc_libopencm3 -e readdress -t uart_readdress
 ```
-?             # Shows: Pos: 6.28 rad, Vel: 0.0 RPM | Latency: 850/920/1200 us | Errs: 0 CRC, 0 TO
+
+Seed a PennyESC over an STLink. Use this for a fresh board or a board that is bricked and needs the UART bootloader restored:
+
+```bash
+ESC_ADDRESS=1 \
+python3 -m platformio run -d firmware/pennyesc_libopencm3 -e seed -t seed_upload
 ```
 
-### Quick Test Sequence
 
-1. `p100` - Verify motor spins (short pulse)
-2. `p-100` - Verify reverse works
-3. `d150` - Continuous spin, observe
-4. `d0` - Stop
-5. `?` - Check position value
-6. `t0` - Command return to zero
-7. `?` - Verify position reached ~0
 
-## 4. Serial Protocol Reference
+## Low-level Protocol
 
-See [`PENNYESC_PROTOCOL_AND_ARDUINO.md`](PENNYESC_PROTOCOL_AND_ARDUINO.md) for the current ESP32 Arduino API, packet format, command table, safe first tests, and learning outline.
+Frames are addressed, length-prefixed, and CRC checked:
 
-### Units
+```text
+[0]  0xAA start byte
+[1]  header: high nibble = address, low nibble = command
+[2]  payload length, 0..64
+[3..] payload bytes
+[last] CRC-8 over every previous byte, polynomial 0x07, initial 0x00
+```
+
+Commands are defined in `firmware/Lib/pennyesc_protocol.h`.
+
+| Command | Code | Request | Response |
+| --- | ---: | --- | --- |
+| `PNY_CMD_GET_STATUS` | `0x1` | none | `pny_status_payload_t` |
+| `PNY_CMD_SET_POSITION` | `0x2` | `int32 position_turn32` | status |
+| `PNY_CMD_SET_DUTY` | `0x3` | `int16 duty` | status |
+| `PNY_CMD_CAL` | `0x4` | calibration subcommand | calibration payload |
+| `PNY_CMD_DEBUG` | `0x5` | debug subcommand | debug payload |
+| `PNY_CMD_ZERO_POSITION` | `0x6` | none | status |
+| `PNY_CMD_SET_VELOCITY` | `0x7` | `int32 velocity_turn32_per_s` | status |
+| `PNY_CMD_SET_CONTROL` | `0x8` | `pny_control_payload_t` | status |
+| `PNY_CMD_STOP` | `0x9` | none | status |
+| `PNY_CMD_SEND_POSITION` | `0xA` | `int32 position_turn32` | none |
+| `PNY_CMD_ENTER_BOOT` | `0xB` | `uint32 PNY_BOOT_MAGIC` | result byte |
+| `PNY_CMD_SET_ADVANCE` | `0xC` | `int16 advance_deg` | status |
+| `PNY_CMD_SET_QUIET` | `0xD` | `uint16 hold_ms` | result byte |
+| `PNY_CMD_GET_POS_VEL` | `0xE` | none | `pny_pos_vel_payload_t` |
+
+All multi-byte fields are little-endian.
+
+## Units
 
 | Value | Unit | Conversion |
-|-------|------|------------|
-| Position | turn32 | radians = turn32 * 2*pi / 65536 |
-| Velocity | turn32/s | RPM = turn32/s * 60 / 65536 |
-| Duty | raw PWM | Range: -799 to +799 |
+| --- | --- | --- |
+| Position | `turn32` | `65536 = 1 mechanical revolution` |
+| Radians | radians | `rad = turn32 * 2*pi / 65536` |
+| Velocity | `turn32/s` | `rpm = turn32_per_s * 60 / 65536` |
+| Duty | raw PWM | `-799..799` |
+| Control gains | Q8 fixed-point | `256 = 1.0` |
 
-### Resync Behavior
+## Files
 
-Both sides treat `0xAA` as a packet-start marker. If received mid-packet, the parser resets and starts a new packet. This enables recovery from corruption or partial packets.
-
-## 5. Magnetic Sensor Calibration
-
-The TMAG5273 magnetic angle sensor requires calibration to correct for magnet mounting errors (tilt, offset, non-orthogonality). This produces a lookup table (LUT) that maps raw X/Y readings to corrected angles.
-
-### Current Calibration Process
-
-```mermaid
-flowchart LR
-    A[Flash Calibration FW] --> B[Log with MCUViewer]
-    B --> C[Export CSV]
-    C --> D[Run octant_centroid.py]
-    D --> E[Copy LUT to angleLUT.c]
-    E --> F[Flash Main FW]
-```
-
-**Step 1: Flash calibration firmware**
-
-```bash
-cd pennyesc_libopencm3
-pio run -e calibration -t upload
-```
-
-This flashes `main_calibration.c` which spins the motor open-loop at fixed duty, stepping through 6 electrical states every 150ms. It reverses direction every 20 seconds.
-
-**Step 2: Log sensor data**
-
-Connect MCUViewer to the STM32 and add these variables to watch:
-- `magx` - Raw X-axis reading
-- `magy` - Raw Y-axis reading  
-- `step_count` - Current commutation step
-
-Start logging and let it run for at least one full cycle (40+ seconds) to capture both directions.
-
-**Step 3: Export and process**
-
-Export the MCUViewer log to CSV, then run the centroid script:
-
-```bash
-cd pennyesc_libopencm3/data
-# Update TRAIN_CSV_FILENAME in the script to match your exported file
-python octant_centroid.py
-```
-
-The script:
-1. Groups sensor readings by `step_count`
-2. Calculates centroid pseudo-index for each step
-3. Maps centroids to true angles (known from step position)
-4. Interpolates a smooth 2048-entry LUT
-
-**Step 4: Update the LUT**
-
-Copy the generated `OCTANT_LUT[2048]` array from the script output into:
-
-```
-pennyesc_libopencm3/src/angleLUT.c
-```
-
-**Step 5: Flash main firmware**
-
-```bash
-pio run -t upload  # Uses default environment (main.c)
-```
-
-### Future Improvements
-
-**Automated calibration (no external logger):**
-- Add UART command to trigger calibration mode
-- Stream X/Y/step data over existing protocol
-- Process on ESP32 or host PC
-
-**Closed-loop calibration:**
-- Use external encoder as ground truth
-- Spin at constant velocity, correlate sensor angle with encoder
-- Eliminates dependency on open-loop step timing
-
-**Temperature compensation:**
-- Log temperature during calibration runs at different temps
-- Generate temp-indexed LUT or polynomial correction
-
-**Finer resolution:**
-- Increase commutation steps (e.g., 72 instead of 36 per revolution)
-- Use slower stepping for more samples per step
-- Improves interpolation accuracy at octant boundaries
-
-
-## Key Files
-
-- [`pennyesc_libopencm3/src/main.c`](pennyesc_libopencm3/src/main.c) - STM32 motor controller firmware
-- [`pennyesc_libopencm3/src/main_calibration.c`](pennyesc_libopencm3/src/main_calibration.c) - Calibration firmware (open-loop stepping)
-- [`pennyesc_libopencm3/src/angleLUT.c`](pennyesc_libopencm3/src/angleLUT.c) - Generated angle correction LUT
-- [`pennyesc_libopencm3/data/octant_centroid.py`](pennyesc_libopencm3/data/octant_centroid.py) - LUT generation script
-- [`esp32s3demo/src/main.cpp`](esp32s3demo/src/main.cpp) - ESP32 host controller with serial CLI
+| Path | Purpose |
+| --- | --- |
+| `firmware/penny-gui.py` | Main calibration and test GUI. |
+| `firmware/Lib/pennyesc_arduino.h` | ESP32 Arduino API. |
+| `firmware/Lib/pennyesc_protocol.h` | Shared packet protocol. |
+| `firmware/esp32s3demo_example/src/bridge.cpp` | Simple ESP32 bridge firmware. |
+| `firmware/pennyesc_libopencm3/src/main.c` | STM32 PennyESC app. |
+| `firmware/tools/pennycal.py` | Host calibration CLI and shared GUI backend. |
+| `firmware/tools/pnyboot.py` | Host UART boot/update tool. |

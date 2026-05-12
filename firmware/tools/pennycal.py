@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import glob
 import math
 import struct
 import time
@@ -12,6 +13,7 @@ from typing import Callable, Iterable, Sequence
 
 import numpy as np
 import serial
+from serial.tools import list_ports
 from pnyproto import (
     FAULT_FLASH,
     FAULT_SENSOR,
@@ -49,6 +51,58 @@ from pnyproto import (
     decode_frame,
     encode_frame,
 )
+
+
+def serial_port_allowed(value: str, text: str = "") -> bool:
+    combined = f"{value} {text}".lower()
+    blocked = ("bluetooth", "debug", "incoming-port", "debug-console")
+    return bool(value) and not any(token in combined for token in blocked)
+
+
+def find_serial_port(port: str | None) -> str:
+    if port and port != "auto":
+        return port
+
+    ports = []
+    for port_info in list_ports.comports():
+        text = " ".join(
+            [
+                port_info.device or "",
+                port_info.description or "",
+                port_info.manufacturer or "",
+                port_info.hwid or "",
+            ]
+        )
+        if serial_port_allowed(port_info.device or "", text):
+            ports.append(port_info)
+
+    def score(port_info) -> tuple[int, str]:
+        text = " ".join(
+            [
+                port_info.device or "",
+                port_info.description or "",
+                port_info.manufacturer or "",
+                port_info.hwid or "",
+            ]
+        ).lower()
+        value = 0
+        if getattr(port_info, "vid", None) == 0x303A:
+            value += 100
+        if "esp32" in text or "espressif" in text:
+            value += 80
+        if "usbmodem" in text or "cdc" in text or "com" in text:
+            value += 20
+        return value, port_info.device or ""
+
+    if ports:
+        return sorted(ports, key=lambda item: (-score(item)[0], score(item)[1]))[0].device
+
+    for pattern in ("/dev/cu.usbmodem*", "/dev/ttyACM*", "/dev/ttyUSB*"):
+        matches = [value for value in sorted(glob.glob(pattern)) if serial_port_allowed(value)]
+        if matches:
+            return matches[0]
+
+    raise TimeoutError("no serial port found")
 
 LUT_BITS = 5
 SEGMENT_SIZE = 1 << LUT_BITS
@@ -1231,7 +1285,7 @@ def command_verify(args: argparse.Namespace) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="pennyesc calibration CLI")
-    parser.add_argument("--port", required=True, help="ESP32 USB CDC port")
+    parser.add_argument("--port", default="auto", help="ESP32 USB CDC port")
     parser.add_argument("--address", type=int, default=0, help="ESC address nibble")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1256,6 +1310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     try:
+        args.port = find_serial_port(args.port)
         return args.func(args)
     except (CalibrationError, TimeoutError, serial.SerialException) as exc:
         print(f"error: {exc}")

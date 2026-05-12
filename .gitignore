@@ -28,6 +28,10 @@ production/backups
 .history
 pennyesc-backups
 firmware/dynamic_metrics/
+firmware/stm32_HAL/
+firmware/.project
+firmware/.cproject
+firmware/.mxproject
 firmware/pennyesc_libopencm3/test_results/
 firmware/esp32s3demo/__pycache__
 

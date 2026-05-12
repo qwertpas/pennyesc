@@ -19,7 +19,7 @@ try:
 except ImportError as exc:
     raise SystemExit("Install pyqtgraph and a Qt binding.") from exc
 
-TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
+TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 

@@ -211,10 +211,10 @@ def uart_readdress_action(source=None, target=None, env=None, **_kwargs):
 project_dir = Path(env["PROJECT_DIR"])
 project_env = env["PIOENV"]
 python = env.subst("$PYTHONEXE")
-tool = project_dir.parent.parent / "tools" / "pnyboot.py"
+tool = project_dir.parent / "tools" / "pnyboot.py"
 app_env = env_or_project("APP_ENV", "custom_app_env", project_env)
 boot_env = env_or_project("BOOT_ENV", "custom_boot_env", project_env)
-bridge_port = ARGUMENTS.get("BRIDGE_PORT", env_or_project("BRIDGE_PORT", "custom_bridge_port", "/dev/cu.usbmodem101"))
+bridge_port = ARGUMENTS.get("BRIDGE_PORT", env_or_project("BRIDGE_PORT", "custom_bridge_port", "auto"))
 address = ARGUMENTS.get("ESC_ADDRESS", env_or_project("ESC_ADDRESS", "custom_esc_address", "1"))
 build_address = ARGUMENTS.get(
     "NEW_ESC_ADDRESS",

@@ -25,7 +25,7 @@ from pennycal import (  # noqa: E402
 
 class SolverTests(unittest.TestCase):
     def test_solver_replays_filtered_csvs(self) -> None:
-        data_dir = Path(__file__).resolve().parents[2] / "firmware" / "pennyesc_libopencm3" / "data"
+        data_dir = Path(__file__).resolve().parents[2] / "pennyesc_libopencm3" / "data"
         for name in (
             "MCUViewer_log_190627_20260305_filt.csv",
             "testrun59_filt.csv",

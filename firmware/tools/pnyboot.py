@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import struct
 import time
 from pathlib import Path
 
 import serial
+from serial.tools import list_ports
 
 from pnyproto import BOOT_MAGIC, CMD_ENTER_BOOT, CMD_GET_STATUS, CMD_SET_QUIET, RESULT_OK, decode_frame, encode_frame
 
@@ -28,6 +30,58 @@ APP_READY_RECOVER_S = 6.0
 APP_READY_RETRY_S = 0.1
 BOOT_HANDOFF_S = 1.5
 BOOT_WINDOW_S = 8.0
+
+
+def serial_port_allowed(value: str, text: str = "") -> bool:
+    combined = f"{value} {text}".lower()
+    blocked = ("bluetooth", "debug", "incoming-port", "debug-console")
+    return bool(value) and not any(token in combined for token in blocked)
+
+
+def find_serial_port(port: str | None) -> str:
+    if port and port != "auto":
+        return port
+
+    ports = []
+    for port_info in list_ports.comports():
+        text = " ".join(
+            [
+                port_info.device or "",
+                port_info.description or "",
+                port_info.manufacturer or "",
+                port_info.hwid or "",
+            ]
+        )
+        if serial_port_allowed(port_info.device or "", text):
+            ports.append(port_info)
+
+    def score(port_info) -> tuple[int, str]:
+        text = " ".join(
+            [
+                port_info.device or "",
+                port_info.description or "",
+                port_info.manufacturer or "",
+                port_info.hwid or "",
+            ]
+        ).lower()
+        value = 0
+        if getattr(port_info, "vid", None) == 0x303A:
+            value += 100
+        if "esp32" in text or "espressif" in text:
+            value += 80
+        if "usbmodem" in text or "cdc" in text or "com" in text:
+            value += 20
+        return value, port_info.device or ""
+
+    if ports:
+        return sorted(ports, key=lambda item: (-score(item)[0], score(item)[1]))[0].device
+
+    for pattern in ("/dev/cu.usbmodem*", "/dev/ttyACM*", "/dev/ttyUSB*"):
+        matches = [value for value in sorted(glob.glob(pattern)) if serial_port_allowed(value)]
+        if matches:
+            return matches[0]
+
+    raise BootError("no serial port found")
 APP_DISCOVERY_TIMEOUT_S = 0.15
 APP_QUIET_MS = 15000
 
@@ -563,6 +617,11 @@ def check_connection(port: str, address: int) -> bytes:
     )
 
 
+def scan_addresses(port: str) -> list[int]:
+    with BootBridge(port) as bridge:
+        return find_devices(bridge, allow_reset=True)
+
+
 def probe_path(port: str, address: int, rounds: int) -> None:
     if rounds < 1:
         raise BootError("probe rounds must be >= 1")
@@ -668,14 +727,15 @@ def recover_image(port: str, image_path: Path, address: int) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("upload", "recover", "check", "enter", "probe", "status"))
-    parser.add_argument("--port", default="/dev/cu.usbmodem101")
+    parser.add_argument("command", choices=("upload", "recover", "check", "enter", "probe", "scan", "status"))
+    parser.add_argument("--port", default="auto")
     parser.add_argument("--image", type=Path)
     parser.add_argument("--address", type=int, default=0)
     parser.add_argument("--rounds", type=int, default=3)
     args = parser.parse_args(argv)
 
     try:
+        args.port = find_serial_port(args.port)
         if args.command == "enter":
             enter_rom(args.port, args.address)
             return 0
@@ -689,6 +749,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "probe":
             probe_path(args.port, args.address, args.rounds)
+            return 0
+        if args.command == "scan":
+            for address in scan_addresses(args.port):
+                print(address, flush=True)
             return 0
         if args.image is None:
             raise BootError("--image is required")
