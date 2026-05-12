@@ -12,14 +12,15 @@ static const uint8_t ESC_ADDR = 3;
 static const uint8_t INA_ADDR = 0x40;
 static const float SHUNT_OHMS = 0.1f;
 static const float CURRENT_LSB_A = 0.0001f;
-static const int16_t DUTIES[] = {-100, 100, -200, 200, -300, 300, -400, 400};
 static const int16_t CLIP = 500;
-static const int16_t BASELINE_ADVANCE_DEG = 90;
+static const int16_t BASELINE_ADVANCE_DEG = -90;
+static const int16_t OBSERVER_LEAD_US = 0;
 static const uint16_t PRESPIN_MS = 100;
-static const uint16_t RUN_MS = 100;
+static const uint16_t RUN_MS = 200;
+static const uint32_t TRANSITION_US = 100000u;
 static const uint16_t REST_MS = 1000;
 static const uint16_t SAMPLE_US = 1000;
-static const uint16_t MAX_SAMPLES = 120;
+static const uint16_t MAX_SAMPLES = PNY_CAPTURE_MAX_SAMPLES;
 
 struct InaData {
     float bus_v = 0.0f;
@@ -201,7 +202,7 @@ static void stopMotor()
 static void printHeader()
 {
     Serial.println(
-        "run_id,duty_cmd,baseline_advance_deg,test_advance_deg,baseline_rpm,capture_ok,sample,t_us,dt_us,rpm_ok,ina_ok,rpm,bus_v,current_a,power_w"
+        "run_id,duty_cmd,observer_lead_us,baseline_advance_deg,test_advance_deg,transition_us,advance_start_us,advance_done_us,advance_set_ok,capture_ok,sample,t_us,dt_us,command_advance_deg,rpm_ok,ina_ok,rpm,bus_v,current_a,power_w"
     );
 }
 
@@ -224,23 +225,32 @@ static void printSample(
     uint16_t run_id,
     int16_t duty,
     int16_t advance,
-    float baseline_rpm,
+    uint32_t advance_start_us,
+    uint32_t advance_done_us,
+    bool advance_set_ok,
     bool capture_ok,
     uint16_t sample_index,
     const SweepSample &sample
 )
 {
+    int16_t command_advance = sample_index < (TRANSITION_US / SAMPLE_US) ? BASELINE_ADVANCE_DEG : advance;
+
     Serial.printf(
-        "%u,%d,%d,%d,%.2f,%u,%u,%lu,%lu,%u,%u,%.2f,%.5f,%.5f,%.5f\n",
+        "%u,%d,%d,%d,%d,%u,%lu,%lu,%u,%u,%u,%lu,%lu,%d,%u,%u,%.2f,%.5f,%.5f,%.5f\n",
         run_id,
         duty,
+        OBSERVER_LEAD_US,
         BASELINE_ADVANCE_DEG,
         advance,
-        baseline_rpm,
+        TRANSITION_US,
+        (unsigned long)advance_start_us,
+        (unsigned long)advance_done_us,
+        advance_set_ok ? 1u : 0u,
         capture_ok ? 1u : 0u,
         sample_index,
         (unsigned long)sample.t_us,
         (unsigned long)sample.dt_us,
+        command_advance,
         sample.rpm_ok ? 1u : 0u,
         sample.ina_ok ? 1u : 0u,
         sample.rpm,
@@ -260,6 +270,25 @@ static bool captureStart(int16_t duty, int16_t advance, pny_capture_status_paylo
     request.advance_deg = advance;
     request.duration_ms = RUN_MS;
     request.sample_hz = 1000;
+
+    if (!debugCommand(&request, sizeof(request), response, response_len, 200u) ||
+        response_len != sizeof(pny_capture_status_payload_t)) {
+        return false;
+    }
+    memcpy(&status, response, sizeof(status));
+    return status.subcmd == PNY_DEBUG_CAPTURE_STATUS && status.result == PNY_RESULT_OK;
+}
+
+static bool setObserver()
+{
+    pny_observer_payload_t request;
+    uint8_t response[PNY_FRAME_MAX_PAYLOAD];
+    uint8_t response_len = 0;
+    pny_capture_status_payload_t status;
+
+    request.subcmd = PNY_DEBUG_SET_OBSERVER;
+    request.lead_us = OBSERVER_LEAD_US;
+    request.mode = PNY_OBSERVER_AB_FAST;
 
     if (!debugCommand(&request, sizeof(request), response, response_len, 200u) ||
         response_len != sizeof(pny_capture_status_payload_t)) {
@@ -332,18 +361,14 @@ static uint16_t runSegment(uint16_t run_id, int16_t duty, int16_t advance, bool 
         );
     }
     delay(PRESPIN_MS);
-    float baseline_rpm = 0.0f;
-    if (esc.getStatus(status, 50u)) {
-        baseline_rpm = status.velocityRpm();
-    }
 
     pny_capture_status_payload_t capture_status;
-    bool capture_ok = captureStart(duty, advance, capture_status);
+    bool capture_ok = captureStart(duty, BASELINE_ADVANCE_DEG, capture_status);
     if (!capture_ok) {
         Serial.printf("# capture_start_failed run_id=%u duty=%d advance=%d result=%u\n",
             run_id,
             duty,
-            advance,
+            BASELINE_ADVANCE_DEG,
             capture_status.result
         );
     }
@@ -352,11 +377,22 @@ static uint16_t runSegment(uint16_t run_id, int16_t duty, int16_t advance, bool 
     uint32_t next_us = start_us;
     uint32_t prev_us = start_us;
     uint16_t sample_count = 0;
+    bool advance_set = false;
+    bool advance_set_ok = false;
+    uint32_t advance_start_us = 0;
+    uint32_t advance_done_us = 0;
 
     while ((uint32_t)(micros() - start_us) < (uint32_t)RUN_MS * 1000u) {
         int32_t wait_us = (int32_t)(next_us - micros());
         if (wait_us > 0) {
             delayMicroseconds((uint32_t)wait_us);
+        }
+        if (!advance_set && (uint32_t)(micros() - start_us) >= TRANSITION_US) {
+            PennyEscStatus status;
+            advance_start_us = micros() - start_us;
+            advance_set_ok = esc.setAdvanceDeg(advance, &status, 50u);
+            advance_done_us = micros() - start_us;
+            advance_set = true;
         }
         uint32_t sample_us = micros();
         if (sample_count < MAX_SAMPLES) {
@@ -386,7 +422,17 @@ static uint16_t runSegment(uint16_t run_id, int16_t duty, int16_t advance, bool 
 
     if (emit_csv) {
         for (uint16_t sample_index = 0; sample_index < saved_samples; sample_index++) {
-            printSample(run_id, duty, advance, baseline_rpm, capture_ok, sample_index, samples[sample_index]);
+            printSample(
+                run_id,
+                duty,
+                advance,
+                advance_start_us,
+                advance_done_us,
+                advance_set_ok,
+                capture_ok,
+                sample_index,
+                samples[sample_index]
+            );
         }
     }
 
@@ -426,10 +472,13 @@ static void runSweep()
     uint16_t run_id = 0;
     Serial.println("# sweep_start");
     printHeader();
-    for (uint8_t duty_index = 0; duty_index < sizeof(DUTIES) / sizeof(DUTIES[0]); duty_index++) {
-        for (int16_t advance = -180; advance <= 180; advance += 15) {
-            runSegment(run_id, DUTIES[duty_index], advance, true);
-            run_id++;
+    for (int16_t abs_duty = 100; abs_duty <= 300; abs_duty += 20) {
+        for (int8_t sign = -1; sign <= 1; sign += 2) {
+            int16_t duty = (int16_t)(sign * abs_duty);
+            for (int16_t advance = 0; advance <= 180; advance += 10) {
+                runSegment(run_id, duty, advance, true);
+                run_id++;
+            }
         }
     }
     stopMotor();
@@ -478,13 +527,16 @@ void setup()
     Wire.begin(INA_SDA_PIN, INA_SCL_PIN);
     Wire.setClock(1000000);
     bool ina_ok = initIna();
+    bool observer_ok = setObserver();
 
     delay(100);
     stopMotor();
-    Serial.printf("# advance_transition_sweep esc=%u ina=%u baseline_advance=%d baud=921600\n",
+    Serial.printf("# advance_transition_sweep esc=%u ina=%u observer=%u baseline_advance=%d observer_lead_us=%d baud=921600\n",
         ESC_ADDR,
         ina_ok ? 1u : 0u,
-        BASELINE_ADVANCE_DEG
+        observer_ok ? 1u : 0u,
+        BASELINE_ADVANCE_DEG,
+        OBSERVER_LEAD_US
     );
     Serial.println("# commands: rate sweep one <duty> <advance> stop");
 }
