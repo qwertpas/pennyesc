@@ -82,7 +82,10 @@ def find_serial_port(port: str | None) -> str:
             return matches[0]
 
     raise BootError("no serial port found")
-APP_DISCOVERY_TIMEOUT_S = 0.15
+APP_DISCOVERY_TIMEOUT_S = 0.03
+APP_DISCOVERY_READ_TIMEOUT_S = 0.005
+APP_DISCOVERY_SETTLE_S = 0.025
+APP_DISCOVERY_EMPTY_RETRY_S = 0.0
 APP_QUIET_MS = 15000
 
 
@@ -328,15 +331,21 @@ def find_devices(bridge: BootBridge, allow_reset: bool = False) -> list[int]:
     found: list[int] = []
 
     bridge.enter_bridge("handoff", timeout=SHELL_SYNC_S, allow_reset=allow_reset)
-    for address in range(16):
-        try:
-            bridge.serial.reset_input_buffer()
-            bridge.serial.write(encode_frame(address, CMD_GET_STATUS))
-            bridge.serial.flush()
-            read_app_frame(bridge.serial, CMD_GET_STATUS, address, timeout=APP_DISCOVERY_TIMEOUT_S)
-            found.append(address)
-        except TimeoutError:
-            continue
+    time.sleep(APP_DISCOVERY_SETTLE_S)
+    old_timeout = bridge.serial.timeout
+    bridge.serial.timeout = APP_DISCOVERY_READ_TIMEOUT_S
+    try:
+        for address in range(16):
+            try:
+                bridge.serial.reset_input_buffer()
+                bridge.serial.write(encode_frame(address, CMD_GET_STATUS))
+                bridge.serial.flush()
+                read_app_frame(bridge.serial, CMD_GET_STATUS, address, timeout=APP_DISCOVERY_TIMEOUT_S)
+                found.append(address)
+            except TimeoutError:
+                continue
+    finally:
+        bridge.serial.timeout = old_timeout
 
     return found
 
@@ -619,7 +628,11 @@ def check_connection(port: str, address: int) -> bytes:
 
 def scan_addresses(port: str) -> list[int]:
     with BootBridge(port) as bridge:
-        return find_devices(bridge, allow_reset=True)
+        found = find_devices(bridge, allow_reset=True)
+        if found:
+            return found
+        time.sleep(APP_DISCOVERY_EMPTY_RETRY_S)
+        return find_devices(bridge, allow_reset=False)
 
 
 def probe_path(port: str, address: int, rounds: int) -> None:
@@ -681,8 +694,9 @@ def program_image(boot: Stm32Bootloader, padded: bytes, pages: list[int]) -> Non
     verify_image(boot, FLASH_BASE, padded)
 
 
-def upload_image(port: str, image_path: Path, address: int) -> None:
+def upload_image(port: str, image_path: Path, address: int, verify_address: int | None = None) -> None:
     image, padded, pages = load_image(image_path)
+    ready_address = address if verify_address is None else verify_address
 
     with BootBridge(port) as bridge:
         boot = open_bootloader_from_app(bridge, address)
@@ -692,7 +706,7 @@ def upload_image(port: str, image_path: Path, address: int) -> None:
 
     wait_for_app_ready(
         port,
-        address,
+        ready_address,
         timeout_s=APP_READY_UPLOAD_S,
         retry_delay=APP_READY_RETRY_S,
         shell_timeout=SHELL_SYNC_S,
@@ -731,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", default="auto")
     parser.add_argument("--image", type=Path)
     parser.add_argument("--address", type=int, default=0)
+    parser.add_argument("--verify-address", type=int)
     parser.add_argument("--rounds", type=int, default=3)
     args = parser.parse_args(argv)
 
@@ -757,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.image is None:
             raise BootError("--image is required")
         if args.command == "upload":
-            upload_image(args.port, args.image, args.address)
+            upload_image(args.port, args.image, args.address, args.verify_address)
         else:
             recover_image(args.port, args.image, args.address)
         return 0

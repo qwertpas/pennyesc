@@ -159,7 +159,7 @@ def seed_upload_action(source=None, target=None, env=None, **_kwargs):
     )
 
 
-def uart_upload_action(source=None, target=None, env=None, **_kwargs):
+def uart_upload_action(source=None, target=None, env=None, verify_address=None, **_kwargs):
     del source
     del target
     del env
@@ -167,10 +167,11 @@ def uart_upload_action(source=None, target=None, env=None, **_kwargs):
     uart_check_action()
     build_env(app_env, extra_env={"PLATFORMIO_BUILD_FLAGS": f"-DPNY_ESC_ADDRESS={build_address}"})
     ensure_binary(app_image, app_elf)
-    run_checked(
-        [python, "-u", str(tool), "upload", "--port", bridge_port, "--address", target_address, "--image", app_image],
-        project_dir,
-    )
+    cmd = [python, "-u", str(tool), "upload", "--port", bridge_port, "--address", target_address]
+    if verify_address is not None:
+        cmd.extend(["--verify-address", verify_address])
+    cmd.extend(["--image", app_image])
+    run_checked(cmd, project_dir)
 
 
 def uart_check_action(source=None, target=None, env=None, **_kwargs):
@@ -205,7 +206,7 @@ def uart_readdress_action(source=None, target=None, env=None, **_kwargs):
     if target_address == build_address:
         raise RuntimeError("readdress requires CURRENT_ESC_ADDRESS and NEW_ESC_ADDRESS to differ")
 
-    uart_upload_action()
+    uart_upload_action(verify_address=build_address)
 
 
 project_dir = Path(env["PROJECT_DIR"])

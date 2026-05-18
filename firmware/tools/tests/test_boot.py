@@ -15,6 +15,7 @@ from pnyboot import (  # noqa: E402
     BootError,
     check_connection,
     recover_image,
+    scan_addresses,
     Stm32Bootloader,
     load_image,
     read_boot_ack,
@@ -142,6 +143,20 @@ class BootToolTests(unittest.TestCase):
                 with self.assertRaisesRegex(BootError, "target address 7 not found"):
                     check_connection("/dev/test", 7)
 
+    def test_scan_retries_once_when_empty(self) -> None:
+        bridge = mock.Mock()
+        context = mock.MagicMock()
+        context.__enter__.return_value = bridge
+        context.__exit__.return_value = None
+
+        with mock.patch("pnyboot.BootBridge", return_value=context):
+            with mock.patch("pnyboot.find_devices", side_effect=[[], [1]]) as find:
+                with mock.patch("pnyboot.time.sleep") as sleep:
+                    self.assertEqual(scan_addresses("/dev/test"), [1])
+
+        self.assertEqual(find.call_count, 2)
+        sleep.assert_called_once()
+
     def test_upload_uses_app_path_only(self) -> None:
         boot = mock.Mock()
         bridge = mock.Mock()
@@ -163,6 +178,24 @@ class BootToolTests(unittest.TestCase):
         boot.go.assert_called_once_with(FLASH_BASE)
         wait_ready.assert_called_once()
         sleep.assert_not_called()
+
+    def test_upload_can_wait_for_new_address(self) -> None:
+        boot = mock.Mock()
+        bridge = mock.Mock()
+        context = mock.MagicMock()
+        context.__enter__.return_value = bridge
+        context.__exit__.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "fw.bin"
+            image.write_bytes(b"\x01")
+            with mock.patch("pnyboot.BootBridge", return_value=context):
+                with mock.patch("pnyboot.open_bootloader_from_app", return_value=boot):
+                    with mock.patch("pnyboot.program_image"):
+                        with mock.patch("pnyboot.wait_for_app_ready", return_value=b"\x00") as wait_ready:
+                            upload_image("/dev/test", image, 3, verify_address=4)
+
+        self.assertEqual(wait_ready.call_args.args[:2], ("/dev/test", 4))
 
     def test_recover_uses_reset_path(self) -> None:
         boot = mock.Mock()
