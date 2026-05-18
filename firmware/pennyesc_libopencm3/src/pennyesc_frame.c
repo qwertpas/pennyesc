@@ -1,6 +1,29 @@
 #include "pennyesc_frame.h"
+#include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/usart.h>
 #include <string.h>
+
+static void uart_tx_start(void)
+{
+    gpio_set(GPIOA, GPIO9);
+    gpio_set_af(GPIOA, GPIO_AF4, GPIO9);
+    gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, GPIO9);
+    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9);
+    USART_ICR(USART2) = USART_ICR_TCCF;
+    USART_CR1(USART2) |= USART_CR1_TE;
+    while ((USART_ISR(USART2) & USART_ISR_TEACK) == 0u) {
+    }
+}
+
+static void uart_tx_stop(void)
+{
+    while ((USART_ISR(USART2) & USART_ISR_TC) == 0u) {
+    }
+    USART_CR1(USART2) &= ~USART_CR1_TE;
+    while ((USART_ISR(USART2) & USART_ISR_TEACK) != 0u) {
+    }
+    gpio_mode_setup(GPIOA, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, GPIO9);
+}
 
 uint8_t pny_frame_crc8(const uint8_t *data, uint8_t len)
 {
@@ -94,7 +117,9 @@ void pny_frame_send(uint8_t header, const void *payload, uint8_t payload_len)
     }
     frame[3 + payload_len] = pny_frame_crc8(frame, (uint8_t)(3u + payload_len));
 
+    uart_tx_start();
     for (uint8_t i = 0; i < (uint8_t)(4u + payload_len); i++) {
         usart_send_blocking(USART2, frame[i]);
     }
+    uart_tx_stop();
 }

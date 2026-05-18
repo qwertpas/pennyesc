@@ -27,6 +27,7 @@ struct PennyEscStatus {
     int32_t position_turn32 = 0;
     int32_t velocity_turn32_per_s = 0;
     int16_t duty = 0;
+    uint32_t uart_overrun_errors = 0;
 
     bool sensorOk() const { return (flags & PNY_FLAG_SENSOR_OK) != 0u; }
     bool calValid() const { return (flags & PNY_FLAG_CAL_VALID) != 0u; }
@@ -502,6 +503,7 @@ private:
         status.position_turn32 = payload.position_turn32;
         status.velocity_turn32_per_s = payload.velocity_turn32_per_s;
         status.duty = payload.duty;
+        status.uart_overrun_errors = payload.uart_overrun_errors;
         return true;
     }
 
@@ -717,7 +719,7 @@ private:
 
     void printHelp()
     {
-        usb_->println("commands: help ping e<addr> s d<duty> bridge app bridge handoff bridge upload bridge rom");
+        usb_->println("commands: help ping e<addr> s d<duty> rate <ms> <hz> bridge app bridge handoff bridge upload bridge rom");
     }
 
     void printStatus(const PennyEscStatus &status)
@@ -736,6 +738,116 @@ private:
         usb_->print(status.y);
         usb_->print(" z=");
         usb_->println(status.z);
+    }
+
+    void runRateTest(uint32_t duration_ms, uint32_t hz)
+    {
+        PennyEsc esc1(1);
+        PennyEsc esc3(3);
+        PennyEscStatus status;
+        PennyEscEncoderData data;
+        uint32_t period_us;
+        uint32_t start_us;
+        uint32_t next_us;
+        uint32_t target_loops;
+        uint32_t loops = 0u;
+        uint32_t late = 0u;
+        uint32_t worst_us = 0u;
+        uint32_t fail1 = 0u;
+        uint32_t fail3 = 0u;
+        uint32_t over1_start = 0u;
+        uint32_t over3_start = 0u;
+        uint32_t over1_end = 0u;
+        uint32_t over3_end = 0u;
+
+        if (duration_ms == 0u) {
+            duration_ms = 10000u;
+        }
+        if (hz == 0u) {
+            hz = 500u;
+        }
+        period_us = 1000000u / hz;
+        target_loops = (duration_ms * hz) / 1000u;
+
+        beginApp();
+        esc1.begin(uart(), rx_, tx_);
+        esc3.begin(uart(), rx_, tx_);
+        if (esc1.getStatus(status, 100u)) {
+            over1_start = status.uart_overrun_errors;
+        } else {
+            fail1++;
+        }
+        if (esc3.getStatus(status, 100u)) {
+            over3_start = status.uart_overrun_errors;
+        } else {
+            fail3++;
+        }
+
+        start_us = micros();
+        next_us = start_us;
+        while (loops < target_loops) {
+            uint32_t loop_us = micros();
+
+            esc1.sendPositionTurn32(0);
+            if (!esc1.getPosVel(data, 5u)) {
+                fail1++;
+            }
+            esc3.sendPositionTurn32(0);
+            if (!esc3.getPosVel(data, 5u)) {
+                fail3++;
+            }
+
+            loops++;
+            loop_us = micros() - loop_us;
+            if (loop_us > worst_us) {
+                worst_us = loop_us;
+            }
+
+            next_us += period_us;
+            while ((int32_t)(micros() - next_us) < 0) {
+            }
+            if ((int32_t)(micros() - next_us) > 0) {
+                late++;
+                next_us = micros();
+            }
+        }
+
+        esc1.setDuty(0, &status, 100u);
+        esc3.setDuty(0, &status, 100u);
+        if (esc1.getStatus(status, 100u)) {
+            over1_end = status.uart_overrun_errors;
+        } else {
+            fail1++;
+        }
+        if (esc3.getStatus(status, 100u)) {
+            over3_end = status.uart_overrun_errors;
+        } else {
+            fail3++;
+        }
+
+        usb_->print("# rate_summary duration_ms=");
+        usb_->print(duration_ms);
+        usb_->print(" hz=");
+        usb_->print(hz);
+        usb_->print(" loops=");
+        usb_->print(loops);
+        usb_->print(" late=");
+        usb_->print(late);
+        usb_->print(" worst_us=");
+        usb_->println(worst_us);
+        usb_->print("# rate_address address=1 cycles=");
+        usb_->print(loops);
+        usb_->print(" fail=");
+        usb_->print(fail1);
+        usb_->print(" uart_overruns_delta=");
+        usb_->println(over1_end - over1_start);
+        usb_->print("# rate_address address=3 cycles=");
+        usb_->print(loops);
+        usb_->print(" fail=");
+        usb_->print(fail3);
+        usb_->print(" uart_overruns_delta=");
+        usb_->println(over3_end - over3_start);
+        usb_->println("# rate_done");
     }
 
     void bridgeEnter(uint8_t mode)
@@ -812,6 +924,13 @@ private:
             } else {
                 usb_->println("fail");
             }
+            return;
+        }
+        if (strncmp(line, "rate", 4) == 0) {
+            uint32_t duration_ms = 10000u;
+            uint32_t hz = 500u;
+            sscanf(line + 4, "%lu %lu", &duration_ms, &hz);
+            runRateTest(duration_ms, hz);
             return;
         }
         if (strcmp(line, "bridge app") == 0) {

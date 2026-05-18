@@ -93,20 +93,21 @@ static void usart2_setup(void)
 {
     GPIO_AFRH(GPIOA) = (GPIO_AFRH(GPIOA) & ~((0xFu << 4) | (0xFu << 8))) | (4u << 4) | (4u << 8);
     GPIO_MODER(GPIOA) = (GPIO_MODER(GPIOA) & ~((3u << 18) | (3u << 20))) | (2u << 18) | (2u << 20);
-    GPIO_OTYPER(GPIOA) |= (1u << 9) | (1u << 10);
 
     USART_CR1(USART2) = 0u;
     USART_CR2(USART2) = 0u;
     USART_CR3(USART2) = 0u;
     USART_BRR(USART2) = PENNYESC_BOOT_BAUD_DIV;
-    USART_CR1(USART2) = USART_CR1_UE | USART_CR1_RE | USART_CR1_TE;
+    USART_CR1(USART2) = USART_CR1_UE | USART_CR1_RE;
 }
 
 static void send_byte(uint8_t value)
 {
-    while ((USART_ISR(USART2) & USART_ISR_TXE) == 0u) {
-    }
+    USART_CR1(USART2) = USART_CR1_UE | USART_CR1_RE | USART_CR1_TE;
     USART_TDR(USART2) = value;
+    while ((USART_ISR(USART2) & USART_ISR_TC) == 0u) {
+    }
+    USART_CR1(USART2) = USART_CR1_UE | USART_CR1_RE;
 }
 
 static void send_ack(void)
