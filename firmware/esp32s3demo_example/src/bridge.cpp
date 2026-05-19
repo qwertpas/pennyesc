@@ -6,7 +6,9 @@ PennyEscBridge bridge;
 void setup()
 {
     Serial.begin(921600);
-    bridge.begin(Serial, Serial1, 13, 12, 1);
+    pinMode(43, OUTPUT);
+    digitalWrite(43, LOW);
+    bridge.begin(Serial, Serial1, 44, 1, 1);
 }
 
 void loop()

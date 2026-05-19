@@ -27,7 +27,19 @@ struct PennyEscStatus {
     int32_t position_turn32 = 0;
     int32_t velocity_turn32_per_s = 0;
     int16_t duty = 0;
+    uint16_t mct_fault_count = 0;
+    uint16_t isr_us = 0;
+    uint16_t isr_max_us = 0;
+    uint16_t i2c_us = 0;
+    uint16_t i2c_start_us = 0;
+    uint16_t i2c_end_us = 0;
+    uint32_t isr_overrun_count = 0;
+    uint32_t i2c_timeout_count = 0;
+    uint32_t i2c_nack_count = 0;
+    uint32_t i2c_recover_count = 0;
     uint32_t uart_overrun_errors = 0;
+    uint32_t tmag_sample_count = 0;
+    uint16_t tmag_sample_dt_us = 0;
 
     bool sensorOk() const { return (flags & PNY_FLAG_SENSOR_OK) != 0u; }
     bool calValid() const { return (flags & PNY_FLAG_CAL_VALID) != 0u; }
@@ -102,6 +114,8 @@ public:
         while (serial().available() > 0) {
             serial().read();
         }
+        rx_index_ = 0u;
+        rx_expected_ = 0u;
     }
 
     uint32_t baud() const { return baud_; }
@@ -225,6 +239,24 @@ public:
             return false;
         }
         if (!readFrame(PNY_CMD_SET_DUTY, frame, sizeof(frame), frame_len, timeout_ms)) {
+            return false;
+        }
+        if (status != 0) {
+            return parseStatus(frame, frame_len, *status);
+        }
+        PennyEscStatus ignore;
+        return parseStatus(frame, frame_len, ignore);
+    }
+
+    bool stop(PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
+    {
+        uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
+        uint8_t frame_len = 0u;
+
+        if (!sendFrame(PNY_CMD_STOP, 0, 0u)) {
+            return false;
+        }
+        if (!readFrame(PNY_CMD_STOP, frame, sizeof(frame), frame_len, timeout_ms)) {
             return false;
         }
         if (status != 0) {
@@ -411,7 +443,6 @@ private:
         }
         frame[3 + payload_len] = crc8(frame, (size_t)(3u + payload_len));
 
-        clearRx();
         serial().write(frame, (size_t)(4u + payload_len));
         if (wait_for_tx) {
             serial().flush();
@@ -421,63 +452,73 @@ private:
 
     bool readFrame(uint8_t expected_cmd, uint8_t *out, size_t out_cap, uint8_t &out_len, uint32_t timeout_ms)
     {
-        uint8_t idx = 0u;
-        uint8_t expected = 0u;
-        uint32_t deadline = millis() + timeout_ms;
+        uint32_t deadline = micros() + (timeout_ms * 1000u);
 
         out_len = 0u;
-        while ((int32_t)(millis() - deadline) < 0) {
-            if (serial().available() <= 0) {
-                continue;
-            }
-
-            uint8_t byte = (uint8_t)serial().read();
-            if (idx == 0u) {
-                if (byte == PNY_FRAME_START) {
-                    out[idx++] = byte;
-                }
-                continue;
-            }
-
-            if (idx < 3u && byte == PNY_FRAME_START) {
-                out[0] = byte;
-                idx = 1u;
-                expected = 0u;
-                continue;
-            }
-
-            if (idx >= out_cap) {
-                idx = 0u;
-                expected = 0u;
-                continue;
-            }
-
-            out[idx++] = byte;
-            if (idx == 3u) {
-                if (out[2] > PNY_FRAME_MAX_PAYLOAD) {
-                    idx = 0u;
-                    expected = 0u;
-                    continue;
-                }
-                expected = (uint8_t)(out[2] + 4u);
-            }
-
-            if (expected != 0u && idx == expected) {
-                if (crc8(out, (size_t)(expected - 1u)) != out[expected - 1u]) {
-                    idx = 0u;
-                    expected = 0u;
-                    continue;
-                }
-                if ((out[1] >> 4) != address_ || (out[1] & 0x0Fu) != expected_cmd) {
-                    idx = 0u;
-                    expected = 0u;
-                    continue;
-                }
-                out_len = expected;
+        while ((int32_t)(micros() - deadline) < 0) {
+            if (readFrameAvailable(expected_cmd, out, out_cap, out_len)) {
                 return true;
             }
         }
 
+        return false;
+    }
+
+    bool readFrameAvailable(uint8_t expected_cmd, uint8_t *out, size_t out_cap, uint8_t &out_len)
+    {
+        out_len = 0u;
+        while (serial().available() > 0) {
+            uint8_t byte = (uint8_t)serial().read();
+            if (rx_index_ == 0u) {
+                if (byte == PNY_FRAME_START) {
+                    rx_buf_[rx_index_++] = byte;
+                }
+                continue;
+            }
+
+            if (rx_index_ < 3u && byte == PNY_FRAME_START) {
+                rx_buf_[0] = byte;
+                rx_index_ = 1u;
+                rx_expected_ = 0u;
+                continue;
+            }
+
+            if (rx_index_ >= sizeof(rx_buf_)) {
+                rx_index_ = 0u;
+                rx_expected_ = 0u;
+                continue;
+            }
+
+            rx_buf_[rx_index_++] = byte;
+            if (rx_index_ == 3u) {
+                if (rx_buf_[2] > PNY_FRAME_MAX_PAYLOAD) {
+                    rx_index_ = 0u;
+                    rx_expected_ = 0u;
+                    continue;
+                }
+                rx_expected_ = (uint8_t)(rx_buf_[2] + 4u);
+            }
+
+            if (rx_expected_ == 0u || rx_index_ != rx_expected_) {
+                continue;
+            }
+
+            uint8_t frame_len = rx_expected_;
+            rx_index_ = 0u;
+            rx_expected_ = 0u;
+            if (crc8(rx_buf_, (size_t)(frame_len - 1u)) != rx_buf_[frame_len - 1u]) {
+                continue;
+            }
+            if ((rx_buf_[1] >> 4) != address_ || (rx_buf_[1] & 0x0Fu) != expected_cmd) {
+                continue;
+            }
+            if (frame_len > out_cap) {
+                continue;
+            }
+            memcpy(out, rx_buf_, frame_len);
+            out_len = frame_len;
+            return true;
+        }
         return false;
     }
 
@@ -503,7 +544,19 @@ private:
         status.position_turn32 = payload.position_turn32;
         status.velocity_turn32_per_s = payload.velocity_turn32_per_s;
         status.duty = payload.duty;
+        status.mct_fault_count = payload.mct_fault_count;
+        status.isr_us = payload.isr_us;
+        status.isr_max_us = payload.isr_max_us;
+        status.i2c_us = payload.i2c_us;
+        status.i2c_start_us = payload.i2c_start_us;
+        status.i2c_end_us = payload.i2c_end_us;
+        status.isr_overrun_count = payload.isr_overrun_count;
+        status.i2c_timeout_count = payload.i2c_timeout_count;
+        status.i2c_nack_count = payload.i2c_nack_count;
+        status.i2c_recover_count = payload.i2c_recover_count;
         status.uart_overrun_errors = payload.uart_overrun_errors;
+        status.tmag_sample_count = payload.tmag_sample_count;
+        status.tmag_sample_dt_us = payload.tmag_sample_dt_us;
         return true;
     }
 
@@ -597,6 +650,9 @@ private:
     uint32_t baud_ = PENNYESC_BAUD_FAST;
     uint32_t config_ = SERIAL_8N1;
     uint8_t address_ = 1u;
+    uint8_t rx_buf_[PNY_FRAME_MAX_PAYLOAD + 4u];
+    uint8_t rx_index_ = 0u;
+    uint8_t rx_expected_ = 0u;
 };
 
 class PennyEscBridge {
@@ -737,13 +793,34 @@ private:
         usb_->print(" y=");
         usb_->print(status.y);
         usb_->print(" z=");
-        usb_->println(status.z);
+        usb_->print(status.z);
+        usb_->print(" mct_faults=");
+        usb_->print(status.mct_fault_count);
+        usb_->print(" isr=");
+        usb_->print(status.isr_us);
+        usb_->print("us max=");
+        usb_->print(status.isr_max_us);
+        usb_->print("us overruns=");
+        usb_->print(status.isr_overrun_count);
+        usb_->print(" i2c=");
+        usb_->print(status.i2c_us);
+        usb_->print("us phase=");
+        usb_->print(status.i2c_start_us);
+        usb_->print("->");
+        usb_->print(status.i2c_end_us);
+        usb_->print(" i2c_err=");
+        usb_->print(status.i2c_timeout_count);
+        usb_->print("/");
+        usb_->print(status.i2c_nack_count);
+        usb_->print("/");
+        usb_->print(status.i2c_recover_count);
+        usb_->print(" tmag_dt=");
+        usb_->println(status.tmag_sample_dt_us);
     }
 
     void runRateTest(uint32_t duration_ms, uint32_t hz)
     {
-        PennyEsc esc1(1);
-        PennyEsc esc3(3);
+        PennyEsc esc(address_);
         PennyEscStatus status;
         PennyEscEncoderData data;
         uint32_t period_us;
@@ -753,12 +830,9 @@ private:
         uint32_t loops = 0u;
         uint32_t late = 0u;
         uint32_t worst_us = 0u;
-        uint32_t fail1 = 0u;
-        uint32_t fail3 = 0u;
-        uint32_t over1_start = 0u;
-        uint32_t over3_start = 0u;
-        uint32_t over1_end = 0u;
-        uint32_t over3_end = 0u;
+        uint32_t fail = 0u;
+        uint32_t over_start = 0u;
+        uint32_t over_end = 0u;
 
         if (duration_ms == 0u) {
             duration_ms = 10000u;
@@ -770,17 +844,11 @@ private:
         target_loops = (duration_ms * hz) / 1000u;
 
         beginApp();
-        esc1.begin(uart(), rx_, tx_);
-        esc3.begin(uart(), rx_, tx_);
-        if (esc1.getStatus(status, 100u)) {
-            over1_start = status.uart_overrun_errors;
+        esc.begin(uart(), rx_, tx_);
+        if (esc.getStatus(status, 100u)) {
+            over_start = status.uart_overrun_errors;
         } else {
-            fail1++;
-        }
-        if (esc3.getStatus(status, 100u)) {
-            over3_start = status.uart_overrun_errors;
-        } else {
-            fail3++;
+            fail++;
         }
 
         start_us = micros();
@@ -788,13 +856,8 @@ private:
         while (loops < target_loops) {
             uint32_t loop_us = micros();
 
-            esc1.sendPositionTurn32(0);
-            if (!esc1.getPosVel(data, 5u)) {
-                fail1++;
-            }
-            esc3.sendPositionTurn32(0);
-            if (!esc3.getPosVel(data, 5u)) {
-                fail3++;
+            if (!esc.getPosVel(data, 5u)) {
+                fail++;
             }
 
             loops++;
@@ -812,17 +875,10 @@ private:
             }
         }
 
-        esc1.setDuty(0, &status, 100u);
-        esc3.setDuty(0, &status, 100u);
-        if (esc1.getStatus(status, 100u)) {
-            over1_end = status.uart_overrun_errors;
+        if (esc.getStatus(status, 100u)) {
+            over_end = status.uart_overrun_errors;
         } else {
-            fail1++;
-        }
-        if (esc3.getStatus(status, 100u)) {
-            over3_end = status.uart_overrun_errors;
-        } else {
-            fail3++;
+            fail++;
         }
 
         usb_->print("# rate_summary duration_ms=");
@@ -835,18 +891,14 @@ private:
         usb_->print(late);
         usb_->print(" worst_us=");
         usb_->println(worst_us);
-        usb_->print("# rate_address address=1 cycles=");
+        usb_->print("# rate_address address=");
+        usb_->print(address_);
+        usb_->print(" cycles=");
         usb_->print(loops);
         usb_->print(" fail=");
-        usb_->print(fail1);
+        usb_->print(fail);
         usb_->print(" uart_overruns_delta=");
-        usb_->println(over1_end - over1_start);
-        usb_->print("# rate_address address=3 cycles=");
-        usb_->print(loops);
-        usb_->print(" fail=");
-        usb_->print(fail3);
-        usb_->print(" uart_overruns_delta=");
-        usb_->println(over3_end - over3_start);
+        usb_->println(over_end - over_start);
         usb_->println("# rate_done");
     }
 

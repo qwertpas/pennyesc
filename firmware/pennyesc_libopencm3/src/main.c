@@ -189,6 +189,7 @@ static volatile int16_t control_kd_q8;
 static volatile int16_t control_kv_q8;
 static volatile int16_t control_kf;
 static volatile int16_t control_clip = DEFAULT_CONTROL_CLIP;
+static volatile bool report_speed;
 static volatile int32_t current_lead_turn16 = LEAD_DEFAULT_TURN16;
 static volatile int16_t observer_lead_us = OBSERVER_LEAD_US;
 static volatile uint8_t observer_mode = PNY_OBSERVER_AB_FAST;
@@ -484,7 +485,7 @@ static void apply_pwm_duty(int16_t duty)
     timer_set_oc_value(TIM2, TIM_OC4, pwm);
 }
 
-static void stop_motor_outputs(void)
+static void clear_motor_outputs(void)
 {
     apply_pwm_duty(0);
     gpio_clear(HALLA_PORT, HALLA_PIN);
@@ -492,6 +493,11 @@ static void stop_motor_outputs(void)
     gpio_clear(HALLC_PORT, HALLC_PIN);
     current_duty = 0;
     current_direction = 0;
+}
+
+static void stop_motor_outputs(void)
+{
+    clear_motor_outputs();
     velocity_turn32_per_s = 0;
     comm_velocity_turn32_per_s = 0;
 }
@@ -775,7 +781,7 @@ static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
         timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
         return;
     }
-    uint32_t dt_us = ((uint32_t)phase_delta * 1000u) / speed_k;
+    uint32_t dt_us = (((uint32_t)phase_delta * 1000u) + speed_k - 1u) / speed_k;
     if (dt_us < COMM_MIN_EVENT_US) {
         dt_us = COMM_MIN_EVENT_US;
     }
@@ -932,6 +938,7 @@ static void control_disable(void)
     control_kd_q8 = 0;
     control_kv_q8 = 0;
     control_kf = 0;
+    report_speed = false;
 }
 
 static int32_t control_term(int16_t gain_q8, int32_t error_turn32)
@@ -1008,9 +1015,9 @@ static void run_begin(void)
     get_drive_command(&duty, &direction);
 
     if (duty == 0 || direction == 0) {
-        stop_motor_outputs();
-        comm_scheduler_stop();
-        current_mode = PNY_MODE_IDLE;
+        clear_motor_outputs();
+        current_mode = PNY_MODE_RUN;
+        comm_scheduler_start();
         return;
     }
 
@@ -1035,8 +1042,8 @@ static uint8_t control_apply(void)
         return PNY_RESULT_BUSY;
     }
 
-    bool active = control_kp_q8 != 0 || control_kd_q8 != 0 || control_kv_q8 != 0 || control_kf != 0;
-    if (!active || control_duty() == 0) {
+    bool active = report_speed || control_kp_q8 != 0 || control_kd_q8 != 0 || control_kv_q8 != 0 || control_kf != 0;
+    if (!active) {
         run_stop();
         current_duty = 0;
         current_direction = 0;
@@ -1060,13 +1067,8 @@ static uint8_t control_apply(void)
 
 static void control_restart_poll(void)
 {
-    bool active = control_kp_q8 != 0 || control_kd_q8 != 0 || control_kv_q8 != 0 || control_kf != 0;
+    bool active = report_speed || control_kp_q8 != 0 || control_kd_q8 != 0 || control_kv_q8 != 0 || control_kf != 0;
     if (!active || current_mode != PNY_MODE_IDLE) {
-        return;
-    }
-    if (control_duty() == 0) {
-        current_duty = 0;
-        current_direction = 0;
         return;
     }
 
@@ -1402,10 +1404,11 @@ static void comm_control_tick(uint16_t now)
 
     current_duty = duty;
     if (duty == 0 || direction == 0) {
-        stop_motor_outputs();
+        clear_motor_outputs();
         comm_scheduler.last_duty = INT16_MIN;
         comm_scheduler.sector = 0xffu;
-        if (!capture_state.active) {
+        if (!capture_state.active && !report_speed &&
+            control_kp_q8 == 0 && control_kd_q8 == 0 && control_kv_q8 == 0 && control_kf == 0) {
             current_mode = PNY_MODE_IDLE;
             comm_scheduler_stop();
         }
@@ -1525,8 +1528,22 @@ static void comm_sector_tick(uint16_t scheduled_tick)
         return;
     }
 
-    comm_control_tick(now);
-    comm_scheduler_schedule_sector_event(now, current_direction);
+    int8_t direction = current_direction;
+    if (direction == 0 || current_duty == 0) {
+        TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
+        return;
+    }
+
+    uint8_t sector = comm_sector_at_tick(now, direction);
+    if (sector != comm_scheduler.sector) {
+        set_hall_outputs_raw(sector);
+        comm_scheduler.sector = sector;
+    }
+    if (current_duty != comm_scheduler.last_duty) {
+        apply_pwm_duty(current_duty);
+        comm_scheduler.last_duty = current_duty;
+    }
+    comm_scheduler_schedule_sector_event(now, direction);
 }
 
 void tim21_isr(void)
@@ -1631,7 +1648,8 @@ static void handle_set_duty(const uint8_t *payload, uint8_t len)
     int16_t duty;
     memcpy(&duty, payload, sizeof(duty));
 
-    control_set_duty(duty, DEFAULT_CONTROL_CLIP);
+    control_set_duty(duty, control_clip);
+    report_speed = true;
     send_status_response(PNY_CMD_SET_DUTY, control_apply());
 }
 
