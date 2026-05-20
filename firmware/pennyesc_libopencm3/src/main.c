@@ -64,11 +64,12 @@
 #define CAL_SAMPLE_INTERVAL_MS 2u
 #define CAL_SAMPLE_COUNT 16u
 #define UART_FRAME_TIMEOUT_MS 10u
-#define UART_APP_BAUD 921600u
+#define UART_APP_BAUD 2000000u
 #define UART_DMA_RX_BUF_SIZE 64u
 #define UART_DMA_RX_BUF_MASK (UART_DMA_RX_BUF_SIZE - 1u)
 #define MCT_RUN_CHECK_MS 500u
 #define MCT_RUN_BAD_LIMIT 3u
+#define MCT_RUN_UART_IDLE_MS 10u
 
 #define CAPTURE_MAX_DURATION_MS 2000u
 #define MCT_IC_STATUS_NPOR (1u << 3)
@@ -239,11 +240,22 @@ static const mct_check_t mct_expected_config[] = {
     {MCT8316Z_REG_CONTROL10, MCT_EXPECTED_CONTROL10, 1u << 7},
 };
 
+static const uint16_t comm_sector_start_turn16[] = {
+    0x0000u,
+    0x2aabu,
+    0x5556u,
+    0x8000u,
+    0xaaabu,
+    0xd556u,
+    0x0000u,
+};
+
 #define cal_state work_state.cal
 #define capture_state work_state.capture
 
 static pny_frame_parser_t frame_parser;
 static uint32_t uart_quiet_until_ms;
+static uint32_t uart_last_frame_ms;
 static volatile uint8_t uart_dma_rx[UART_DMA_RX_BUF_SIZE];
 static uint16_t uart_dma_tail;
 static bool sensor_run_mode;
@@ -519,7 +531,10 @@ static int32_t comm_velocity_update(int32_t position, uint16_t tick)
 {
     comm_velocity_positions[comm_velocity_index] = position;
     comm_velocity_ticks[comm_velocity_index] = tick;
-    comm_velocity_index = (uint8_t)((comm_velocity_index + 1u) % COMM_VELOCITY_SAMPLES);
+    comm_velocity_index++;
+    if (comm_velocity_index >= COMM_VELOCITY_SAMPLES) {
+        comm_velocity_index = 0;
+    }
     if (comm_velocity_count < COMM_VELOCITY_SAMPLES) {
         comm_velocity_count++;
         return comm_velocity_turn32_per_s;
@@ -527,9 +542,18 @@ static int32_t comm_velocity_update(int32_t position, uint16_t tick)
 
     uint8_t oldest = comm_velocity_index;
     uint8_t i0 = oldest;
-    uint8_t i1 = (uint8_t)((oldest + 1u) % COMM_VELOCITY_SAMPLES);
-    uint8_t i3 = (uint8_t)((oldest + 3u) % COMM_VELOCITY_SAMPLES);
-    uint8_t i4 = (uint8_t)((oldest + 4u) % COMM_VELOCITY_SAMPLES);
+    uint8_t i1 = oldest + 1u;
+    uint8_t i3 = oldest + 3u;
+    uint8_t i4 = oldest + 4u;
+    if (i1 >= COMM_VELOCITY_SAMPLES) {
+        i1 -= COMM_VELOCITY_SAMPLES;
+    }
+    if (i3 >= COMM_VELOCITY_SAMPLES) {
+        i3 -= COMM_VELOCITY_SAMPLES;
+    }
+    if (i4 >= COMM_VELOCITY_SAMPLES) {
+        i4 -= COMM_VELOCITY_SAMPLES;
+    }
     uint16_t dt_us = (uint16_t)(comm_velocity_ticks[i4] - comm_velocity_ticks[i0]);
     if (dt_us == 0u || dt_us >= SENSOR_STALE_US) {
         return comm_velocity_turn32_per_s;
@@ -747,16 +771,16 @@ static uint8_t comm_sector_at_tick(uint16_t tick, int direction)
 
 static uint16_t comm_sector_start_phase(uint8_t sector)
 {
-    return (uint16_t)((((uint32_t)sector * 65536u) + 5u) / 6u);
+    return comm_sector_start_turn16[sector];
 }
 
-static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
+static uint8_t comm_scheduler_schedule_sector_event(uint16_t now, int direction)
 {
     int32_t electrical_velocity = comm_velocity_turn32_per_s * POLE_PAIRS;
     if (direction == 0 || electrical_velocity == 0) {
         TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
         timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
-        return;
+        return 0xffu;
     }
 
     uint32_t speed = abs_u32(electrical_velocity);
@@ -779,7 +803,7 @@ static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
     if (speed_k == 0u) {
         TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
         timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
-        return;
+        return 0xffu;
     }
     uint32_t dt_us = (((uint32_t)phase_delta * 1000u) + speed_k - 1u) / speed_k;
     if (dt_us < COMM_MIN_EVENT_US) {
@@ -788,13 +812,14 @@ static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
     if (dt_us > COMM_MAX_EVENT_US) {
         TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
         timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
-        return;
+        return 0xffu;
     }
 
     comm_scheduler.next_comm_tick = (uint16_t)(now + (uint16_t)dt_us);
     TIM_CCR2(TIM21) = comm_scheduler.next_comm_tick;
     timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
     TIM_DIER(TIM21) |= TIM_DIER_CC2IE;
+    return sector;
 }
 
 static void comm_scheduler_stop(void)
@@ -1059,8 +1084,6 @@ static uint8_t control_apply(void)
         if (current_mode != PNY_MODE_RUN) {
             return PNY_RESULT_BAD_STATE;
         }
-    } else {
-        mct_recover_if_needed();
     }
     return PNY_RESULT_OK;
 }
@@ -1087,6 +1110,10 @@ static void mct_run_check(void)
     }
     next_mct_check_ms = now + MCT_RUN_CHECK_MS;
     if (current_mode != PNY_MODE_RUN || current_duty == 0 || current_direction == 0) {
+        return;
+    }
+    if ((uint32_t)(now - uart_last_frame_ms) < MCT_RUN_UART_IDLE_MS) {
+        next_mct_check_ms = now + MCT_RUN_UART_IDLE_MS;
         return;
     }
 
@@ -1188,11 +1215,16 @@ static void refresh_status_sensor(void)
         return;
     }
 
-    if ((!sensor_ready && !sensor_init_full_mode()) || !sensor_set_full_mode()) {
-        sensor_ready = false;
-        return;
+    for (uint8_t i = 0; i < SENSOR_START_RETRIES; i++) {
+        if ((!sensor_ready && !sensor_init_full_mode()) || !sensor_set_full_mode()) {
+            sensor_ready = false;
+            continue;
+        }
+        refresh_sensor_xyz(true);
+        if (sensor_ready) {
+            return;
+        }
     }
-    refresh_sensor_xyz(true);
 }
 
 static void fill_update_status(pny_status_payload_t *payload)
@@ -1514,7 +1546,9 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
     }
 
     comm_control_tick(control_tick);
-    comm_scheduler_schedule_sector_event(control_tick, current_direction);
+    if (have_sample || (TIM_DIER(TIM21) & TIM_DIER_CC2IE) == 0u) {
+        comm_scheduler_schedule_sector_event(control_tick, current_direction);
+    }
 }
 
 static void comm_sector_tick(uint16_t scheduled_tick)
@@ -1534,7 +1568,10 @@ static void comm_sector_tick(uint16_t scheduled_tick)
         return;
     }
 
-    uint8_t sector = comm_sector_at_tick(now, direction);
+    uint8_t sector = comm_scheduler_schedule_sector_event(now, direction);
+    if (sector > 5u) {
+        return;
+    }
     if (sector != comm_scheduler.sector) {
         set_hall_outputs_raw(sector);
         comm_scheduler.sector = sector;
@@ -1543,7 +1580,6 @@ static void comm_sector_tick(uint16_t scheduled_tick)
         apply_pwm_duty(current_duty);
         comm_scheduler.last_duty = current_duty;
     }
-    comm_scheduler_schedule_sector_event(now, direction);
 }
 
 void tim21_isr(void)
@@ -1638,11 +1674,10 @@ static void handle_stop(const uint8_t *payload, uint8_t len)
     send_status_response(PNY_CMD_STOP, PNY_RESULT_OK);
 }
 
-static void handle_set_duty(const uint8_t *payload, uint8_t len)
+static uint8_t apply_duty_payload(const uint8_t *payload, uint8_t len)
 {
     if (len != 2u) {
-        send_status_response(PNY_CMD_SET_DUTY, PNY_RESULT_BAD_ARG);
-        return;
+        return PNY_RESULT_BAD_ARG;
     }
 
     int16_t duty;
@@ -1650,7 +1685,12 @@ static void handle_set_duty(const uint8_t *payload, uint8_t len)
 
     control_set_duty(duty, control_clip);
     report_speed = true;
-    send_status_response(PNY_CMD_SET_DUTY, control_apply());
+    return control_apply();
+}
+
+static void handle_set_duty(const uint8_t *payload, uint8_t len)
+{
+    send_status_response(PNY_CMD_SET_DUTY, apply_duty_payload(payload, len));
 }
 
 static void handle_set_position(const uint8_t *payload, uint8_t len)
@@ -1681,6 +1721,13 @@ static void handle_send_position(const uint8_t *payload, uint8_t len)
     target_position_set = true;
     if (current_mode != PNY_MODE_RUN) {
         control_apply();
+    }
+}
+
+static void handle_send_duty(const uint8_t *payload, uint8_t len)
+{
+    if (len == 2u) {
+        (void)apply_duty_payload(payload, len);
     }
 }
 
@@ -2079,6 +2126,7 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
     if (address != ESC_ADDRESS) {
         return;
     }
+    uart_last_frame_ms = system_millis;
 
     switch (cmd) {
     case PNY_CMD_GET_STATUS:
@@ -2106,6 +2154,9 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
         break;
     case PNY_CMD_SEND_POSITION:
         handle_send_position(payload, len);
+        break;
+    case PNY_CMD_SEND_DUTY:
+        handle_send_duty(payload, len);
         break;
     case PNY_CMD_SET_VELOCITY:
         handle_set_velocity(payload, len);

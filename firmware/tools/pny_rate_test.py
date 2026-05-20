@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import struct
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import serial
 
 from pnyboot import BootBridge, find_serial_port
-from pnyproto import CMD_GET_POS_VEL, CMD_GET_STATUS, CMD_SET_DUTY, CMD_STOP, decode_frame, encode_frame
+from pnyproto import (
+    CMD_GET_POS_VEL,
+    CMD_GET_STATUS,
+    CMD_SEND_DUTY,
+    CMD_SET_DUTY,
+    CMD_STOP,
+    decode_frame,
+    encode_frame,
+)
 
 STATUS_FMT = "<BBBBhhhHiihHHHHHHIIIIIIH"
 STATUS_LEN = struct.calcsize(STATUS_FMT)
@@ -170,30 +180,65 @@ def run_bridge(args: argparse.Namespace) -> int:
     duration_ms = int(args.duration * 1000.0)
     expected = int(args.hz * args.duration)
     lines: list[str] = []
+    done_marker = "# pollfast_done" if args.fast_poll else "# rate_done"
 
     with BootBridge(port_name, baudrate=args.usb_baud) as bridge:
         bridge.sync_shell(allow_reset=args.allow_reset)
         bridge.serial.reset_input_buffer()
-        bridge.serial.write(f"{bridge.command_prefix}rate {duration_ms} {int(args.hz)}\n".encode("utf-8"))
+        command = (
+            f"{bridge.command_prefix}pollfast {duration_ms} {int(args.hz)} {args.duty} {args.spinup_ms}\n"
+            if args.fast_poll
+            else f"{bridge.command_prefix}rate {duration_ms} {int(args.hz)} {args.duty} {args.spinup_ms}\n"
+        )
+        bridge.serial.write(command.encode("utf-8"))
         bridge.serial.flush()
 
-        deadline = time.monotonic() + args.duration + 5.0
+        deadline = time.monotonic() + args.duration + (args.spinup_ms / 1000.0) + 5.0
         while time.monotonic() < deadline:
             line = bridge.serial.readline()
             if not line:
                 continue
             text = line.decode("utf-8", errors="replace").strip()
             if text:
-                print(text, flush=True)
+                is_row = text.startswith("# rate_row ") or text.startswith("# pollfast_row ")
+                if not is_row or not args.quiet_rows:
+                    print(text, flush=True)
                 lines.append(text)
-            if text == "# rate_done":
+            if text == done_marker:
                 break
         else:
             print("rate runner timeout", flush=True)
             return 1
 
     ok = False
+    failed = False
+    rows: list[list[str]] = []
     for line in lines:
+        if args.fast_poll and line.startswith("# pollfast_row "):
+            rows.append(line.removeprefix("# pollfast_row ").split(","))
+            continue
+        if not args.fast_poll and line.startswith("# rate_row "):
+            rows.append(line.removeprefix("# rate_row ").split(","))
+            continue
+        if args.fast_poll and line.startswith("# pollfast_summary "):
+            parts = dict(part.split("=", 1) for part in line.split()[1:] if "=" in part)
+            ticks = int(parts.get("ticks", "0"))
+            poll_fail = int(parts.get("poll_fail", "1"))
+            timeouts = int(parts.get("timeouts", "1"))
+            if ticks < expected or poll_fail != 0 or timeouts != 0:
+                failed = True
+            ok = True
+            continue
+        if args.fast_poll and line.startswith("# pollfast_address "):
+            parts = dict(part.split("=", 1) for part in line.split()[1:] if "=" in part)
+            fail = int(parts.get("fail", "1"))
+            overruns = int(parts.get("uart_overruns_delta", "1"))
+            if fail != 0 or overruns != 0:
+                failed = True
+            ok = True
+            continue
+        if args.fast_poll:
+            continue
         if not line.startswith("# rate_address "):
             continue
         parts = dict(part.split("=", 1) for part in line.split()[1:] if "=" in part)
@@ -201,9 +246,28 @@ def run_bridge(args: argparse.Namespace) -> int:
         fail = int(parts.get("fail", "1"))
         overruns = int(parts.get("uart_overruns_delta", "1"))
         if cycles < expected or fail != 0 or overruns != 0:
-            return 1
+            failed = True
         ok = True
-    return 0 if ok else 1
+    if args.csv_out is not None:
+        args.csv_out.parent.mkdir(parents=True, exist_ok=True)
+        with args.csv_out.open("w", newline="") as f:
+            writer = csv.writer(f)
+            if args.fast_poll:
+                writer.writerow([
+                    "sample",
+                    "t_us",
+                    "sample_age_us",
+                    "loop_us",
+                    "fresh",
+                    "valid",
+                    "position_turn32",
+                    "velocity_turn32_per_s",
+                    "rpm",
+                ])
+            else:
+                writer.writerow(["sample", "t_us", "loop_us", "ok", "position_turn32", "velocity_turn32_per_s", "rpm"])
+            writer.writerows(rows)
+    return 0 if ok and not failed else 1
 
 
 def run_host_stream(args: argparse.Namespace) -> int:
@@ -225,6 +289,9 @@ def run_host_stream(args: argparse.Namespace) -> int:
             stats_by_address[address].overruns_start = uart_overruns(
                 reader.read(address, CMD_GET_STATUS, 0.5, stats_by_address[address])
             )
+            port.write(encode_frame(address, CMD_SET_DUTY, set_duty_payload))
+            port.flush()
+            reader.read(address, CMD_SET_DUTY, 0.5, stats_by_address[address])
 
         start = time.monotonic()
         next_tick = start
@@ -237,10 +304,14 @@ def run_host_stream(args: argparse.Namespace) -> int:
                 loop_start = time.monotonic()
                 for address in addresses:
                     stats = stats_by_address[address]
-                    port.write(encode_frame(address, CMD_SET_DUTY, set_duty_payload))
+                    if args.set_duty_each_loop:
+                        port.write(encode_frame(address, CMD_SET_DUTY, set_duty_payload))
+                    elif args.send_duty_each_loop:
+                        port.write(encode_frame(address, CMD_SEND_DUTY, set_duty_payload))
                     port.write(encode_frame(address, CMD_GET_POS_VEL))
                     port.flush()
-                    reader.read(address, CMD_SET_DUTY, args.exchange_timeout, stats)
+                    if args.set_duty_each_loop:
+                        reader.read(address, CMD_SET_DUTY, args.exchange_timeout, stats)
                     reader.read(address, CMD_GET_POS_VEL, args.exchange_timeout, stats)
                     stats.cycles += 1
 
@@ -295,11 +366,19 @@ def main() -> int:
     parser.add_argument("--hz", type=float, default=500.0)
     parser.add_argument("--usb-baud", type=int, default=921600)
     parser.add_argument("--duty", type=int, default=0)
+    parser.add_argument("--send-duty-each-loop", action="store_true")
+    parser.add_argument("--set-duty-each-loop", action="store_true")
     parser.add_argument("--read-timeout", type=float, default=0.002)
     parser.add_argument("--exchange-timeout", type=float, default=0.02)
+    parser.add_argument("--csv-out", type=Path)
+    parser.add_argument("--fast-poll", action="store_true")
+    parser.add_argument("--spinup-ms", type=int, default=0)
+    parser.add_argument("--quiet-rows", action="store_true")
     parser.add_argument("--allow-reset", action="store_true")
     parser.add_argument("--host-stream", action="store_true")
     args = parser.parse_args()
+    if args.send_duty_each_loop and args.set_duty_each_loop:
+        parser.error("--send-duty-each-loop and --set-duty-each-loop are mutually exclusive")
     return run(args)
 
 

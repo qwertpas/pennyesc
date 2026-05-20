@@ -2,15 +2,17 @@
 #define PENNYESC_ARDUINO_H
 
 #include <Arduino.h>
+#include <limits.h>
 #include <string.h>
 #include "pennyesc_protocol.h"
 
 static const uint32_t PENNYESC_BAUD_UPDATE = 115200u;
-static const uint32_t PENNYESC_BAUD_FAST = 921600u;
+static const uint32_t PENNYESC_BAUD_FAST = 2000000u;
 static const uint32_t PENNYESC_ROM_BAUD = 115200u;
 static const float PENNYESC_TURN32_PER_REV = 65536.0f;
 static const float PENNYESC_TURN32_TO_RAD = 6.2831853f / PENNYESC_TURN32_PER_REV;
 static const float PENNYESC_RAD_TO_TURN32 = PENNYESC_TURN32_PER_REV / 6.2831853f;
+static const uint32_t PENNYESC_RATE_LOG_MAX = 2400u;
 
 static volatile bool pennyesc_bridge_active = false;
 
@@ -63,6 +65,24 @@ struct PennyEscEncoderData {
     float positionRad() const { return (float)position_turn32 * PENNYESC_TURN32_TO_RAD; }
     float velocityRadS() const { return (float)velocity_turn32_per_s * PENNYESC_TURN32_TO_RAD; }
     float velocityRpm() const { return (float)velocity_turn32_per_s * 60.0f / PENNYESC_TURN32_PER_REV; }
+};
+
+struct PennyEscRateSample {
+    uint32_t t_us;
+    int32_t position_turn32;
+    int32_t velocity_turn32_per_s;
+    uint16_t loop_us;
+    uint8_t ok;
+};
+
+struct PennyEscPollFastSample {
+    uint32_t t_us;
+    uint32_t sample_age_us;
+    int32_t position_turn32;
+    int32_t velocity_turn32_per_s;
+    uint16_t loop_us;
+    uint8_t fresh;
+    uint8_t valid;
 };
 
 class PennyEsc {
@@ -133,6 +153,22 @@ public:
         return parsePosVel(frame, frame_len, data);
     }
 
+    bool requestPosVel()
+    {
+        return sendFrame(PNY_CMD_GET_POS_VEL, 0, 0, false);
+    }
+
+    bool readPosVelAvailable(PennyEscEncoderData &data)
+    {
+        uint8_t frame[sizeof(pny_pos_vel_payload_t) + 4u];
+        uint8_t frame_len = 0u;
+
+        if (!readFrameAvailable(PNY_CMD_GET_POS_VEL, frame, sizeof(frame), frame_len)) {
+            return false;
+        }
+        return parsePosVel(frame, frame_len, data);
+    }
+
     bool setDuty(int16_t duty, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
     {
         uint8_t payload[2];
@@ -151,6 +187,14 @@ public:
         }
         PennyEscStatus ignore;
         return parseStatus(frame, frame_len, ignore);
+    }
+
+    bool sendDuty(int16_t duty)
+    {
+        uint8_t payload[2];
+
+        memcpy(payload, &duty, sizeof(duty));
+        return sendFrame(PNY_CMD_SEND_DUTY, payload, sizeof(payload), false);
     }
 
     bool stop(PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
@@ -298,20 +342,7 @@ public:
 
     bool pollEncoder(PennyEscEncoderData &data, uint32_t timeout_ms = 20u)
     {
-        PennyEscStatus status;
-
-        if (!getStatus(status, timeout_ms) || !status.valid || status.result != PNY_RESULT_OK) {
-            data.valid = false;
-            return false;
-        }
-
-        data.valid = true;
-        data.x = status.x;
-        data.y = status.y;
-        data.z = status.z;
-        data.position_turn32 = status.position_turn32;
-        data.velocity_turn32_per_s = status.velocity_turn32_per_s;
-        return true;
+        return getPosVel(data, timeout_ms);
     }
 
     static uint8_t crc8(const uint8_t *data, size_t len)
@@ -476,6 +507,9 @@ private:
 
         memcpy(&payload, &frame[3], sizeof(payload));
         data.valid = true;
+        data.x = 0;
+        data.y = 0;
+        data.z = 0;
         data.position_turn32 = payload.position_turn32;
         data.velocity_turn32_per_s = payload.velocity_turn32_per_s;
         return true;
@@ -612,7 +646,7 @@ private:
 
     void printHelp()
     {
-        usb_->println("commands: help ping e<addr> s d<duty> rate <ms> <hz> bridge app bridge handoff bridge upload bridge rom");
+        usb_->println("commands: help ping e<addr> s d<duty> rate <ms> <hz> <duty> pollfast <ms> <hz> <duty> <spinup_ms> bridge app bridge handoff bridge upload bridge rom");
     }
 
     void printStatus(const PennyEscStatus &status)
@@ -655,7 +689,7 @@ private:
         usb_->println(status.tmag_sample_dt_us);
     }
 
-    void runRateTest(uint32_t duration_ms, uint32_t hz)
+    void runRateTest(uint32_t duration_ms, uint32_t hz, int16_t duty, uint32_t spinup_ms)
     {
         PennyEsc esc(address_);
         PennyEscStatus status;
@@ -663,13 +697,22 @@ private:
         uint32_t period_us;
         uint32_t start_us;
         uint32_t next_us;
+        uint32_t elapsed_us;
         uint32_t target_loops;
         uint32_t loops = 0u;
-        uint32_t late = 0u;
+        uint32_t missed = 0u;
         uint32_t worst_us = 0u;
+        uint32_t worst_late_us = 0u;
         uint32_t fail = 0u;
         uint32_t over_start = 0u;
         uint32_t over_end = 0u;
+        bool status_ok = false;
+        uint32_t log_count = 0u;
+        uint32_t ok_samples = 0u;
+        int32_t rpm_sum = 0;
+        int32_t rpm_min = INT32_MAX;
+        int32_t rpm_max = INT32_MIN;
+        static PennyEscRateSample log[PENNYESC_RATE_LOG_MAX];
 
         if (duration_ms == 0u) {
             duration_ms = 10000u;
@@ -687,47 +730,100 @@ private:
         } else {
             fail++;
         }
+        if (duty != 0) {
+            int16_t clip = (duty < 0) ? (int16_t)(-duty) : duty;
+            if (!esc.setControl(0.0f, 0.0f, 0.0f, 0, clip, &status, 100u)) {
+                fail++;
+            }
+            if (!esc.setDuty(duty, &status, 100u)) {
+                fail++;
+            }
+            while (spinup_ms > 0u) {
+                uint32_t step_ms = (spinup_ms > 50u) ? 50u : spinup_ms;
+                delay(step_ms);
+                spinup_ms -= step_ms;
+            }
+        }
 
         start_us = micros();
-        next_us = start_us;
+        next_us = start_us + period_us;
         while (loops < target_loops) {
             uint32_t loop_us = micros();
 
-            if (!esc.getPosVel(data, 5u)) {
+            bool ok = esc.getPosVel(data, 5u);
+            if (!ok) {
                 fail++;
+            } else {
+                ok_samples++;
             }
 
             loops++;
             loop_us = micros() - loop_us;
+            if (log_count < PENNYESC_RATE_LOG_MAX) {
+                log[log_count].t_us = (uint32_t)(micros() - start_us);
+                log[log_count].position_turn32 = data.position_turn32;
+                log[log_count].velocity_turn32_per_s = data.velocity_turn32_per_s;
+                log[log_count].loop_us = (uint16_t)((loop_us > 0xffffu) ? 0xffffu : loop_us);
+                log[log_count].ok = ok ? 1u : 0u;
+                log_count++;
+            }
+            if (ok) {
+                int32_t rpm = (data.velocity_turn32_per_s * 60L) / 65536L;
+                rpm_sum += rpm;
+                if (rpm < rpm_min) {
+                    rpm_min = rpm;
+                }
+                if (rpm > rpm_max) {
+                    rpm_max = rpm;
+                }
+            }
             if (loop_us > worst_us) {
                 worst_us = loop_us;
             }
 
-            next_us += period_us;
-            while ((int32_t)(micros() - next_us) < 0) {
-            }
-            if ((int32_t)(micros() - next_us) > 0) {
-                late++;
+            int32_t wait_us = (int32_t)(next_us - micros());
+            if (wait_us > 0) {
+                while ((int32_t)(next_us - micros()) > 0) {
+                }
+            } else {
+                uint32_t late_us = (uint32_t)(0 - wait_us);
+                missed++;
+                if (late_us > worst_late_us) {
+                    worst_late_us = late_us;
+                }
                 next_us = micros();
             }
+            next_us += period_us;
         }
+        elapsed_us = micros() - start_us;
 
         if (esc.getStatus(status, 100u)) {
             over_end = status.uart_overrun_errors;
+            status_ok = true;
         } else {
             fail++;
+        }
+        if (duty != 0) {
+            PennyEscStatus stop_status;
+            (void)esc.stop(&stop_status, 100u);
         }
 
         usb_->print("# rate_summary duration_ms=");
         usb_->print(duration_ms);
         usb_->print(" hz=");
         usb_->print(hz);
+        usb_->print(" duty=");
+        usb_->print(duty);
         usb_->print(" loops=");
         usb_->print(loops);
-        usb_->print(" late=");
-        usb_->print(late);
+        usb_->print(" elapsed_ms=");
+        usb_->print((elapsed_us + 500u) / 1000u);
+        usb_->print(" missed=");
+        usb_->print(missed);
         usb_->print(" worst_us=");
-        usb_->println(worst_us);
+        usb_->print(worst_us);
+        usb_->print(" worst_late_us=");
+        usb_->println(worst_late_us);
         usb_->print("# rate_address address=");
         usb_->print(address_);
         usb_->print(" cycles=");
@@ -736,7 +832,308 @@ private:
         usb_->print(fail);
         usb_->print(" uart_overruns_delta=");
         usb_->println(over_end - over_start);
+        usb_->print("# rate_rpm address=");
+        usb_->print(address_);
+        usb_->print(" samples=");
+        usb_->print(ok_samples);
+        usb_->print(" avg=");
+        usb_->print((ok_samples != 0u) ? (rpm_sum / (int32_t)ok_samples) : 0);
+        usb_->print(" min=");
+        usb_->print((rpm_min == INT32_MAX) ? 0 : rpm_min);
+        usb_->print(" max=");
+        usb_->println((rpm_max == INT32_MIN) ? 0 : rpm_max);
+        if (status_ok) {
+            int32_t rpm = (status.velocity_turn32_per_s * 60L) / 65536L;
+            usb_->print("# rate_status address=");
+            usb_->print(address_);
+            usb_->print(" rpm=");
+            usb_->print(rpm);
+            usb_->print(" isr_max=");
+            usb_->print(status.isr_max_us);
+            usb_->print(" overruns=");
+            usb_->print(status.isr_overrun_count);
+            usb_->print(" uart_ore=");
+            usb_->print(status.uart_overrun_errors);
+            usb_->print(" tmag_dt=");
+            usb_->print(status.tmag_sample_dt_us);
+            usb_->print(" tmag_samples=");
+            usb_->print(status.tmag_sample_count);
+            usb_->print(" faults=");
+            usb_->println(status.faults);
+        }
+        usb_->println("# rate_csv sample,t_us,loop_us,ok,position_turn32,velocity_turn32_per_s,rpm");
+        for (uint32_t i = 0u; i < log_count; i++) {
+            int32_t rpm = (log[i].velocity_turn32_per_s * 60L) / 65536L;
+            usb_->print("# rate_row ");
+            usb_->print(i);
+            usb_->print(",");
+            usb_->print(log[i].t_us);
+            usb_->print(",");
+            usb_->print(log[i].loop_us);
+            usb_->print(",");
+            usb_->print(log[i].ok);
+            usb_->print(",");
+            usb_->print(log[i].position_turn32);
+            usb_->print(",");
+            usb_->print(log[i].velocity_turn32_per_s);
+            usb_->print(",");
+            usb_->println(rpm);
+        }
         usb_->println("# rate_done");
+    }
+
+    void runPollFastTest(uint32_t duration_ms, uint32_t control_hz, int16_t duty, uint32_t spinup_ms)
+    {
+        PennyEsc esc(address_);
+        PennyEscStatus status;
+        PennyEscEncoderData data;
+        PennyEscEncoderData latest;
+        uint32_t period_us;
+        uint32_t start_us;
+        uint32_t next_tick_us;
+        uint32_t last_sample_us = 0u;
+        uint32_t request_us = 0u;
+        uint32_t target_ticks;
+        uint32_t ticks = 0u;
+        uint32_t fresh_ticks = 0u;
+        uint32_t stale_ticks = 0u;
+        uint32_t missed = 0u;
+        uint32_t poll_ok = 0u;
+        uint32_t poll_fail = 0u;
+        uint32_t timeouts = 0u;
+        uint32_t fail = 0u;
+        uint32_t worst_loop_us = 0u;
+        uint32_t worst_age_us = 0u;
+        uint32_t worst_late_us = 0u;
+        uint32_t over_start = 0u;
+        uint32_t over_end = 0u;
+        uint32_t log_count = 0u;
+        uint32_t rpm_samples = 0u;
+        int32_t rpm_sum = 0;
+        int32_t rpm_min = INT32_MAX;
+        int32_t rpm_max = INT32_MIN;
+        bool request_pending = false;
+        bool latest_valid = false;
+        bool tick_fresh = false;
+        bool status_ok = false;
+        static PennyEscPollFastSample log[PENNYESC_RATE_LOG_MAX];
+
+        if (duration_ms == 0u) {
+            duration_ms = 10000u;
+        }
+        if (control_hz == 0u) {
+            control_hz = 600u;
+        }
+        period_us = 1000000u / control_hz;
+        target_ticks = (duration_ms * control_hz) / 1000u;
+
+        beginApp();
+        esc.begin(uart(), rx_, tx_);
+        if (esc.getStatus(status, 100u)) {
+            over_start = status.uart_overrun_errors;
+        } else {
+            fail++;
+        }
+        if (duty != 0) {
+            int16_t clip = (duty < 0) ? (int16_t)(-duty) : duty;
+            if (!esc.setControl(0.0f, 0.0f, 0.0f, 0, clip, &status, 100u)) {
+                fail++;
+            }
+            if (!esc.setDuty(duty, &status, 100u)) {
+                fail++;
+            }
+            while (spinup_ms > 0u) {
+                uint32_t step_ms = (spinup_ms > 50u) ? 50u : spinup_ms;
+                delay(step_ms);
+                spinup_ms -= step_ms;
+            }
+        }
+        if (esc.getPosVel(latest, 20u)) {
+            latest_valid = true;
+            last_sample_us = micros();
+        } else {
+            fail++;
+        }
+
+        start_us = micros();
+        next_tick_us = start_us + period_us;
+        while (ticks < target_ticks) {
+            uint32_t loop_start_us = micros();
+
+            if (!request_pending) {
+                if (esc.requestPosVel()) {
+                    request_pending = true;
+                    request_us = micros();
+                } else {
+                    poll_fail++;
+                }
+            }
+
+            if (request_pending && esc.readPosVelAvailable(data)) {
+                latest = data;
+                latest_valid = true;
+                last_sample_us = micros();
+                request_pending = false;
+                tick_fresh = true;
+                poll_ok++;
+                int32_t rpm = (data.velocity_turn32_per_s * 60L) / 65536L;
+                rpm_sum += rpm;
+                rpm_samples++;
+                if (rpm < rpm_min) {
+                    rpm_min = rpm;
+                }
+                if (rpm > rpm_max) {
+                    rpm_max = rpm;
+                }
+            }
+
+            if (request_pending && (uint32_t)(micros() - request_us) > 5000u) {
+                request_pending = false;
+                timeouts++;
+                poll_fail++;
+                esc.clearRx();
+            }
+
+            uint32_t now = micros();
+            if ((int32_t)(now - next_tick_us) >= 0) {
+                uint32_t age_us = latest_valid ? (uint32_t)(now - last_sample_us) : 0xffffffffu;
+                uint32_t loop_us = now - loop_start_us;
+                if (loop_us > worst_loop_us) {
+                    worst_loop_us = loop_us;
+                }
+                if (age_us > worst_age_us && age_us != 0xffffffffu) {
+                    worst_age_us = age_us;
+                }
+                if (latest_valid && tick_fresh) {
+                    fresh_ticks++;
+                } else {
+                    stale_ticks++;
+                }
+                if (log_count < PENNYESC_RATE_LOG_MAX) {
+                    log[log_count].t_us = now - start_us;
+                    log[log_count].sample_age_us = age_us;
+                    log[log_count].position_turn32 = latest.position_turn32;
+                    log[log_count].velocity_turn32_per_s = latest.velocity_turn32_per_s;
+                    log[log_count].loop_us = (uint16_t)((loop_us > 0xffffu) ? 0xffffu : loop_us);
+                    log[log_count].fresh = (latest_valid && tick_fresh) ? 1u : 0u;
+                    log[log_count].valid = latest_valid ? 1u : 0u;
+                    log_count++;
+                }
+                tick_fresh = false;
+                ticks++;
+
+                int32_t wait_us = (int32_t)(next_tick_us + period_us - micros());
+                if (wait_us < 0) {
+                    uint32_t late_us = (uint32_t)(0 - wait_us);
+                    missed++;
+                    if (late_us > worst_late_us) {
+                        worst_late_us = late_us;
+                    }
+                    next_tick_us = micros();
+                } else {
+                    next_tick_us += period_us;
+                }
+            }
+        }
+
+        if (esc.getStatus(status, 100u)) {
+            over_end = status.uart_overrun_errors;
+            status_ok = true;
+        } else {
+            fail++;
+        }
+        if (duty != 0) {
+            PennyEscStatus stop_status;
+            (void)esc.stop(&stop_status, 100u);
+        }
+
+        uint32_t elapsed_us = micros() - start_us;
+        usb_->print("# pollfast_summary duration_ms=");
+        usb_->print(duration_ms);
+        usb_->print(" control_hz=");
+        usb_->print(control_hz);
+        usb_->print(" duty=");
+        usb_->print(duty);
+        usb_->print(" ticks=");
+        usb_->print(ticks);
+        usb_->print(" elapsed_ms=");
+        usb_->print((elapsed_us + 500u) / 1000u);
+        usb_->print(" fresh_ticks=");
+        usb_->print(fresh_ticks);
+        usb_->print(" stale_ticks=");
+        usb_->print(stale_ticks);
+        usb_->print(" missed=");
+        usb_->print(missed);
+        usb_->print(" poll_ok=");
+        usb_->print(poll_ok);
+        usb_->print(" poll_fail=");
+        usb_->print(poll_fail);
+        usb_->print(" timeouts=");
+        usb_->print(timeouts);
+        usb_->print(" worst_age_us=");
+        usb_->print(worst_age_us);
+        usb_->print(" worst_loop_us=");
+        usb_->print(worst_loop_us);
+        usb_->print(" worst_late_us=");
+        usb_->println(worst_late_us);
+        usb_->print("# pollfast_address address=");
+        usb_->print(address_);
+        usb_->print(" fail=");
+        usb_->print(fail);
+        usb_->print(" uart_overruns_delta=");
+        usb_->println(over_end - over_start);
+        usb_->print("# pollfast_rpm address=");
+        usb_->print(address_);
+        usb_->print(" samples=");
+        usb_->print(rpm_samples);
+        usb_->print(" avg=");
+        usb_->print((rpm_samples != 0u) ? (rpm_sum / (int32_t)rpm_samples) : 0);
+        usb_->print(" min=");
+        usb_->print((rpm_min == INT32_MAX) ? 0 : rpm_min);
+        usb_->print(" max=");
+        usb_->println((rpm_max == INT32_MIN) ? 0 : rpm_max);
+        if (status_ok) {
+            int32_t rpm = (status.velocity_turn32_per_s * 60L) / 65536L;
+            usb_->print("# pollfast_status address=");
+            usb_->print(address_);
+            usb_->print(" rpm=");
+            usb_->print(rpm);
+            usb_->print(" isr_max=");
+            usb_->print(status.isr_max_us);
+            usb_->print(" overruns=");
+            usb_->print(status.isr_overrun_count);
+            usb_->print(" uart_ore=");
+            usb_->print(status.uart_overrun_errors);
+            usb_->print(" tmag_dt=");
+            usb_->print(status.tmag_sample_dt_us);
+            usb_->print(" tmag_samples=");
+            usb_->print(status.tmag_sample_count);
+            usb_->print(" faults=");
+            usb_->println(status.faults);
+        }
+        usb_->println("# pollfast_csv sample,t_us,sample_age_us,loop_us,fresh,valid,position_turn32,velocity_turn32_per_s,rpm");
+        for (uint32_t i = 0u; i < log_count; i++) {
+            int32_t rpm = (log[i].velocity_turn32_per_s * 60L) / 65536L;
+            usb_->print("# pollfast_row ");
+            usb_->print(i);
+            usb_->print(",");
+            usb_->print(log[i].t_us);
+            usb_->print(",");
+            usb_->print(log[i].sample_age_us);
+            usb_->print(",");
+            usb_->print(log[i].loop_us);
+            usb_->print(",");
+            usb_->print(log[i].fresh);
+            usb_->print(",");
+            usb_->print(log[i].valid);
+            usb_->print(",");
+            usb_->print(log[i].position_turn32);
+            usb_->print(",");
+            usb_->print(log[i].velocity_turn32_per_s);
+            usb_->print(",");
+            usb_->println(rpm);
+        }
+        usb_->println("# pollfast_done");
     }
 
     void bridgeEnter(uint8_t mode)
@@ -818,8 +1215,19 @@ private:
         if (strncmp(line, "rate", 4) == 0) {
             uint32_t duration_ms = 10000u;
             uint32_t hz = 500u;
-            sscanf(line + 4, "%lu %lu", &duration_ms, &hz);
-            runRateTest(duration_ms, hz);
+            uint32_t spinup_ms = 0u;
+            int duty = 0;
+            sscanf(line + 4, "%lu %lu %d %lu", &duration_ms, &hz, &duty, &spinup_ms);
+            runRateTest(duration_ms, hz, (int16_t)duty, spinup_ms);
+            return;
+        }
+        if (strncmp(line, "pollfast", 8) == 0) {
+            uint32_t duration_ms = 10000u;
+            uint32_t hz = 600u;
+            uint32_t spinup_ms = 0u;
+            int duty = 0;
+            sscanf(line + 8, "%lu %lu %d %lu", &duration_ms, &hz, &duty, &spinup_ms);
+            runPollFastTest(duration_ms, hz, (int16_t)duty, spinup_ms);
             return;
         }
         if (strcmp(line, "bridge app") == 0) {

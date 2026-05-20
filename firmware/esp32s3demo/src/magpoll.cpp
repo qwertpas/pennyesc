@@ -54,12 +54,12 @@ void setup()
 void loop()
 {
     static uint32_t last_poll_us = 0u;
-    PennyEscEncoderData data;
+    PennyEscStatus status;
 
     if ((uint32_t)(micros() - last_poll_us) >= 2000u) {
         last_poll_us = micros();
-        if (esc.pollEncoder(data)) {
-            Serial.printf("%u,%d,%d,%d\n", esc.address(), data.x, data.y, data.z);
+        if (esc.getStatus(status)) {
+            Serial.printf("%u,%d,%d,%d\n", esc.address(), status.x, status.y, status.z);
         }
     }
 

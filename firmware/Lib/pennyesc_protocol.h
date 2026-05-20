@@ -31,6 +31,7 @@ enum {
     PNY_CMD_SET_ADVANCE = 0xC,
     PNY_CMD_SET_QUIET = 0xD,
     PNY_CMD_GET_POS_VEL = 0xE,
+    PNY_CMD_SEND_DUTY = 0xF,
 };
 
 enum {
