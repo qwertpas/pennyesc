@@ -188,7 +188,7 @@ def run_bridge(args: argparse.Namespace) -> int:
         command = (
             f"{bridge.command_prefix}pollfast {duration_ms} {int(args.hz)} {args.duty} {args.spinup_ms}\n"
             if args.fast_poll
-            else f"{bridge.command_prefix}rate {duration_ms} {int(args.hz)} {args.duty} {args.spinup_ms}\n"
+            else f"{bridge.command_prefix}rate {duration_ms} {int(args.hz)} {args.duty} {args.spinup_ms} {args.timeout_ms}\n"
         )
         bridge.serial.write(command.encode("utf-8"))
         bridge.serial.flush()
@@ -373,6 +373,7 @@ def main() -> int:
     parser.add_argument("--csv-out", type=Path)
     parser.add_argument("--fast-poll", action="store_true")
     parser.add_argument("--spinup-ms", type=int, default=0)
+    parser.add_argument("--timeout-ms", type=int, default=5)
     parser.add_argument("--quiet-rows", action="store_true")
     parser.add_argument("--allow-reset", action="store_true")
     parser.add_argument("--host-stream", action="store_true")

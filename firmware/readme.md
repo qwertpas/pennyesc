@@ -3,6 +3,7 @@
 ## Wiring
 
 PennyESC requires 4 wires (in order on the PennyESC PCB):
+
 - GND
 - UART RX (RX of ESC, TX of your microcontroller)
 - UART TX (TX of ESC, RX of your microcontroller)
@@ -12,7 +13,7 @@ Multiple PennyESCs can be daisy chained on the same UART bus because it is imple
 
 A large capacitor (>100uF) is recommended between the power input and GND. Without it, the driver may turn off during high current (mct_faults will increment in the motor status in the GUI).
 
-<img src="../pics/wiring.jpg" alt="Wiring" width="600"/>
+
 
 ## Arduino API
 
@@ -52,17 +53,18 @@ Other examples in `firmware/esp32s3demo_example`:
 
 Common calls:
 
-| Call | Use |
-| --- | --- |
-| `esc.begin(Serial1, RX_pin, TX_pin)` | Start ESC UART on custom pins. |
-| `esc.getStatus(status)` | Read position, velocity, duty, sensor data, flags, and faults. |
-| `esc.getPosVel(data)` | Fast read of only encoder position and velocity. |
-| `esc.captureStart(duty, advance, ms, hz, capture)` | Start firmware RPM capture (1000 Hz for 200 ms). |
-| `esc.captureStatus(capture)` | Poll capture progress and sample count. |
-| `esc.captureRead(offset, samples, count, got)` | Read up to 14 captured samples. |
-| `esc.setDuty(duty)` | Set open-loop duty, `-799..799`. Start low. |
-| `esc.sendPositionRad(rad)` | Move to an absolute position relative to current zero. |
-| `esc.zeroPosition()` | Set the current shaft position as zero. |
+
+| Call                                               | Use                                                            |
+| -------------------------------------------------- | -------------------------------------------------------------- |
+| `esc.begin(Serial1, RX_pin, TX_pin)`               | Start ESC UART on custom pins.                                 |
+| `esc.getStatus(status)`                            | Read position, velocity, duty, sensor data, flags, and faults. |
+| `esc.getPosVel(data)`                              | Fast read of only encoder position and velocity.               |
+| `esc.captureStart(duty, advance, ms, hz, capture)` | Start firmware RPM capture (1000 Hz for 200 ms).               |
+| `esc.captureStatus(capture)`                       | Poll capture progress and sample count.                        |
+| `esc.captureRead(offset, samples, count, got)`     | Read up to 14 captured samples.                                |
+| `esc.setDuty(duty)`                                | Set open-loop duty, `-799..799`. Start low.                    |
+| `esc.sendPositionRad(rad)`                         | Move to an absolute position relative to current zero.         |
+| `esc.zeroPosition()`                               | Set the current shaft position as zero.                        |
 
 
 ## Calibration and Test GUI
@@ -77,7 +79,7 @@ python3 firmware/penny-gui.py
 
 The GUI can run static calibration, status checks, duty commands, stop, and advance commands. Sessions are saved under `firmware/penny-gui-sessions/`.
 
-<img src="../pics/calibration.jpg" alt="Calibration Screenshot" width="600"/>
+
 
 Command line calibration is also available:
 
@@ -86,7 +88,6 @@ python3 firmware/tools/pennycal.py --address 1 info
 python3 firmware/tools/pennycal.py --address 1 calibrate
 python3 firmware/tools/pennycal.py --address 1 verify
 ```
-
 
 ## Flashing:
 
@@ -125,8 +126,6 @@ ESC_ADDRESS=1 \
 python3 -m platformio run -d firmware/pennyesc_libopencm3 -e seed -t seed_upload
 ```
 
-
-
 ## Low-level Protocol
 
 If you only need to communicate with the ESC using the Arduino API or calibration/testing GUI, you do not need to worry about this protocol. 
@@ -143,53 +142,62 @@ Frames are addressed, length-prefixed, and CRC checked:
 
 Commands are defined in `firmware/Lib/pennyesc_protocol.h`.
 
-| Command | Code | Request | Response |
-| --- | ---: | --- | --- |
-| `PNY_CMD_GET_STATUS` | `0x1` | none | `pny_status_payload_t` |
-| `PNY_CMD_SET_POSITION` | `0x2` | `int32 position_turn32` | status |
-| `PNY_CMD_SET_DUTY` | `0x3` | `int16 duty` | status |
-| `PNY_CMD_CAL` | `0x4` | calibration subcommand | calibration payload |
-| `PNY_CMD_DEBUG` | `0x5` | debug subcommand | debug payload |
-| `PNY_CMD_ZERO_POSITION` | `0x6` | none | status |
-| `PNY_CMD_SET_VELOCITY` | `0x7` | `int32 velocity_turn32_per_s` | status |
-| `PNY_CMD_SET_CONTROL` | `0x8` | `pny_control_payload_t` | status |
-| `PNY_CMD_STOP` | `0x9` | none | status |
-| `PNY_CMD_SEND_POSITION` | `0xA` | `int32 position_turn32` | none |
-| `PNY_CMD_ENTER_BOOT` | `0xB` | `uint32 PNY_BOOT_MAGIC` | result byte |
-| `PNY_CMD_SET_ADVANCE` | `0xC` | `int16 advance_deg` | status |
-| `PNY_CMD_SET_QUIET` | `0xD` | `uint16 hold_ms` | result byte |
-| `PNY_CMD_GET_POS_VEL` | `0xE` | none | `pny_pos_vel_payload_t` |
+
+| Command                 | Code  | Request                       | Response                |
+| ----------------------- | ----- | ----------------------------- | ----------------------- |
+| `PNY_CMD_GET_STATUS`    | `0x1` | none                          | `pny_status_payload_t`  |
+| `PNY_CMD_SET_POSITION`  | `0x2` | `int32 position_turn32`       | status                  |
+| `PNY_CMD_SET_DUTY`      | `0x3` | `int16 duty`                  | status                  |
+| `PNY_CMD_CAL`           | `0x4` | calibration subcommand        | calibration payload     |
+| `PNY_CMD_DEBUG`         | `0x5` | debug subcommand              | debug payload           |
+| `PNY_CMD_ZERO_POSITION` | `0x6` | none                          | status                  |
+| `PNY_CMD_SET_VELOCITY`  | `0x7` | `int32 velocity_turn32_per_s` | status                  |
+| `PNY_CMD_SET_CONTROL`   | `0x8` | `pny_control_payload_t`       | status                  |
+| `PNY_CMD_STOP`          | `0x9` | none                          | status                  |
+| `PNY_CMD_SEND_POSITION` | `0xA` | `int32 position_turn32`       | none                    |
+| `PNY_CMD_ENTER_BOOT`    | `0xB` | `uint32 PNY_BOOT_MAGIC`       | result byte             |
+| `PNY_CMD_SET_ADVANCE`   | `0xC` | `int16 advance_deg`           | status                  |
+| `PNY_CMD_SET_QUIET`     | `0xD` | `uint16 hold_ms`              | result byte             |
+| `PNY_CMD_GET_POS_VEL`   | `0xE` | none                          | `pny_pos_vel_payload_t` |
+
 
 All multi-byte fields are little-endian.
 
 Debug capture subcommands:
 
-| Subcommand | Code | Request | Response |
-| --- | ---: | --- | --- |
-| `PNY_DEBUG_CAPTURE_START` | `0x1` | `pny_capture_start_payload_t` | `pny_capture_status_payload_t` |
-| `PNY_DEBUG_CAPTURE_STATUS` | `0x2` | subcommand byte | `pny_capture_status_payload_t` |
-| `PNY_DEBUG_CAPTURE_READ` | `0x3` | subcommand, `uint16 offset`, `uint8 count` | `pny_capture_read_payload_t` chunk |
+
+| Subcommand                 | Code  | Request                                    | Response                           |
+| -------------------------- | ----- | ------------------------------------------ | ---------------------------------- |
+| `PNY_DEBUG_CAPTURE_START`  | `0x1` | `pny_capture_start_payload_t`              | `pny_capture_status_payload_t`     |
+| `PNY_DEBUG_CAPTURE_STATUS` | `0x2` | subcommand byte                            | `pny_capture_status_payload_t`     |
+| `PNY_DEBUG_CAPTURE_READ`   | `0x3` | subcommand, `uint16 offset`, `uint8 count` | `pny_capture_read_payload_t` chunk |
+
 
 The capture buffer stores 200 samples. `PNY_DEBUG_CAPTURE_READ` returns at most 14 samples per frame.
 
 ## Units
 
-| Value | Unit | Conversion |
-| --- | --- | --- |
-| Position | `turn32` | `65536 = 1 mechanical revolution` |
-| Radians | radians | `rad = turn32 * 2*pi / 65536` |
-| Velocity | `turn32/s` | `rpm = turn32_per_s * 60 / 65536` |
-| Duty | raw PWM | `-799..799` |
-| Control gains | Q8 fixed-point | `256 = 1.0` |
+
+| Value         | Unit           | Conversion                        |
+| ------------- | -------------- | --------------------------------- |
+| Position      | `turn32`       | `65536 = 1 mechanical revolution` |
+| Radians       | radians        | `rad = turn32 * 2*pi / 65536`     |
+| Velocity      | `turn32/s`     | `rpm = turn32_per_s * 60 / 65536` |
+| Duty          | raw PWM        | `-799..799`                       |
+| Control gains | Q8 fixed-point | `256 = 1.0`                       |
+
 
 ## Files
 
-| Path | Purpose |
-| --- | --- |
-| `firmware/penny-gui.py` | Main calibration and test GUI. |
-| `firmware/Lib/pennyesc_arduino.h` | ESP32 Arduino API. |
-| `firmware/Lib/pennyesc_protocol.h` | Shared packet protocol. |
-| `firmware/esp32s3demo_example/src/bridge.cpp` | Simple ESP32 bridge firmware. |
-| `firmware/pennyesc_libopencm3/src/main.c` | STM32 PennyESC app. |
-| `firmware/tools/pennycal.py` | Host calibration CLI and shared GUI backend. |
-| `firmware/tools/pnyboot.py` | Host UART boot/update tool. |
+
+| Path                                          | Purpose                                      |
+| --------------------------------------------- | -------------------------------------------- |
+| `firmware/penny-gui.py`                       | Main calibration and test GUI.               |
+| `firmware/Lib/pennyesc_arduino.h`             | ESP32 Arduino API.                           |
+| `firmware/Lib/pennyesc_protocol.h`            | Shared packet protocol.                      |
+| `firmware/esp32s3demo_example/src/bridge.cpp` | Simple ESP32 bridge firmware.                |
+| `firmware/pennyesc_libopencm3/src/main.c`     | STM32 PennyESC app.                          |
+| `firmware/tools/pennycal.py`                  | Host calibration CLI and shared GUI backend. |
+| `firmware/tools/pnyboot.py`                   | Host UART boot/update tool.                  |
+
+

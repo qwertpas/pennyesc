@@ -646,7 +646,7 @@ private:
 
     void printHelp()
     {
-        usb_->println("commands: help ping e<addr> s d<duty> rate <ms> <hz> <duty> pollfast <ms> <hz> <duty> <spinup_ms> bridge app bridge handoff bridge upload bridge rom");
+        usb_->println("commands: help ping e<addr> s d<duty> rate <ms> <hz> <duty> <spinup_ms> <timeout_ms> pollfast <ms> <hz> <duty> <spinup_ms> bridge app bridge handoff bridge upload bridge rom");
     }
 
     void printStatus(const PennyEscStatus &status)
@@ -689,7 +689,7 @@ private:
         usb_->println(status.tmag_sample_dt_us);
     }
 
-    void runRateTest(uint32_t duration_ms, uint32_t hz, int16_t duty, uint32_t spinup_ms)
+    void runRateTest(uint32_t duration_ms, uint32_t hz, int16_t duty, uint32_t spinup_ms, uint32_t timeout_ms)
     {
         PennyEsc esc(address_);
         PennyEscStatus status;
@@ -704,6 +704,9 @@ private:
         uint32_t worst_us = 0u;
         uint32_t worst_late_us = 0u;
         uint32_t fail = 0u;
+        uint32_t late_response = 0u;
+        uint32_t lost_response = 0u;
+        uint32_t worst_late_response_us = 0u;
         uint32_t over_start = 0u;
         uint32_t over_end = 0u;
         bool status_ok = false;
@@ -719,6 +722,9 @@ private:
         }
         if (hz == 0u) {
             hz = 500u;
+        }
+        if (timeout_ms == 0u) {
+            timeout_ms = 5u;
         }
         period_us = 1000000u / hz;
         target_loops = (duration_ms * hz) / 1000u;
@@ -750,9 +756,26 @@ private:
         while (loops < target_loops) {
             uint32_t loop_us = micros();
 
-            bool ok = esc.getPosVel(data, 5u);
+            bool ok = esc.getPosVel(data, timeout_ms);
             if (!ok) {
+                uint32_t late_start_us = micros();
+                bool got_late = false;
                 fail++;
+                while ((uint32_t)(micros() - late_start_us) < 20000u) {
+                    if (esc.readPosVelAvailable(data)) {
+                        uint32_t late_us = micros() - late_start_us;
+                        late_response++;
+                        got_late = true;
+                        if (late_us > worst_late_response_us) {
+                            worst_late_response_us = late_us;
+                        }
+                        break;
+                    }
+                }
+                if (!got_late) {
+                    lost_response++;
+                    esc.clearRx();
+                }
             } else {
                 ok_samples++;
             }
@@ -830,6 +853,12 @@ private:
         usb_->print(loops);
         usb_->print(" fail=");
         usb_->print(fail);
+        usb_->print(" late_response=");
+        usb_->print(late_response);
+        usb_->print(" lost_response=");
+        usb_->print(lost_response);
+        usb_->print(" worst_late_response_us=");
+        usb_->print(worst_late_response_us);
         usb_->print(" uart_overruns_delta=");
         usb_->println(over_end - over_start);
         usb_->print("# rate_rpm address=");
@@ -1216,9 +1245,10 @@ private:
             uint32_t duration_ms = 10000u;
             uint32_t hz = 500u;
             uint32_t spinup_ms = 0u;
+            uint32_t timeout_ms = 5u;
             int duty = 0;
-            sscanf(line + 4, "%lu %lu %d %lu", &duration_ms, &hz, &duty, &spinup_ms);
-            runRateTest(duration_ms, hz, (int16_t)duty, spinup_ms);
+            sscanf(line + 4, "%lu %lu %d %lu %lu", &duration_ms, &hz, &duty, &spinup_ms, &timeout_ms);
+            runRateTest(duration_ms, hz, (int16_t)duty, spinup_ms, timeout_ms);
             return;
         }
         if (strncmp(line, "pollfast", 8) == 0) {

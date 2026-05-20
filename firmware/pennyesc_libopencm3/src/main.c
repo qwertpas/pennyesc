@@ -67,13 +67,12 @@
 #define UART_APP_BAUD 2000000u
 #define UART_DMA_RX_BUF_SIZE 64u
 #define UART_DMA_RX_BUF_MASK (UART_DMA_RX_BUF_SIZE - 1u)
-#define MCT_RUN_CHECK_MS 500u
-#define MCT_RUN_BAD_LIMIT 3u
-#define MCT_RUN_UART_IDLE_MS 10u
+#define MCT_IDLE_CHECK_MS 500u
+#define MCT_UART_IDLE_MS 10u
 
 #define CAPTURE_MAX_DURATION_MS 2000u
 #define MCT_IC_STATUS_NPOR (1u << 3)
-#define MCT_EXPECTED_CONTROL2A (MCT8316Z_CONTROL2A_RESERVED | MCT8316Z_PWM_MODE_SYNC_DIG)
+#define MCT_EXPECTED_CONTROL2A (MCT8316Z_CONTROL2A_RESERVED | MCT8316Z_SDO_MODE_PUSH_PULL | MCT8316Z_PWM_MODE_SYNC_DIG)
 #define MCT_EXPECTED_CONTROL3 MCT8316Z_CONTROL3_NO_REPORTS
 #define MCT_EXPECTED_CONTROL4 (0x10u | MCT8316Z_OCP_MODE_DISABLED)
 #define MCT_EXPECTED_CONTROL5 0x00u
@@ -204,7 +203,6 @@ static volatile uint16_t sensor_i2c_start_us;
 static volatile uint16_t sensor_i2c_end_us;
 static uint16_t mct_fault_count;
 static uint32_t next_mct_check_ms;
-static uint8_t mct_run_bad_count;
 static uint32_t uart_overrun_errors;
 
 static work_state_t work_state;
@@ -869,6 +867,7 @@ static void run_stop(void)
         current_mode = PNY_MODE_IDLE;
     }
     stop_motor_outputs();
+    next_mct_check_ms = system_millis;
 }
 
 static uint8_t run_ready(void)
@@ -953,6 +952,12 @@ static void mct_recover_if_needed(void)
     if (restart_timer) {
         comm_scheduler_start();
     }
+}
+
+static bool uart_rx_pending(void)
+{
+    uint16_t head = (uint16_t)((UART_DMA_RX_BUF_SIZE - dma_get_number_of_data(DMA1, DMA_CHANNEL5)) & UART_DMA_RX_BUF_MASK);
+    return head != uart_dma_tail || ((USART_ISR(USART2) & USART_ISR_ORE) != 0u);
 }
 
 /* Control and run state */
@@ -1047,8 +1052,7 @@ static void run_begin(void)
     }
 
     mct_recover_if_needed();
-    next_mct_check_ms = system_millis + MCT_RUN_CHECK_MS;
-    mct_run_bad_count = 0;
+    next_mct_check_ms = system_millis + MCT_IDLE_CHECK_MS;
     current_duty = duty;
     current_direction = direction;
     comm_scheduler.position_tick = sched_now_us();
@@ -1101,44 +1105,23 @@ static void control_restart_poll(void)
     }
 }
 
-static void mct_run_check(void)
+static void mct_idle_check(void)
 {
     uint32_t now = system_millis;
 
     if ((int32_t)(now - next_mct_check_ms) < 0) {
         return;
     }
-    next_mct_check_ms = now + MCT_RUN_CHECK_MS;
-    if (current_mode != PNY_MODE_RUN || current_duty == 0 || current_direction == 0) {
+    next_mct_check_ms = now + MCT_IDLE_CHECK_MS;
+    if (current_mode != PNY_MODE_IDLE) {
         return;
     }
-    if ((uint32_t)(now - uart_last_frame_ms) < MCT_RUN_UART_IDLE_MS) {
-        next_mct_check_ms = now + MCT_RUN_UART_IDLE_MS;
-        return;
-    }
-
-    uint8_t bad = mct_config_bad_mask();
-    if (bad == 0u) {
-        mct_run_bad_count = 0;
+    if ((uint32_t)(now - uart_last_frame_ms) < MCT_UART_IDLE_MS || uart_rx_pending()) {
+        next_mct_check_ms = now + MCT_UART_IDLE_MS;
         return;
     }
 
-    if (mct_run_bad_count < MCT_RUN_BAD_LIMIT) {
-        mct_run_bad_count++;
-    }
-    if (mct_run_bad_count < MCT_RUN_BAD_LIMIT) {
-        return;
-    }
-
-    if (mct_fault_count != UINT16_MAX) {
-        mct_fault_count++;
-    }
-    mct_run_bad_count = 0;
-    control_disable();
-    capture_state.active = false;
-    capture_state.done = true;
-    run_stop();
-    mct_apply_config();
+    mct_recover_if_needed();
 }
 
 /* Status and boot update */
@@ -2248,7 +2231,7 @@ int main(void)
             calibration_poll();
         }
 
-        mct_run_check();
+        mct_idle_check();
         control_restart_poll();
         pennyesc_uart_update_poll(system_millis);
         if (pending_reset_ms != 0u && (int32_t)(system_millis - pending_reset_ms) >= 0) {

@@ -58,7 +58,7 @@ void mct8316z_init(void)
     gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, GPIO5 | GPIO7);
 
     spi_init_master(SPI1,
-                    SPI_CR1_BAUDRATE_FPCLK_DIV_128,
+                    SPI_CR1_BAUDRATE_FPCLK_DIV_4,
                     SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE,
                     SPI_CR1_CPHA_CLK_TRANSITION_2,
                     SPI_CR1_DFF_16BIT,
