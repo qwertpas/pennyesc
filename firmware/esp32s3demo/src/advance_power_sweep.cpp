@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include "pennyesc_arduino.h"
+#include "pennyesc_arduino_debug.h"
 
 static const int ESC_RX_PIN = 13;
 static const int ESC_TX_PIN = 12;
@@ -40,105 +40,9 @@ struct SweepSample {
     bool ina_ok = false;
 };
 
-static PennyEsc esc(ESC_ADDR);
+static PennyEscDebug esc(ESC_ADDR);
 static String input_line;
 static SweepSample samples[MAX_SAMPLES];
-
-static uint8_t crc8(const uint8_t *data, size_t len)
-{
-    uint8_t crc = 0;
-    while (len-- > 0) {
-        crc ^= *data++;
-        for (uint8_t bit = 0; bit < 8; bit++) {
-            crc = (crc & 0x80u) ? (uint8_t)((crc << 1) ^ 0x07u) : (uint8_t)(crc << 1);
-        }
-    }
-    return crc;
-}
-
-static void clearEscRx()
-{
-    while (Serial1.available() > 0) {
-        Serial1.read();
-    }
-}
-
-static bool sendFrame(uint8_t cmd, const void *payload, uint8_t payload_len)
-{
-    uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
-    if (payload_len > PNY_FRAME_MAX_PAYLOAD) {
-        return false;
-    }
-    frame[0] = PNY_FRAME_START;
-    frame[1] = (uint8_t)((ESC_ADDR << 4) | (cmd & 0x0F));
-    frame[2] = payload_len;
-    if (payload_len && payload) {
-        memcpy(&frame[3], payload, payload_len);
-    }
-    frame[3 + payload_len] = crc8(frame, 3u + payload_len);
-    clearEscRx();
-    Serial1.write(frame, 4u + payload_len);
-    Serial1.flush();
-    return true;
-}
-
-static bool readFrame(uint8_t expected_cmd, uint8_t *payload, uint8_t &payload_len, uint32_t timeout_ms)
-{
-    uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
-    uint8_t idx = 0;
-    uint8_t expected = 0;
-    uint32_t deadline = millis() + timeout_ms;
-
-    payload_len = 0;
-    while ((int32_t)(millis() - deadline) < 0) {
-        if (Serial1.available() <= 0) {
-            continue;
-        }
-        uint8_t byte = (uint8_t)Serial1.read();
-        if (idx == 0) {
-            if (byte == PNY_FRAME_START) {
-                frame[idx++] = byte;
-            }
-            continue;
-        }
-        if (idx < 3u && byte == PNY_FRAME_START) {
-            frame[0] = byte;
-            idx = 1;
-            expected = 0;
-            continue;
-        }
-        frame[idx++] = byte;
-        if (idx == 3u) {
-            if (frame[2] > PNY_FRAME_MAX_PAYLOAD) {
-                idx = 0;
-                expected = 0;
-                continue;
-            }
-            expected = frame[2] + 4u;
-        }
-        if (expected && idx == expected) {
-            if (crc8(frame, expected - 1u) != frame[expected - 1u]) {
-                idx = 0;
-                expected = 0;
-                continue;
-            }
-            if ((frame[1] >> 4) != ESC_ADDR || (frame[1] & 0x0F) != expected_cmd) {
-                idx = 0;
-                expected = 0;
-                continue;
-            }
-            payload_len = frame[2];
-            memcpy(payload, &frame[3], payload_len);
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool debugCommand(const void *payload, uint8_t payload_len, uint8_t *response, uint8_t &response_len, uint32_t timeout_ms)
-{
-    return sendFrame(PNY_CMD_DEBUG, payload, payload_len) && readFrame(PNY_CMD_DEBUG, response, response_len, timeout_ms);
-}
 
 static bool writeReg(uint8_t reg, uint16_t value)
 {
@@ -260,81 +164,39 @@ static void printSample(
     );
 }
 
-static bool captureStart(int16_t duty, int16_t advance, pny_capture_status_payload_t &status)
+static bool startRpmCapture(int16_t duty, int16_t advance, PennyEscCaptureStatus &status)
 {
-    pny_capture_start_payload_t request;
-    uint8_t response[PNY_FRAME_MAX_PAYLOAD];
-    uint8_t response_len = 0;
-    request.subcmd = PNY_DEBUG_CAPTURE_START;
-    request.duty = duty;
-    request.advance_deg = advance;
-    request.duration_ms = RUN_MS;
-    request.sample_hz = 1000;
-
-    if (!debugCommand(&request, sizeof(request), response, response_len, 200u) ||
-        response_len != sizeof(pny_capture_status_payload_t)) {
-        return false;
-    }
-    memcpy(&status, response, sizeof(status));
-    return status.subcmd == PNY_DEBUG_CAPTURE_STATUS && status.result == PNY_RESULT_OK;
+    return esc.startCapture(duty, advance, RUN_MS, 1000u, status, 200u) &&
+        status.result == PNY_RESULT_OK;
 }
 
 static bool setObserver()
 {
-    pny_observer_payload_t request;
-    uint8_t response[PNY_FRAME_MAX_PAYLOAD];
-    uint8_t response_len = 0;
-    pny_capture_status_payload_t status;
+    PennyEscCaptureStatus status;
 
-    request.subcmd = PNY_DEBUG_SET_OBSERVER;
-    request.lead_us = OBSERVER_LEAD_US;
-    request.mode = PNY_OBSERVER_AB_FAST;
-
-    if (!debugCommand(&request, sizeof(request), response, response_len, 200u) ||
-        response_len != sizeof(pny_capture_status_payload_t)) {
-        return false;
-    }
-    memcpy(&status, response, sizeof(status));
-    return status.subcmd == PNY_DEBUG_CAPTURE_STATUS && status.result == PNY_RESULT_OK;
+    return esc.setObserver(OBSERVER_LEAD_US, PNY_OBSERVER_AB_FAST, &status, 200u);
 }
 
-static bool captureStatus(pny_capture_status_payload_t &status)
+static bool refreshCapture(PennyEscCaptureStatus &status)
 {
-    uint8_t request = PNY_DEBUG_CAPTURE_STATUS;
-    uint8_t response[PNY_FRAME_MAX_PAYLOAD];
-    uint8_t response_len = 0;
-    if (!debugCommand(&request, sizeof(request), response, response_len, 200u) ||
-        response_len != sizeof(pny_capture_status_payload_t)) {
-        return false;
-    }
-    memcpy(&status, response, sizeof(status));
-    return status.subcmd == PNY_DEBUG_CAPTURE_STATUS;
+    return esc.getCaptureStatus(status, 200u);
 }
 
 static uint16_t readCaptureSamples(uint16_t count)
 {
     uint16_t offset = 0;
     while (offset < count && offset < MAX_SAMPLES) {
-        uint8_t request[4];
-        uint8_t response[PNY_FRAME_MAX_PAYLOAD];
-        uint8_t response_len = 0;
+        PennyEscCaptureSample capture_samples[PNY_CAPTURE_READ_MAX_SAMPLES];
+        uint8_t got = 0u;
         uint8_t want = (uint8_t)(count - offset);
         if (want > 14u) {
             want = 14u;
         }
-        request[0] = PNY_DEBUG_CAPTURE_READ;
-        memcpy(&request[1], &offset, sizeof(offset));
-        request[3] = want;
-        if (!debugCommand(request, sizeof(request), response, response_len, 200u) || response_len < 5u) {
+        if (!esc.readCapture(offset, capture_samples, want, got, 200u) || got == 0u) {
             break;
         }
-        pny_capture_read_payload_t out;
-        memcpy(&out, response, response_len);
-        if (out.subcmd != PNY_DEBUG_CAPTURE_READ || out.result != PNY_RESULT_OK || out.offset != offset || out.count == 0) {
-            break;
-        }
-        for (uint8_t i = 0; i < out.count && offset < MAX_SAMPLES; i++) {
-            samples[offset].rpm = (float)out.samples[i].rpm;
+        for (uint8_t i = 0; i < got && offset < MAX_SAMPLES; i++) {
+            samples[offset].rpm = (float)capture_samples[i].rpm;
             samples[offset].rpm_ok = true;
             offset++;
         }
@@ -362,8 +224,8 @@ static uint16_t runSegment(uint16_t run_id, int16_t duty, int16_t advance, bool 
     }
     delay(PRESPIN_MS);
 
-    pny_capture_status_payload_t capture_status;
-    bool capture_ok = captureStart(duty, BASELINE_ADVANCE_DEG, capture_status);
+    PennyEscCaptureStatus capture_status;
+    bool capture_ok = startRpmCapture(duty, BASELINE_ADVANCE_DEG, capture_status);
     if (!capture_ok) {
         Serial.printf("# capture_start_failed run_id=%u duty=%d advance=%d result=%u\n",
             run_id,
@@ -405,7 +267,7 @@ static uint16_t runSegment(uint16_t run_id, int16_t duty, int16_t advance, bool 
 
     uint32_t deadline_ms = millis() + 300u;
     while (capture_ok && (int32_t)(millis() - deadline_ms) < 0) {
-        if (captureStatus(capture_status) && !capture_status.active) {
+        if (refreshCapture(capture_status) && !capture_status.active) {
             break;
         }
         delay(2);

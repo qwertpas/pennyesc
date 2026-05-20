@@ -1,7 +1,7 @@
 #include <Arduino.h>
-#include "pennyesc_arduino.h"
+#include "pennyesc_arduino_debug.h"
 
-static PennyEsc esc(1);
+static PennyEscDebug esc(1);
 
 static void printCaptureSamples(const PennyEscCaptureStatus &capture)
 {
@@ -16,7 +16,7 @@ static void printCaptureSamples(const PennyEscCaptureStatus &capture)
         }
 
         uint8_t got = 0;
-        if (!esc.captureRead(offset, samples, want, got)) {
+        if (!esc.readCapture(offset, samples, want, got)) {
             Serial.println("# capture_read_failed");
             break;
         }
@@ -41,7 +41,7 @@ static void runCapture()
 {
     PennyEscCaptureStatus capture;
 
-    if (!esc.captureStart(120, 90, 200, 1000, capture) || !capture.valid) {
+    if (!esc.startCapture(120, 90, 200, 1000, capture) || !capture.valid) {
         Serial.println("# capture_start_timeout");
         return;
     }
@@ -52,7 +52,7 @@ static void runCapture()
 
     while (capture.active) {
         delay(5);
-        if (!esc.captureStatus(capture)) {
+        if (!esc.getCaptureStatus(capture)) {
             Serial.println("# capture_status_timeout");
             return;
         }

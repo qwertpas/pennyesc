@@ -207,7 +207,7 @@ def run_bridge(args: argparse.Namespace) -> int:
             if text == done_marker:
                 break
         else:
-            print("rate runner timeout", flush=True)
+            print("rate runner timeout (bridge firmware must use PennyEscDebugBridge)", flush=True)
             return 1
 
     ok = False

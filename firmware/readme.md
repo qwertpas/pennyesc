@@ -47,7 +47,7 @@ float rpm = data.velocityRpm();
 
 Other examples in `firmware/esp32s3demo_example`:
 
-- `src/bridge.cpp`: USB serial bridge using `PennyEscBridge`.
+- `src/bridge.cpp`: USB serial bridge using `PennyEscDebugBridge`.
 - `src/position_sweep.cpp`: zeros the ESC, sets control gains, alternates position targets, and prints status.
 - `src/capture.cpp`: captures angle and RPM in firmware at up to 1000 Hz for 200 ms, then prints CSV.
 
@@ -59,12 +59,37 @@ Common calls:
 | `esc.begin(Serial1, RX_pin, TX_pin)`               | Start ESC UART on custom pins.                                 |
 | `esc.getStatus(status)`                            | Read position, velocity, duty, sensor data, flags, and faults. |
 | `esc.getPosVel(data)`                              | Fast read of only encoder position and velocity.               |
-| `esc.captureStart(duty, advance, ms, hz, capture)` | Start firmware RPM capture (1000 Hz for 200 ms).               |
-| `esc.captureStatus(capture)`                       | Poll capture progress and sample count.                        |
-| `esc.captureRead(offset, samples, count, got)`     | Read up to 14 captured samples.                                |
 | `esc.setDuty(duty)`                                | Set open-loop duty, `-799..799`. Start low.                    |
 | `esc.sendPositionRad(rad)`                         | Move to an absolute position relative to current zero.         |
 | `esc.zeroPosition()`                               | Set the current shaft position as zero.                        |
+
+
+## Arduino Bridge and Debug Helpers
+
+The normal bridge is part of the main Arduino header:
+
+```cpp
+#include "pennyesc_arduino.h"
+PennyEscBridge bridge;
+```
+
+Use the debug header only for development-only capture and UART rate tests:
+
+```cpp
+#include "pennyesc_arduino_debug.h"
+PennyEscDebug esc(1);
+PennyEscDebugBridge bridge;
+```
+
+Debug helper calls:
+
+| Call                                                       | Use                                      |
+| ---------------------------------------------------------- | ---------------------------------------- |
+| `esc.startCapture(duty, advance, ms, hz, capture)`         | Start firmware RPM capture.              |
+| `esc.getCaptureStatus(capture)`                            | Poll capture progress and sample count.  |
+| `esc.readCapture(offset, samples, count, got)`             | Read up to 14 captured samples.          |
+| `esc.setObserver(lead_us, mode)`                           | Set the development observer mode.       |
+| `PennyEscDebugBridge` command `rate ...` / `pollfast ...`  | Run UART timing tests from the USB shell. |
 
 
 ## Calibration and Test GUI
@@ -194,10 +219,10 @@ The capture buffer stores 200 samples. `PNY_DEBUG_CAPTURE_READ` returns at most 
 | --------------------------------------------- | -------------------------------------------- |
 | `firmware/penny-gui.py`                       | Main calibration and test GUI.               |
 | `firmware/Lib/pennyesc_arduino.h`             | ESP32 Arduino API.                           |
+| `firmware/Lib/pennyesc_arduino_debug.h`       | Development capture, observer, and rate helpers. |
 | `firmware/Lib/pennyesc_protocol.h`            | Shared packet protocol.                      |
-| `firmware/esp32s3demo_example/src/bridge.cpp` | Simple ESP32 bridge firmware.                |
+| `firmware/esp32s3demo_example/src/bridge.cpp` | ESP32 bridge firmware with debug commands.   |
 | `firmware/pennyesc_libopencm3/src/main.c`     | STM32 PennyESC app.                          |
 | `firmware/tools/pennycal.py`                  | Host calibration CLI and shared GUI backend. |
 | `firmware/tools/pnyboot.py`                   | Host UART boot/update tool.                  |
-
 

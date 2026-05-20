@@ -1,7 +1,7 @@
 #include <Arduino.h>
-#include "pennyesc_arduino.h"
+#include "pennyesc_arduino_debug.h"
 
-PennyEscBridge bridge;
+PennyEscDebugBridge bridge;
 
 void setup()
 {
