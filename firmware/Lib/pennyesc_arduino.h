@@ -6,7 +6,7 @@
 #include "pennyesc_protocol.h"
 
 static const uint32_t PENNYESC_BAUD_UPDATE = 115200u;
-static const uint32_t PENNYESC_BAUD_FAST = 2000000u;
+static const uint32_t PENNYESC_BAUD_FAST = 921600u;
 static const uint32_t PENNYESC_ROM_BAUD = 115200u;
 static const float PENNYESC_TURN32_PER_REV = 65536.0f;
 static const float PENNYESC_TURN32_TO_RAD = 6.2831853f / PENNYESC_TURN32_PER_REV;
@@ -106,6 +106,7 @@ public:
         baud_ = baud;
         serial().end();
         serial().begin(baud, config, rx_, tx_);
+        pinMode(rx_, INPUT_PULLUP);
     }
 
     void clearRx()

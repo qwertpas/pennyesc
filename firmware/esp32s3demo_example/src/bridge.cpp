@@ -1,14 +1,19 @@
 #include <Arduino.h>
-#include "pennyesc_arduino_debug.h"
+#include "pennyesc_arduino.h"
 
-PennyEscDebugBridge bridge;
+PennyEscBridge bridge;
+
+#define RX_PIN 1
+#define TX_PIN 2
+#define GND_PIN 3
+
 
 void setup()
 {
     Serial.begin(921600);
-    pinMode(43, OUTPUT);
-    digitalWrite(43, LOW);
-    bridge.begin(Serial, Serial1, 44, 1, 1);
+    pinMode(GND_PIN, OUTPUT);
+    digitalWrite(GND_PIN, LOW);
+    bridge.begin(Serial, Serial1, RX_PIN, TX_PIN);
 }
 
 void loop()

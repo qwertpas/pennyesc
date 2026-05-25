@@ -45,11 +45,11 @@ float pos = data.positionRad();
 float rpm = data.velocityRpm();
 ```
 
-Other examples in `firmware/esp32s3demo_example`:
+Other examples:
 
-- `src/bridge.cpp`: USB serial bridge using `PennyEscDebugBridge`.
-- `src/position_sweep.cpp`: zeros the ESC, sets control gains, alternates position targets, and prints status.
-- `src/capture.cpp`: captures angle and RPM in firmware at up to 1000 Hz for 200 ms, then prints CSV.
+- `firmware/esp32s3demo_example/src/bridge.cpp`: USB serial bridge using `PennyEscBridge`.
+- `firmware/esp32s3demo_example/src/position_sweep.cpp`: zeros the ESC, sets control gains, alternates position targets, and prints status.
+- `firmware/esp32s3demo/src/capture.cpp`: captures angle and RPM in firmware at up to 1000 Hz for 200 ms, then prints CSV.
 
 Common calls:
 
@@ -221,8 +221,7 @@ The capture buffer stores 200 samples. `PNY_DEBUG_CAPTURE_READ` returns at most 
 | `firmware/Lib/pennyesc_arduino.h`             | ESP32 Arduino API.                           |
 | `firmware/Lib/pennyesc_arduino_debug.h`       | Development capture, observer, and rate helpers. |
 | `firmware/Lib/pennyesc_protocol.h`            | Shared packet protocol.                      |
-| `firmware/esp32s3demo_example/src/bridge.cpp` | ESP32 bridge firmware with debug commands.   |
+| `firmware/esp32s3demo_example/src/bridge.cpp` | ESP32 bridge firmware.                       |
 | `firmware/pennyesc_libopencm3/src/main.c`     | STM32 PennyESC app.                          |
 | `firmware/tools/pennycal.py`                  | Host calibration CLI and shared GUI backend. |
 | `firmware/tools/pnyboot.py`                   | Host UART boot/update tool.                  |
-

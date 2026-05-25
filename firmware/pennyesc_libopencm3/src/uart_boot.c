@@ -44,10 +44,6 @@ void *vector_table[] = {
     reset_handler,
     blocking_handler,
     blocking_handler,
-    0,
-    0,
-    0,
-    0,
 };
 
 static uint8_t read_buf[260];
@@ -93,6 +89,7 @@ static void usart2_setup(void)
 {
     GPIO_AFRH(GPIOA) = (GPIO_AFRH(GPIOA) & ~((0xFu << 4) | (0xFu << 8))) | (4u << 4) | (4u << 8);
     GPIO_MODER(GPIOA) = (GPIO_MODER(GPIOA) & ~((3u << 18) | (3u << 20))) | (2u << 18) | (2u << 20);
+    GPIO_OTYPER(GPIOA) = 1u << 9;
 
     USART_CR1(USART2) = 0u;
     USART_CR2(USART2) = 0u;
@@ -284,7 +281,7 @@ static void handle_extended_erase(void)
     uint32_t payload_len = (total * 2u) + 3u;
     uint32_t max_pages = PENNYESC_APP_BYTES / PENNYESC_PAGE_BYTES;
 
-    if (total == 0u || total > max_pages || payload_len > sizeof(read_buf)) {
+    if (total > max_pages) {
         send_nack();
         return;
     }
@@ -327,7 +324,7 @@ static void handle_write_memory(void)
     }
 
     uint32_t len = (uint32_t)read_buf[0] + 1u;
-    if (len == 0u || len > 256u || (len % PENNYESC_HALF_PAGE_BYTES) != 0u) {
+    if ((len % PENNYESC_HALF_PAGE_BYTES) != 0u) {
         send_nack();
         return;
     }

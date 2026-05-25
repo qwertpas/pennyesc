@@ -1,19 +1,34 @@
 #include <Arduino.h>
 #include "pennyesc_arduino.h"
 
-static PennyEsc esc(2);
+#define RX_PIN 1
+#define TX_PIN 2
+#define GND_PIN 3
+
+#define ESC_ADDRESS 7
+
+static PennyEsc esc(ESC_ADDRESS);
 static PennyEscStatus status;
 
 void setup()
 {
-    Serial.begin(115200);
-    esc.begin(Serial1, 13, 12);
+    Serial.begin(921600);
+
+    pinMode(GND_PIN, OUTPUT);
+    digitalWrite(GND_PIN, LOW);
+
+    esc.begin(Serial1, RX_PIN, TX_PIN);
+
     delay(300);
 
     esc.zeroPosition(&status);
-    esc.setControl(100.0f, 0.10f, 0.0f, 0, 100, &status);
 
-    Serial.println("position sweep");
+    float kp = 100.0f;
+    float kd = 1.0f;
+    float kv = 0.0f;
+    int16_t kf = 0;
+    int16_t clip = 100;
+    esc.setControl(kp, kd, kv, kf, clip, &status);
 }
 
 static uint32_t last_status_ms = 0;
@@ -30,15 +45,15 @@ void loop()
         last_sweep_ms = millis();
     }
 
-    // Print status every 50ms
-    if (millis() - last_status_ms >= 50) {
+    // Print status every 10ms (100Hz)
+    if (millis() - last_status_ms >= 10) {
         last_status_ms = millis();
-        esc.getStatus(status);
-        Serial.printf("pos=%.3f vel=%.2f duty=%d\n",
-            status.positionRad(),
-            status.velocityRpm(),
-            status.duty
-        );
+        PennyEscEncoderData data;
+        if (esc.getPosVel(data, 5)) { //5ms timeout
+            float pos = data.positionRad();
+            float rpm = data.velocityRpm();
+            Serial.printf("pos=%.3f vel=%.2f\n", pos, rpm);
+        }
     }
     
     delay(1);
