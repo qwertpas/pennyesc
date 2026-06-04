@@ -212,6 +212,7 @@ static int32_t comm_velocity_positions[COMM_VELOCITY_SAMPLES];
 static uint16_t comm_velocity_ticks[COMM_VELOCITY_SAMPLES];
 static uint8_t comm_velocity_index;
 static uint8_t comm_velocity_count;
+static int32_t observer_velocity_remainder;
 
 static const mct_reg_value_t mct_run_config[] = {
     {MCT8316Z_REG_CONTROL1, 0x03u},
@@ -510,6 +511,7 @@ static void stop_motor_outputs(void)
     clear_motor_outputs();
     velocity_turn32_per_s = 0;
     comm_velocity_turn32_per_s = 0;
+    observer_velocity_remainder = 0;
 }
 
 static void velocity_reset(int32_t position)
@@ -522,6 +524,7 @@ static void velocity_reset(int32_t position)
     comm_velocity_count = 0;
     velocity_turn32_per_s = 0;
     comm_velocity_turn32_per_s = 0;
+    observer_velocity_remainder = 0;
 }
 
 /* Position and sensor sampling */
@@ -719,7 +722,7 @@ static int32_t observer_position_at_tick(uint16_t tick)
     int32_t dt_us = (int16_t)(tick - comm_scheduler.position_tick);
     dt_us += observer_lead_us;
     return observer_state.position_turn32 +
-           (comm_velocity_turn32_per_s / 1000) * dt_us / 1000;
+           (comm_velocity_turn32_per_s / 100) * dt_us / 10000;
 }
 
 static int32_t clamp_position_error(int32_t error)
@@ -742,11 +745,13 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
     }
 
     int32_t predicted = observer_state.position_turn32 +
-                        (comm_velocity_turn32_per_s / 1000) * (int32_t)dt_us / 1000;
+                        (comm_velocity_turn32_per_s / 100) * (int32_t)dt_us / 10000;
     int32_t error = clamp_position_error(measured_position - predicted);
     observer_state.position_turn32 = predicted + (error / alpha_div);
-    int32_t correction = ((error * 1000) / (int32_t)dt_us) * 1000;
-    comm_velocity_turn32_per_s += correction / beta_div;
+    int32_t correction_num = error * (int32_t)(1000000u / beta_div) + observer_velocity_remainder;
+    int32_t correction = correction_num / (int32_t)dt_us;
+    observer_velocity_remainder = correction_num - correction * (int32_t)dt_us;
+    comm_velocity_turn32_per_s += correction;
 }
 
 static int32_t commutation_phase_at_tick(uint16_t tick, int direction)
