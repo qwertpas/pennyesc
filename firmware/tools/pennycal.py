@@ -45,7 +45,7 @@ from pnyproto import (
     CMD_SET_DUTY,
     CMD_SET_POSITION,
     CMD_SET_VELOCITY,
-    CMD_STOP,
+    CMD_BRAKE,
     CMD_ZERO_POSITION,
     crc8,
     decode_frame,
@@ -228,6 +228,25 @@ class Control:
     def payload(self) -> bytes:
         return struct.pack(
             "<hhhhh",
+            int(round(self.kp * CONTROL_GAIN_SCALE)),
+            int(round(self.kd * CONTROL_GAIN_SCALE)),
+            int(round(self.kv * CONTROL_GAIN_SCALE)),
+            int(self.kf),
+            int(self.clip),
+        )
+
+
+@dataclasses.dataclass
+class BrushedControl:
+    kp: float = 0.0
+    kd: float = 0.0
+    kv: float = 0.0
+    kf: int = 0
+    clip: int = 150
+
+    def payload(self) -> bytes:
+        return struct.pack(
+            "<iihhh",
             int(round(self.kp * CONTROL_GAIN_SCALE)),
             int(round(self.kd * CONTROL_GAIN_SCALE)),
             int(round(self.kv * CONTROL_GAIN_SCALE)),
@@ -807,11 +826,11 @@ class Stm32Client:
         payload = self.exchange(CMD_SET_DUTY, struct.pack("<h", duty), timeout=0.15)
         return unpack_status(payload)
 
-    def stop(self) -> Status:
-        payload = self.exchange(CMD_STOP, timeout=0.15)
+    def brake(self) -> Status:
+        payload = self.exchange(CMD_BRAKE, timeout=0.15)
         return unpack_status(payload)
 
-    def set_control(self, control: Control) -> Status:
+    def set_control(self, control: Control | BrushedControl) -> Status:
         payload = self.exchange(CMD_SET_CONTROL, control.payload(), timeout=0.15)
         return unpack_status(payload)
 

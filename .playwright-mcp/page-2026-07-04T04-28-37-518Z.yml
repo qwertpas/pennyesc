@@ -1,0 +1,23 @@
+- generic [ref=e2]:
+  - complementary [ref=e3]:
+    - generic [ref=e4]: Spherical Synthesis
+    - button "3 Exact" [ref=e5] [cursor=pointer]
+    - button "5+n Function" [ref=e6] [cursor=pointer]
+    - button "Motion" [ref=e7] [cursor=pointer]
+    - generic [ref=e8]: 30 function, 52 motion roots
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - generic [ref=e11]:
+        - generic [ref=e12]:
+          - text: Input
+          - slider "Input" [ref=e13]: "0.2484"
+        - generic [ref=e14]:
+          - text: Branch
+          - combobox "Branch" [ref=e15]:
+            - option "-1" [selected]
+            - option "+1"
+      - generic [ref=e16]:
+        - generic [ref=e17]:
+          - heading "Configuration Space" [level=2] [ref=e18]
+          - img [ref=e19]
+        - heading "Mechanism" [level=2] [ref=e27]

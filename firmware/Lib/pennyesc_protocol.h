@@ -25,7 +25,7 @@ enum {
     PNY_CMD_ZERO_POSITION = 0x6,
     PNY_CMD_SET_VELOCITY = 0x7,
     PNY_CMD_SET_CONTROL = 0x8,
-    PNY_CMD_STOP = 0x9,
+    PNY_CMD_BRAKE = 0x9,
     PNY_CMD_SEND_POSITION = 0xA,
     PNY_CMD_ENTER_BOOT = 0xB,
     PNY_CMD_SET_ADVANCE = 0xC,
@@ -181,6 +181,14 @@ typedef struct __attribute__((packed)) {
     int16_t kf;
     int16_t clip;
 } pny_control_payload_t;
+
+typedef struct __attribute__((packed)) {
+    int32_t kp_q8;
+    int32_t kd_q8;
+    int16_t kv_q8;
+    int16_t kf;
+    int16_t clip;
+} pny_brushed_control_payload_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t subcmd;

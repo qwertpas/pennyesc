@@ -395,8 +395,8 @@ protected:
             fail++;
         }
         if (duty != 0) {
-            PennyEscStatus stop_status;
-            (void)esc.stop(&stop_status, 100u);
+            PennyEscStatus brake_status;
+            (void)esc.brake(&brake_status, 100u);
         }
 
         usb_->print("# rate_summary duration_ms=");
@@ -640,8 +640,8 @@ protected:
             fail++;
         }
         if (duty != 0) {
-            PennyEscStatus stop_status;
-            (void)esc.stop(&stop_status, 100u);
+            PennyEscStatus brake_status;
+            (void)esc.brake(&brake_status, 100u);
         }
 
         uint32_t elapsed_us = micros() - start_us;

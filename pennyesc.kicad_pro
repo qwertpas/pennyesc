@@ -628,13 +628,13 @@
           "group_by": false,
           "label": "JLCPCB",
           "name": "JLCPCB",
-          "show": false
+          "show": true
         },
         {
           "group_by": false,
           "label": "LCSC PN",
           "name": "LCSC PN",
-          "show": false
+          "show": true
         },
         {
           "group_by": false,
@@ -658,7 +658,7 @@
           "group_by": false,
           "label": "MP",
           "name": "MP",
-          "show": false
+          "show": true
         },
         {
           "group_by": false,

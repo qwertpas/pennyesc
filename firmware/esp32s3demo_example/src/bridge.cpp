@@ -3,9 +3,9 @@
 
 PennyEscBridge bridge;
 
-#define RX_PIN 1
-#define TX_PIN 2
-#define GND_PIN 3
+#define TX_PIN 13
+#define RX_PIN 12
+#define GND_PIN 11
 
 
 void setup()

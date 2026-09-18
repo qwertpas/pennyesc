@@ -81,15 +81,15 @@ def run(args: argparse.Namespace) -> int:
         finally:
             for i in range(8):
                 try:
-                    st = client.stop()
+                    st = client.brake()
                     print(
-                        f"stop{i} result={st.result} mode={st.mode} duty={st.duty} faults=0x{st.faults:02X}",
+                        f"brake{i} result={st.result} mode={st.mode} duty={st.duty} faults=0x{st.faults:02X}",
                         flush=True,
                     )
                     if st.duty == 0:
                         break
                 except Exception as exc:
-                    print(f"stop{i} failed {exc}", flush=True)
+                    print(f"brake{i} failed {exc}", flush=True)
                 time.sleep(0.05)
 
             time.sleep(0.2)

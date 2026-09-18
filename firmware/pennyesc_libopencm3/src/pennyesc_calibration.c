@@ -22,6 +22,13 @@ static const pennyesc_calibration_blob_t *active_blob;
 static bool active_valid;
 static calibration_writer_t writer;
 
+static const uint16_t atan_turn16[33] = {
+    0, 326, 651, 975, 1297, 1617, 1933, 2246, 2555, 2860, 3159,
+    3453, 3742, 4025, 4302, 4572, 4836, 5094, 5344, 5589, 5826,
+    6058, 6282, 6500, 6712, 6917, 7117, 7310, 7498, 7679, 7856,
+    8026, 8192,
+};
+
 static uint16_t blend_angle_turn16(uint16_t a, uint16_t b, uint16_t frac)
 {
     int16_t delta = (int16_t)(b - a);
@@ -195,6 +202,36 @@ uint16_t pennyesc_calibration_angle_turn16(int16_t x, int16_t y)
     uint8_t next_idx = (uint8_t)((idx + 1u) & (PNY_LUT_SIZE - 1u));
 
     return blend_angle_turn16(active_blob->angle_lut[idx], active_blob->angle_lut[next_idx], frac);
+}
+
+uint16_t pennyesc_raw_angle_turn16(int16_t x, int16_t y)
+{
+    int32_t sx = x;
+    int32_t sy = y;
+    uint32_t ax = (sx < 0) ? (uint32_t)(-sx) : (uint32_t)sx;
+    uint32_t ay = (sy < 0) ? (uint32_t)(-sy) : (uint32_t)sy;
+    uint32_t high = (ax > ay) ? ax : ay;
+    uint32_t low = (ax > ay) ? ay : ax;
+    uint16_t angle = 0u;
+
+    if (high != 0u) {
+        uint32_t scaled = (low << 13) / high;
+        uint8_t index = (uint8_t)(scaled >> 8);
+        if (index >= 32u) {
+            angle = atan_turn16[32];
+        } else {
+            uint16_t frac = (uint16_t)(scaled & 0xffu);
+            angle = blend_angle_turn16(atan_turn16[index], atan_turn16[index + 1u], frac);
+        }
+        if (ay > ax) {
+            angle = (uint16_t)(16384u - angle);
+        }
+    }
+
+    if (sx < 0) {
+        return (sy < 0) ? (uint16_t)(32768u + angle) : (uint16_t)(32768u - angle);
+    }
+    return (sy < 0) ? (uint16_t)(0u - angle) : angle;
 }
 
 void pennyesc_calibration_writer_reset(void)

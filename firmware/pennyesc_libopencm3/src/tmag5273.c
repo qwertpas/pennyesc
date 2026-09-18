@@ -2,6 +2,10 @@
 #include <libopencm3/stm32/i2c.h>
 #include <libopencm3/stm32/timer.h>
 
+#ifndef PNY_DRIVE_BRUSHED
+#define PNY_DRIVE_BRUSHED 0
+#endif
+
 /* Register Addresses */
 #define REG_DEVICE_CONFIG_1     0x00
 #define REG_DEVICE_CONFIG_2     0x01
@@ -19,7 +23,11 @@
 #define I2C_RD_STANDARD         0x0
 #define I2C_RD_16BIT            0x1
 #define I2C_RD_8BIT             0x2
+#if PNY_DRIVE_BRUSHED
+#define ASYNC_READ_LEN          7u
+#else
 #define ASYNC_READ_LEN          2u
+#endif
 #define SLEEPTIME_SHIFT         0
 #define MAG_CH_EN_SHIFT         4
 #define MAG_CH_XY               0x3
@@ -243,9 +251,13 @@ bool tmag5273_set_mode(tmag5273_mode_t mode)
 {
     if (mode == TMAG5273_MODE_FAST_XY) {
         return write_mode_regs(CONV_AVG_1X, I2C_RD_8BIT, MAG_CH_XY, OP_CONTINUOUS);
-    } else {
-        return write_mode_regs(CONV_AVG_2X, I2C_RD_STANDARD, MAG_CH_XYZ, OP_CONTINUOUS);
     }
+#if PNY_DRIVE_BRUSHED
+    if (mode == TMAG5273_MODE_FAST_XYZ) {
+        return write_mode_regs(CONV_AVG_1X, I2C_RD_16BIT, MAG_CH_XYZ, OP_CONTINUOUS);
+    }
+#endif
+    return write_mode_regs(CONV_AVG_2X, I2C_RD_STANDARD, MAG_CH_XYZ, OP_CONTINUOUS);
 }
 
 void tmag5273_clear_por(void)
@@ -336,6 +348,7 @@ bool tmag5273_async_take_xy(tmag5273_xy_sample_t *out)
 
     out->x = async_sample.x;
     out->y = async_sample.y;
+    out->z = async_sample.z;
     out->start_phase_us = async_sample.start_phase_us;
     out->end_phase_us = async_sample.end_phase_us;
     async_sample_ready = false;
@@ -365,26 +378,34 @@ void tmag5273_i2c1_isr(void)
     if ((isr & I2C_ISR_STOPF) != 0u) {
         async_clear_flags();
         if (async_state == ASYNC_READ_DATA && async_rx_index >= sizeof(async_rx)) {
+#if PNY_DRIVE_BRUSHED
+            async_sample.x = (int16_t)(((uint16_t)async_rx[0] << 8) | async_rx[1]);
+            async_sample.y = (int16_t)(((uint16_t)async_rx[2] << 8) | async_rx[3]);
+            async_sample.z = (int16_t)(((uint16_t)async_rx[4] << 8) | async_rx[5]);
+#else
             async_sample.x = (int16_t)(async_rx[0] << 8);
             async_sample.y = (int16_t)(async_rx[1] << 8);
+            async_sample.z = 0;
+#endif
             async_sample.start_phase_us = async_start_phase_us;
             async_sample.end_phase_us = (uint16_t)timer_get_counter(TIM21);
             async_sample_ready = true;
             tmag_stats.sample_dt_us = (uint16_t)(async_start_phase_us - last_sample_start_us);
             last_sample_start_us = async_start_phase_us;
             tmag_stats.sample_count++;
+#if !PNY_DRIVE_BRUSHED
             async_start_phase_us = (uint16_t)timer_get_counter(TIM21);
             async_rx_index = 0;
             async_set_transfer(true, ASYNC_READ_LEN, true);
             return;
+#endif
         }
         async_disable();
         async_state = ASYNC_IDLE;
     }
 }
 
-/* Fast read: X and Y only (4 bytes instead of 6, no float math) */
-bool tmag5273_read_xy_fast(int16_t *x, int16_t *y)
+bool tmag5273_read_fast(int16_t *x, int16_t *y, int16_t *z)
 {
     uint8_t raw[ASYNC_READ_LEN];
 
@@ -392,8 +413,15 @@ bool tmag5273_read_xy_fast(int16_t *x, int16_t *y)
         return false;
     }
 
+#if PNY_DRIVE_BRUSHED
+    *x = (int16_t)(((uint16_t)raw[0] << 8) | raw[1]);
+    *y = (int16_t)(((uint16_t)raw[2] << 8) | raw[3]);
+    *z = (int16_t)(((uint16_t)raw[4] << 8) | raw[5]);
+#else
     *x = (int16_t)(raw[0] << 8);
     *y = (int16_t)(raw[1] << 8);
+    *z = 0;
+#endif
     return true;
 }
 

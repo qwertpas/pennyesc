@@ -48,6 +48,7 @@ float rpm = data.velocityRpm();
 Other examples:
 
 - `firmware/esp32s3demo_example/src/bridge.cpp`: USB serial bridge using `PennyEscBridge`.
+- `firmware/esp32s3demo_example/src/brushed_position.cpp`: low-duty brushed servo position test.
 - `firmware/esp32s3demo_example/src/position_sweep.cpp`: zeros the ESC, sets control gains, alternates position targets, and prints status.
 - `firmware/esp32s3demo/src/capture.cpp`: captures angle and RPM in firmware at up to 1000 Hz for 200 ms, then prints CSV.
 
@@ -62,6 +63,27 @@ Common calls:
 | `esc.setDuty(duty)`                                | Set open-loop duty, `-799..799`. Start low.                    |
 | `esc.sendPositionRad(rad)`                         | Move to an absolute position relative to current zero.         |
 | `esc.zeroPosition()`                               | Set the current shaft position as zero.                        |
+
+## Brushed Motor Firmware
+
+The `pennyesc_brushed_uart` build drives a brushed motor from OUTA to OUTB. Leave OUTC disconnected. Positive duty drives OUTA to OUTB, negative duty drives OUTB to OUTA, zero duty coasts, and `brake()` turns on the driver's low-side brake.
+
+The brushed build is intended for a magnetic encoder on the geared output shaft. It reads full-resolution X/Y/Z field data and updates the angle, velocity, and motor control at the TMAG5273 three-axis limit of 10kHz. It uses a small integer angle conversion directly from X/Y, so the output does not need to rotate through a full turn for calibration. `zeroPosition()`, position commands, status packets, addressing, daisy chaining, and UART firmware updates use the same API as the normal firmware.
+
+Place the servo output away from its mechanical stops before zeroing it. First apply a small positive duty and confirm the reported position increases; swap the two motor leads if it decreases. Start with a current-limited 4.8-8.4V supply and a low control clip; the `brushed_position` example uses `60/799` and moves only `0.2` radians from zero.
+
+Build the example controller:
+
+```bash
+pio run -d firmware/esp32s3demo_example -e brushed_position -t upload
+```
+
+Build or update the brushed PennyESC firmware:
+
+```bash
+ESC_ADDRESS=1 \
+pio run -d firmware/pennyesc_libopencm3 -e pennyesc_brushed_uart -t uart_upload
+```
 
 
 ## Arduino Bridge and Debug Helpers
@@ -102,7 +124,7 @@ Run the main calibration and test GUI:
 python3 firmware/penny-gui.py
 ```
 
-The GUI can run static calibration, status checks, duty commands, stop, and advance commands. Sessions are saved under `firmware/penny-gui-sessions/`.
+The GUI can run static calibration, status checks, duty commands, brake, and advance commands. Sessions are saved under `firmware/penny-gui-sessions/`.
 
 
 
@@ -178,7 +200,7 @@ Commands are defined in `firmware/Lib/pennyesc_protocol.h`.
 | `PNY_CMD_ZERO_POSITION` | `0x6` | none                          | status                  |
 | `PNY_CMD_SET_VELOCITY`  | `0x7` | `int32 velocity_turn32_per_s` | status                  |
 | `PNY_CMD_SET_CONTROL`   | `0x8` | `pny_control_payload_t`       | status                  |
-| `PNY_CMD_STOP`          | `0x9` | none                          | status                  |
+| `PNY_CMD_BRAKE`         | `0x9` | none                          | status                  |
 | `PNY_CMD_SEND_POSITION` | `0xA` | `int32 position_turn32`       | none                    |
 | `PNY_CMD_ENTER_BOOT`    | `0xB` | `uint32 PNY_BOOT_MAGIC`       | result byte             |
 | `PNY_CMD_SET_ADVANCE`   | `0xC` | `int16 advance_deg`           | status                  |

@@ -15,7 +15,7 @@ from pnyproto import (
     CMD_GET_STATUS,
     CMD_SEND_DUTY,
     CMD_SET_DUTY,
-    CMD_STOP,
+    CMD_BRAKE,
     decode_frame,
     encode_frame,
 )
@@ -162,11 +162,11 @@ def stop_all(port: serial.Serial, addresses: list[int], stats_by_address: dict[i
     reader = FrameReader(port)
     for address in addresses:
         try:
-            port.write(encode_frame(address, CMD_STOP))
+            port.write(encode_frame(address, CMD_BRAKE))
             port.flush()
-            reader.read(address, CMD_STOP, 0.2, stats_by_address[address])
+            reader.read(address, CMD_BRAKE, 0.2, stats_by_address[address])
         except Exception as exc:
-            print(f"stop address={address} failed: {exc}", flush=True)
+            print(f"brake address={address} failed: {exc}", flush=True)
 
 
 def run(args: argparse.Namespace) -> int:

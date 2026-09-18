@@ -1,4 +1,5 @@
 import sys
+import struct
 import time
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pennycal import (  # noqa: E402
     CAL_BLOB_SIZE,
+    BrushedControl,
     CMD_GET_STATUS,
     Stm32Client,
     build_blob,
@@ -18,6 +20,11 @@ from pennycal import (  # noqa: E402
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_brushed_control_supports_high_gain(self) -> None:
+        payload = BrushedControl(kp=300.0, kd=12.5, clip=500).payload()
+        self.assertEqual(len(payload), 14)
+        self.assertEqual(struct.unpack("<iihhh", payload), (76800, 3200, 0, 0, 500))
+
     def test_client_keeps_late_reply_for_next_command(self) -> None:
         class FakePort:
             def __init__(self) -> None:

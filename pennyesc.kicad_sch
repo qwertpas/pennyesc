@@ -5916,7 +5916,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "3.3k"
+		(property "Value" "1k"
 			(at 121.92 81.28 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5959,7 +5959,7 @@
 				)
 			)
 		)
-		(property "JLCPCB" "C25890"
+		(property "JLCPCB" "C11702"
 			(at 124.46 80.01 0)
 			(hide yes)
 			(show_name no)
@@ -5970,7 +5970,7 @@
 				)
 			)
 		)
-		(property "MP" "0402WGF3301TCE"
+		(property "MP" "0402WGF1001TCE"
 			(at 124.46 80.01 0)
 			(hide yes)
 			(show_name no)
@@ -5981,7 +5981,7 @@
 				)
 			)
 		)
-		(property "LCSC PN" "C25890"
+		(property "LCSC PN" "C11702"
 			(at 124.46 80.01 0)
 			(hide yes)
 			(show_name no)
@@ -6512,7 +6512,7 @@
 				)
 			)
 		)
-		(property "Value" "MCT8316Z0RRGFR"
+		(property "Value" "MCT8316Z0R"
 			(at 189.23 54.61 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6556,7 +6556,7 @@
 				)
 			)
 		)
-		(property "JLCPCB" "C3681249"
+		(property "JLCPCB" "C3681397"
 			(at 187.96 110.49 0)
 			(hide yes)
 			(show_name no)
@@ -6567,7 +6567,7 @@
 				)
 			)
 		)
-		(property "MP" "MCT8316Z0RRGFR"
+		(property "MP" "MCT8316Z0RQRGFRQ1"
 			(at 187.96 110.49 0)
 			(hide yes)
 			(show_name no)
@@ -6578,7 +6578,7 @@
 				)
 			)
 		)
-		(property "LCSC PN" "C3681249"
+		(property "LCSC PN" "C3681397"
 			(at 187.96 110.49 0)
 			(hide yes)
 			(show_name no)
@@ -7838,7 +7838,7 @@
 				)
 			)
 		)
-		(property "Value" "1k"
+		(property "Value" "3.3k"
 			(at 160.02 83.82 90)
 			(show_name no)
 			(do_not_autoplace no)

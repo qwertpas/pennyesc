@@ -185,9 +185,9 @@ public:
         return sendFrame(PNY_CMD_SEND_DUTY, payload, sizeof(payload), false);
     }
 
-    bool stop(PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
+    bool brake(PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)
     {
-        return sendStatusCommand(PNY_CMD_STOP, 0, 0u, status, timeout_ms);
+        return sendStatusCommand(PNY_CMD_BRAKE, 0, 0u, status, timeout_ms);
     }
 
     bool setPositionTurn32(int32_t position_turn32, PennyEscStatus *status = 0, uint32_t timeout_ms = 20u)

@@ -372,6 +372,50 @@ def build_partial_static_result(raw_points: Sequence[Any], reduced_points: Seque
     )
 
 
+def session_from_metadata(path: Path) -> SessionData:
+    with path.open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    static_data = data["static"]
+    static = StaticResult(
+        raw_points=static_data["raw_points"],
+        reduced_points=static_data["reduced_points"],
+        affine_q20=static_data["affine_q20"],
+        angle_lut=static_data["angle_lut"],
+        fit_max_error_deg=static_data["fit_max_error_deg"],
+        sweep_delta_deg=static_data["sweep_delta_deg"],
+        forward_angle_sign=static_data["forward_angle_sign"],
+        forward_sign_tests=static_data["forward_sign_tests"],
+        blob_crc32=static_data["blob_crc32"],
+        blob_size=static_data["blob_size"],
+    )
+    return SessionData(
+        mode=data["mode"],
+        port=data["port"],
+        address=int(data["address"]),
+        export_dir=data["export_dir"],
+        started_at=data["started_at"],
+        ended_at=data["ended_at"],
+        status=data["status"],
+        error=data["error"],
+        static=static,
+    )
+
+
+def find_last_calibration() -> Path:
+    if not RESULTS_DIR.exists():
+        raise SystemExit(f"No penny-gui session directory found at {RESULTS_DIR}")
+    for session_dir in sorted((path for path in RESULTS_DIR.iterdir() if path.is_dir()), reverse=True):
+        metadata_path = session_dir / "run_metadata.json"
+        if not metadata_path.exists():
+            continue
+        with metadata_path.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+        static = data.get("static")
+        if data.get("status") == "calibrated" and static and static.get("angle_lut"):
+            return metadata_path
+    raise SystemExit(f"No calibrated penny-gui session found in {RESULTS_DIR}")
+
+
 class ScanWorker(QtCore.QThread):
     done = Signal(object)
 
@@ -514,7 +558,7 @@ class TestWorker(QtCore.QThread):
 
 
 class Window:
-    def __init__(self, port: str, address: int, chunk_size: int, auto: bool) -> None:
+    def __init__(self, port: str, address: int, chunk_size: int, auto: bool, session_path: Path) -> None:
         if not 0 <= address <= 0xF:
             raise SystemExit("ESC address must be 0-15")
         self.port = port
@@ -644,15 +688,38 @@ class Window:
         self.bin_count = 0
         self.refresh_ports()
         self.refresh_status()
+        self.load_saved_calibration(session_path)
         self.win.show()
         self.raw_timer = QtCore.QTimer()
         self.raw_timer.timeout.connect(self.poll_raw_status)
-        self.raw_timer.start(RAW_POLL_MS)
 
-        if self.auto:
-            QtCore.QTimer.singleShot(0, lambda: self.start_worker())
+    def load_saved_calibration(self, session_path: Path) -> None:
+        self.session = session_from_metadata(session_path)
+        if self.session.static is None:
+            raise SystemExit(f"No static calibration in {session_path}")
+        self.port = self.session.port
+        self.address = self.session.address
+        port_index = self.port_box.findData(self.port)
+        if port_index < 0 and self.port:
+            self.port_box.addItem(self.port, self.port)
+            port_index = self.port_box.findData(self.port)
+        if port_index >= 0:
+            self.port_box.setCurrentIndex(port_index)
+        index = self.esc_box.findData(self.address)
+        if index >= 0:
+            self.esc_box.setCurrentIndex(index)
+        self.capture_count = len(self.session.static.raw_points)
+        self.stage_text = self.session.status
+        if self.session.static.blob_crc32 is not None:
+            self.device_calibration_text = "motor: calibrated crc32=0x%08X" % self.session.static.blob_crc32
         else:
-            QtCore.QTimer.singleShot(0, self.scan_addresses)
+            self.device_calibration_text = "motor: calibrated"
+        self.progress.setValue(100)
+        self.update_static_plots()
+        self.update_summary()
+        self.tabs.setCurrentWidget(self.static_tab)
+        self.refresh_status()
+        self.append_log(f"loaded calibration {session_path.parent.name}")
 
     def control_text(self) -> str:
         return (
@@ -1651,15 +1718,19 @@ class Window:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="penny-gui calibration and test GUI")
+    parser = argparse.ArgumentParser(description="penny-gui saved calibration viewer")
     parser.add_argument("--port")
     parser.add_argument("--address", type=int, default=1)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
-    parser.add_argument("--auto", action="store_true", help="start immediately and exit when complete")
+    parser.add_argument("--session", type=Path, default=None, help="run_metadata.json or session directory")
+    parser.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
+    session_path = args.session if args.session is not None else find_last_calibration()
+    if session_path.is_dir():
+        session_path = session_path / "run_metadata.json"
     port = find_serial_port(args.port)
-    window = Window(port, args.address, args.chunk_size, args.auto)
+    window = Window(port, args.address, args.chunk_size, args.auto, session_path)
     return window.app.exec()
 
 

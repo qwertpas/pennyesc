@@ -71,16 +71,16 @@ def run(args: argparse.Namespace) -> int:
             finally:
                 for i in range(5):
                     try:
-                        st = client.stop()
+                        st = client.brake()
                         print(
-                            f"run{run_index} stop{i} result={st.result} mode={st.mode} "
+                            f"run{run_index} brake{i} result={st.result} mode={st.mode} "
                             f"duty={st.duty} faults=0x{st.faults:02X}",
                             flush=True,
                         )
                         if st.duty == 0:
                             break
                     except Exception as exc:
-                        print(f"run{run_index} stop{i} failed {exc}", flush=True)
+                        print(f"run{run_index} brake{i} failed {exc}", flush=True)
                     time.sleep(0.05)
                 final = client.get_status(timeout=0.5, attempts=3)
                 print(

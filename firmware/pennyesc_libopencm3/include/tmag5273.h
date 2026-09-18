@@ -18,6 +18,7 @@ typedef struct {
 typedef enum {
     TMAG5273_MODE_FULL_XYZ = 0,
     TMAG5273_MODE_FAST_XY = 1,
+    TMAG5273_MODE_FAST_XYZ = 2,
 } tmag5273_mode_t;
 
 typedef struct {
@@ -31,6 +32,7 @@ typedef struct {
 typedef struct {
     int16_t x;
     int16_t y;
+    int16_t z;
     uint16_t start_phase_us;
     uint16_t end_phase_us;
 } tmag5273_xy_sample_t;
@@ -54,11 +56,8 @@ void tmag5273_clear_por(void);
  */
 bool tmag5273_read_xyt(tmag_data_t *out);
 
-/**
- * Fast read: X and Y only (skips temperature, no float math)
- * Standard register read, used outside the run ISR.
- */
-bool tmag5273_read_xy_fast(int16_t *x, int16_t *y);
+/* Read the channels selected by the current fast run mode. */
+bool tmag5273_read_fast(int16_t *x, int16_t *y, int16_t *z);
 bool tmag5273_read_z_fast(int16_t *z);
 bool tmag5273_read_xyz_fast(int16_t *x, int16_t *y, int16_t *z);
 
