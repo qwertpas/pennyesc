@@ -6,7 +6,8 @@
 
 /* I2C Address (7-bit) - TMAG5273A variant */
 #define TMAG5273_I2C_ADDR    0x35
-
+/* 32 MHz I2C kernel clock, below the sensor's 1 MHz limit. */
+#define TMAG5273_I2C_TIMING 0x00600B13u
 /* Sensor data structure */
 typedef struct {
     float temp_degc;
@@ -35,6 +36,7 @@ typedef struct {
     int16_t z;
     uint16_t start_phase_us;
     uint16_t end_phase_us;
+    uint16_t sample_tick;
 } tmag5273_xy_sample_t;
 
 /**

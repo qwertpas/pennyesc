@@ -338,13 +338,6 @@ protected:
                 continue;
             }
 
-            if (rx_index_ < 3u && byte == PNY_FRAME_START) {
-                rx_buf_[0] = byte;
-                rx_index_ = 1u;
-                rx_expected_ = 0u;
-                continue;
-            }
-
             if (rx_index_ >= sizeof(rx_buf_)) {
                 rx_index_ = 0u;
                 rx_expected_ = 0u;

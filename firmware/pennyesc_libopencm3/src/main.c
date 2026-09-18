@@ -16,6 +16,7 @@
 #include "pennyesc_boot.h"
 #include "pennyesc_calibration.h"
 #include "pennyesc_frame.h"
+#include "pennyesc_timing.h"
 #include "pennyesc_protocol.h"
 #include "pennyesc_uart_update.h"
 #include "tmag5273.h"
@@ -51,21 +52,15 @@
 #define REVERSE_HALL_PHASE_TURN16 32768
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
-#define OBSERVER_LEAD_US 180
+/* Bench-tuned with continuous XY reads and the short TIM21 sector ISR. */
+#define OBSERVER_LEAD_US 145
 #define OBSERVER_LEAD_MIN_US -1000
 #define OBSERVER_LEAD_MAX_US 1000
-#if PNY_DRIVE_BRUSHED
 #define SENSOR_TICK_US 100u
 #define VEL_UPDATE_SAMPLES 10u
-#else
-#define SENSOR_TICK_US 100u
-#define VEL_UPDATE_SAMPLES 10u
-#endif
 #define SCHED_TIMER_PERIOD 0xffffu
 #define SENSOR_STALE_US 10000u
 #define SENSOR_START_RETRIES 4u
-#define COMM_MIN_EVENT_US 2u
-#define COMM_MAX_EVENT_US 60000u
 #define COMM_VELOCITY_SAMPLES 5u
 
 #if PNY_DRIVE_BRUSHED
@@ -103,12 +98,6 @@ typedef struct {
     uint8_t reg;
     uint8_t value;
 } mct_reg_value_t;
-
-typedef struct {
-    uint8_t reg;
-    uint8_t value;
-    uint8_t bad_mask;
-} mct_check_t;
 
 #define HALLA_PORT GPIOC
 #define HALLA_PIN GPIO14
@@ -168,11 +157,18 @@ typedef struct {
 } observer_state_t;
 
 typedef struct {
+    volatile bool active;
     volatile uint8_t sector;
-    volatile uint16_t next_sensor_tick;
+    volatile uint8_t next_sector;
+    volatile int8_t step;
+    volatile uint32_t period_q8;
+    uint8_t fraction;
+    volatile uint8_t edge_count;
     volatile uint16_t next_comm_tick;
     volatile uint16_t position_tick;
+    volatile uint16_t sample_limit_us;
     int16_t last_duty;
+    volatile int16_t correction_us;
 } comm_scheduler_t;
 
 typedef union {
@@ -222,10 +218,10 @@ static volatile uint8_t observer_mode = PNY_OBSERVER_AB_FAST;
 #endif
 static uint32_t pending_reset_ms;
 
-static volatile uint32_t isr_duration_us;
-static volatile uint32_t isr_max_us;
+static volatile uint16_t isr_duration_us;
+static volatile uint16_t isr_max_us;
 static volatile uint32_t isr_overrun_count;
-static volatile uint32_t sensor_i2c_us;
+static volatile uint16_t sensor_i2c_us;
 static volatile uint16_t sensor_i2c_start_us;
 static volatile uint16_t sensor_i2c_end_us;
 static uint16_t mct_fault_count;
@@ -235,6 +231,7 @@ static uint32_t uart_overrun_errors;
 static work_state_t work_state;
 static observer_state_t observer_state;
 static comm_scheduler_t comm_scheduler;
+static int32_t comm_position;
 static int32_t comm_velocity_positions[COMM_VELOCITY_SAMPLES];
 static uint16_t comm_velocity_ticks[COMM_VELOCITY_SAMPLES];
 static uint8_t comm_velocity_index;
@@ -260,15 +257,15 @@ static const mct_reg_value_t mct_run_config[] = {
     {MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A | MCT8316Z_CLR_FLT},
 };
 
-static const mct_check_t mct_expected_config[] = {
-    {MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A, 1u << 1},
-    {MCT8316Z_REG_CONTROL3, MCT_EXPECTED_CONTROL3, 1u << 2},
-    {MCT8316Z_REG_CONTROL4, MCT_EXPECTED_CONTROL4, 1u << 3},
-    {MCT8316Z_REG_CONTROL5, MCT_EXPECTED_CONTROL5, 1u << 7},
-    {MCT8316Z_REG_CONTROL6, MCT_EXPECTED_CONTROL6, 1u << 7},
-    {MCT8316Z_REG_CONTROL8, MCT_EXPECTED_CONTROL8, 1u << 6},
-    {MCT8316Z_REG_CONTROL9, MCT_EXPECTED_CONTROL9, 1u << 7},
-    {MCT8316Z_REG_CONTROL10, MCT_EXPECTED_CONTROL10, 1u << 7},
+static const mct_reg_value_t mct_expected_config[] = {
+    {MCT8316Z_REG_CONTROL2A, MCT_EXPECTED_CONTROL2A},
+    {MCT8316Z_REG_CONTROL3, MCT_EXPECTED_CONTROL3},
+    {MCT8316Z_REG_CONTROL4, MCT_EXPECTED_CONTROL4},
+    {MCT8316Z_REG_CONTROL5, MCT_EXPECTED_CONTROL5},
+    {MCT8316Z_REG_CONTROL6, MCT_EXPECTED_CONTROL6},
+    {MCT8316Z_REG_CONTROL8, MCT_EXPECTED_CONTROL8},
+    {MCT8316Z_REG_CONTROL9, MCT_EXPECTED_CONTROL9},
+    {MCT8316Z_REG_CONTROL10, MCT_EXPECTED_CONTROL10},
 };
 
 #if !PNY_DRIVE_BRUSHED
@@ -286,17 +283,19 @@ static const uint16_t comm_sector_start_turn16[] = {
 #define cal_state work_state.cal
 #define capture_state work_state.capture
 
-static pny_frame_parser_t frame_parser;
+/* Parsing finishes before a response is built. Reuse the receive buffer for
+ * status to keep UART replies off the stack while three IRQs can nest. */
+static union {
+    pny_frame_parser_t parser;
+    pny_status_payload_t status;
+    pny_capture_read_payload_t capture_reply;
+} uart_state;
+#define frame_parser uart_state.parser
 static uint32_t uart_quiet_until_ms;
 static uint32_t uart_last_frame_ms;
 static volatile uint8_t uart_dma_rx[UART_DMA_RX_BUF_SIZE];
 static uint16_t uart_dma_tail;
 static bool sensor_run_mode;
-
-void sys_tick_handler(void)
-{
-    system_millis++;
-}
 
 /* Hardware setup */
 static void clock_setup(void)
@@ -316,7 +315,8 @@ static void clock_setup(void)
 static void systick_setup(void)
 {
     systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
-    systick_set_reload(31999);
+    systick_set_reload(32u * SENSOR_TICK_US - 1u);
+    nvic_set_priority(NVIC_SYSTICK_IRQ, 0x80);
     systick_interrupt_enable();
     systick_counter_enable();
 }
@@ -331,19 +331,11 @@ static void delay_ms(uint32_t ms)
 /* Small math helpers */
 static int8_t position_target_direction(int32_t target, int32_t current, int32_t deadband)
 {
+    /* Unsigned subtraction keeps the full distance across INT32_MIN/MAX. */
     if (target > current) {
-        if (current > INT32_MAX - deadband) {
-            return 0;
-        }
-        return (target > current + deadband) ? 1 : 0;
+        return (uint32_t)target - (uint32_t)current > (uint32_t)deadband ? 1 : 0;
     }
-    if (target < current) {
-        if (current < INT32_MIN + deadband) {
-            return 0;
-        }
-        return (target < current - deadband) ? -1 : 0;
-    }
-    return 0;
+    return (uint32_t)current - (uint32_t)target > (uint32_t)deadband ? -1 : 0;
 }
 
 static int32_t position_add_turn16_delta(int32_t position, int16_t delta)
@@ -379,7 +371,7 @@ static uint16_t approx_hypot_u16(uint32_t x, uint32_t y)
 
 static uint32_t abs_u32(int32_t value)
 {
-    return (value < 0) ? (uint32_t)(-value) : (uint32_t)value;
+    return (value < 0) ? -(uint32_t)value : (uint32_t)value;
 }
 
 static void send_frame(uint8_t cmd, const void *payload, uint8_t payload_len)
@@ -432,14 +424,11 @@ static void i2c1_setup(void)
     gpio_set_output_options(GPIOB, GPIO_OTYPE_OD, GPIO_OSPEED_HIGH, GPIO6 | GPIO7);
     SYSCFG_CFGR2 |= SYSCFG_CFGR2_I2C_PB6_FMP | SYSCFG_CFGR2_I2C_PB7_FMP | SYSCFG_CFGR2_I2C1_FMP;
     i2c_peripheral_disable(I2C1);
-    I2C_TIMINGR(I2C1) = 0x00100107;
+    rcc_set_peripheral_clk_sel(I2C1, RCC_CCIPR_I2CxSEL_PCLK);
+    I2C_TIMINGR(I2C1) = TMAG5273_I2C_TIMING;
     i2c_peripheral_enable(I2C1);
     nvic_enable_irq(NVIC_I2C1_IRQ);
-#if PNY_DRIVE_BRUSHED
-    nvic_set_priority(NVIC_I2C1_IRQ, 2);
-#else
-    nvic_set_priority(NVIC_I2C1_IRQ, 0);
-#endif
+    nvic_set_priority(NVIC_I2C1_IRQ, 0x40);
 }
 
 static void tim2_pwm_setup(void)
@@ -462,8 +451,10 @@ static void tim21_setup(void)
     timer_set_period(TIM21, SCHED_TIMER_PERIOD);
     TIM_DIER(TIM21) &= ~(TIM_DIER_UIE | TIM_DIER_CC1IE | TIM_DIER_CC2IE);
     nvic_enable_irq(NVIC_TIM21_IRQ);
-    nvic_set_priority(NVIC_TIM21_IRQ, 1);
+    nvic_set_priority(NVIC_TIM21_IRQ, 0);
     timer_enable_counter(TIM21);
+
+
 }
 
 static uint16_t sched_now_us(void)
@@ -490,53 +481,40 @@ static void motor_gpio_setup(void)
     gpio_clear(BRAKE_PORT, BRAKE_PIN);
 }
 
-static void set_hall_outputs_raw(uint8_t step)
+static __attribute__((noinline)) void set_hall_outputs_raw(uint8_t step)
 {
-    uint16_t pc_set = 0u;
-    uint16_t pa_set = 0u;
+    static const uint16_t pc_pins[6] = {
+        HALLA_PIN | HALLB_PIN, HALLA_PIN, HALLA_PIN, 0, HALLB_PIN, HALLB_PIN
+    };
+    uint16_t pc_set = pc_pins[step];
+    uint16_t pa_set = (step >= 2u && step <= 4u) ? HALLC_PIN : 0u;
 
-    switch (step) {
-    case 0:
-        pc_set = HALLA_PIN | HALLB_PIN;
-        break;
-    case 1:
-        pc_set = HALLA_PIN;
-        break;
-    case 2:
-        pc_set = HALLA_PIN;
-        pa_set = HALLC_PIN;
-        break;
-    case 3:
-        pa_set = HALLC_PIN;
-        break;
-    case 4:
-        pc_set = HALLB_PIN;
-        pa_set = HALLC_PIN;
-        break;
-    default:
-        pc_set = HALLB_PIN;
-        break;
-    }
-
-    gpio_clear(GPIOC, HALLA_PIN | HALLB_PIN);
-    gpio_clear(GPIOA, HALLC_PIN);
-    gpio_set(GPIOC, pc_set);
-    gpio_set(GPIOA, pa_set);
+    /* Adjacent sectors change one bit. Never pulse all Hall inputs low. */
+    GPIO_BSRR(GPIOC) = pc_set | ((uint32_t)((HALLA_PIN | HALLB_PIN) & ~pc_set) << 16);
+    GPIO_BSRR(GPIOA) = pa_set | ((uint32_t)(HALLC_PIN & ~pa_set) << 16);
 }
 
-static void apply_pwm_duty(int16_t duty)
+static __attribute__((noinline)) void apply_pwm_duty(int16_t duty)
 {
     uint16_t pwm = (duty < 0) ? (uint16_t)(-duty) : (uint16_t)duty;
     if (pwm > DUTY_LIMIT) {
         pwm = DUTY_LIMIT;
     }
     pwm = (uint16_t)(((uint32_t)pwm * PWM_PERIOD + (DUTY_LIMIT / 2u)) / DUTY_LIMIT);
+    /* A sector fault may preempt a control calculation. Only the register
+     * write is masked, so that calculation cannot re-enable PWM afterward. */
+    nvic_disable_irq(NVIC_TIM21_IRQ);
+    if (current_mode == PNY_MODE_IDLE) {
+        pwm = 0;
+        current_duty = 0;
+    }
     timer_set_oc_value(TIM2, TIM_OC4, pwm);
+    nvic_enable_irq(NVIC_TIM21_IRQ);
 }
 
 static void clear_motor_outputs(void)
 {
-    apply_pwm_duty(0);
+    TIM_CCR4(TIM2) = 0u;
     gpio_clear(HALLA_PORT, HALLA_PIN);
     gpio_clear(HALLB_PORT, HALLB_PIN);
     gpio_clear(HALLC_PORT, HALLC_PIN);
@@ -564,6 +542,7 @@ static void stop_motor_outputs(void)
 
 static void velocity_reset(int32_t position)
 {
+    comm_position = position;
     for (uint8_t i = 0; i < COMM_VELOCITY_SAMPLES; i++) {
         comm_velocity_positions[i] = position;
         comm_velocity_ticks[i] = sched_now_us();
@@ -606,42 +585,26 @@ static void brushed_velocity_update(int32_t position, uint16_t tick)
 #endif
 
 /* Position and sensor sampling */
+#if !PNY_DRIVE_BRUSHED
 static int32_t comm_velocity_update(int32_t position, uint16_t tick)
 {
-    comm_velocity_positions[comm_velocity_index] = position;
-    comm_velocity_ticks[comm_velocity_index] = tick;
-    comm_velocity_index++;
-    if (comm_velocity_index >= COMM_VELOCITY_SAMPLES) {
-        comm_velocity_index = 0;
-    }
+    uint8_t i = comm_velocity_index;
+    int32_t delta = (int32_t)((uint32_t)position - (uint32_t)comm_velocity_positions[i]);
+    uint16_t dt = (uint16_t)(tick - comm_velocity_ticks[i]);
+    comm_velocity_positions[i] = position;
+    comm_velocity_ticks[i] = tick;
+    comm_velocity_index = (i + 1u == COMM_VELOCITY_SAMPLES) ? 0u : (uint8_t)(i + 1u);
     if (comm_velocity_count < COMM_VELOCITY_SAMPLES) {
         comm_velocity_count++;
         return comm_velocity_turn32_per_s;
     }
-
-    uint8_t oldest = comm_velocity_index;
-    uint8_t i0 = oldest;
-    uint8_t i1 = oldest + 1u;
-    uint8_t i3 = oldest + 3u;
-    uint8_t i4 = oldest + 4u;
-    if (i1 >= COMM_VELOCITY_SAMPLES) {
-        i1 -= COMM_VELOCITY_SAMPLES;
-    }
-    if (i3 >= COMM_VELOCITY_SAMPLES) {
-        i3 -= COMM_VELOCITY_SAMPLES;
-    }
-    if (i4 >= COMM_VELOCITY_SAMPLES) {
-        i4 -= COMM_VELOCITY_SAMPLES;
-    }
-    uint16_t dt_us = (uint16_t)(comm_velocity_ticks[i4] - comm_velocity_ticks[i0]);
-    if (dt_us == 0u || dt_us >= SENSOR_STALE_US) {
+    if (dt == 0u || dt >= SENSOR_STALE_US) {
         return comm_velocity_turn32_per_s;
     }
-
-    int32_t sum = (2 * (comm_velocity_positions[i4] - comm_velocity_positions[i0])) +
-                  (comm_velocity_positions[i3] - comm_velocity_positions[i1]);
-    return ((sum * 2000) / (int32_t)(5u * dt_us)) * 1000;
+    return (delta * 1000 / (int32_t)dt) * 1000;
 }
+
+#endif
 
 static void update_position_from_angle(uint16_t angle_turn16)
 {
@@ -779,6 +742,7 @@ static void refresh_sensor_xyz(bool update_position)
     }
 }
 
+#if PNY_DRIVE_BRUSHED
 static bool refresh_sensor_xy(bool update_position)
 {
     int16_t x;
@@ -802,6 +766,8 @@ static bool refresh_sensor_xy(bool update_position)
     }
     return true;
 }
+
+#endif
 
 static void apply_sensor_xy_sample(const tmag5273_xy_sample_t *sample, bool update_position)
 {
@@ -829,27 +795,18 @@ static int32_t lead_deg_to_turn16(int16_t lead_deg)
 }
 
 /* Commutation scheduler */
+static void comm_fault(void);
 #if !PNY_DRIVE_BRUSHED
 static int32_t observer_position_at_tick(uint16_t tick)
 {
     int32_t dt_us = (int16_t)(tick - comm_scheduler.position_tick);
     dt_us += observer_lead_us;
     return observer_state.position_turn32 +
-           (comm_velocity_turn32_per_s / 100) * dt_us / 10000;
+           position_delta(comm_velocity_turn32_per_s, dt_us);
 }
 #endif
 
-static int32_t clamp_position_error(int32_t error)
-{
-    if (error > 32768) {
-        return 32768;
-    }
-    if (error < -32768) {
-        return -32768;
-    }
-    return error;
-}
-
+#if !PNY_DRIVE_BRUSHED
 static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, uint8_t alpha_div, uint16_t beta_div)
 {
     uint16_t dt_us = (uint16_t)(sample_tick - comm_scheduler.position_tick);
@@ -859,19 +816,18 @@ static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, 
     }
 
     int32_t predicted = observer_state.position_turn32 +
-                        (comm_velocity_turn32_per_s / 100) * (int32_t)dt_us / 10000;
-    int32_t error = clamp_position_error(measured_position - predicted);
-    observer_state.position_turn32 = predicted + (error / alpha_div);
+                        position_delta(comm_velocity_turn32_per_s, dt_us);
+    int32_t error = (int16_t)((uint16_t)measured_position - (uint16_t)predicted);
+    observer_state.position_turn32 = (uint16_t)(predicted + (error / alpha_div));
     int32_t correction_num = error * (int32_t)(1000000u / beta_div) + observer_velocity_remainder;
     int32_t correction = correction_num / (int32_t)dt_us;
     observer_velocity_remainder = correction_num - correction * (int32_t)dt_us;
     comm_velocity_turn32_per_s += correction;
 }
 
-#if !PNY_DRIVE_BRUSHED
 static int32_t commutation_phase_at_tick(uint16_t tick, int direction)
 {
-    int32_t rotor_electrical = observer_position_at_tick(tick) * POLE_PAIRS;
+    int32_t rotor_electrical = (uint16_t)observer_position_at_tick(tick) * POLE_PAIRS;
     int32_t phase = rotor_electrical +
                     pennyesc_calibration_commutation_alignment_turn16() +
                     current_lead_turn16;
@@ -892,58 +848,100 @@ static uint16_t comm_sector_start_phase(uint8_t sector)
     return comm_sector_start_turn16[sector];
 }
 
-static uint8_t comm_scheduler_schedule_sector_event(uint16_t now, int direction)
+/* Called with TIM21 masked or from its ISR. Clear the old event before
+ * writing CCR, then recheck the clock: an expired compare needs a software
+ * event, not a wait for the 65 ms counter wrap. */
+static __attribute__((noinline)) void comm_arm(uint16_t deadline)
 {
-    int32_t electrical_velocity = comm_velocity_turn32_per_s * POLE_PAIRS;
-    if (direction == 0 || electrical_velocity == 0) {
-        TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
-        timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
-        return 0xffu;
+    TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
+    timer_clear_flag(TIM21, TIM_SR_CC2IF);
+    comm_scheduler.next_comm_tick = deadline;
+    TIM_CCR2(TIM21) = deadline;
+    TIM_DIER(TIM21) |= TIM_DIER_CC2IE;
+    if (tick_due(sched_now_us(), deadline)) {
+        timer_generate_event(TIM21, TIM_EGR_CC2G);
     }
+}
 
-    uint32_t speed = abs_u32(electrical_velocity);
+static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
+{
+    int32_t velocity = comm_velocity_turn32_per_s;
+    /* Divide before multiplying to keep extreme observer transients in range. */
+    uint32_t speed_k = (abs_u32(velocity) / 1000u) * POLE_PAIRS;
+    uint32_t period = sector_period_q8(speed_k);
+    int8_t step = velocity >= 0 ? 1 : -1;
     uint16_t phase = (uint16_t)commutation_phase_at_tick(now, direction);
     uint8_t sector = (uint8_t)(((uint32_t)phase * 6u) >> 16);
-    uint16_t phase_delta;
+    uint8_t next_sector;
+    uint8_t edge_count;
+    do {
+        edge_count = comm_scheduler.edge_count;
+        next_sector = comm_scheduler.next_sector;
+    } while (edge_count != comm_scheduler.edge_count);
+    bool running = (TIM_DIER(TIM21) & TIM_DIER_CC2IE) != 0u;
+    bool start = !running || step != comm_scheduler.step;
+    if (start) {
+        next_sector = sector_next(sector, step);
+    }
+    uint16_t boundary = step > 0 ? comm_sector_start_phase(next_sector) :
+        (uint16_t)(comm_sector_start_phase(sector_next(next_sector, 1)) - 1u);
+    int32_t distance = step > 0 ? (int16_t)(boundary - phase) : (int16_t)(phase - boundary);
+    int32_t dt = speed_k != 0u ? distance * 1000 / (int32_t)speed_k : 0;
+    uint16_t desired = (uint16_t)(now + dt);
 
-    if (electrical_velocity > 0) {
-        uint16_t boundary = comm_sector_start_phase((uint8_t)(sector + 1u));
-        phase_delta = (uint16_t)(boundary - phase);
+    nvic_disable_irq(NVIC_TIM21_IRQ);
+    if (current_mode != PNY_MODE_RUN || direction == 0 || current_duty == 0) {
+        TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
+    } else if (period == 0u) {
+        comm_scheduler.sample_limit_us = SENSOR_STALE_US;
+        TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
+        if (sector != comm_scheduler.sector) {
+            set_hall_outputs_raw(sector);
+            comm_scheduler.sector = sector;
+        }
+    } else if (period < (COMM_MIN_PERIOD_US << 8)) {
+        /* Invalid speed estimate: stop instead of generating an IRQ storm. */
+        comm_fault();
     } else {
-        uint16_t boundary = (uint16_t)(comm_sector_start_phase(sector) - 1u);
-        phase_delta = (uint16_t)(phase - boundary);
+        comm_scheduler.period_q8 = period;
+        /* Stop before losing half a mechanical turn between measurements. */
+        uint32_t limit = (period >> 8) * (3u * POLE_PAIRS);
+        comm_scheduler.sample_limit_us = limit < SENSOR_STALE_US ? (uint16_t)limit : SENSOR_STALE_US;
+        if (start) {
+            comm_scheduler.step = step;
+            comm_scheduler.fraction = 0u;
+            comm_scheduler.correction_us = 0;
+            comm_scheduler.sector = sector;
+            comm_scheduler.next_sector = next_sector;
+            set_hall_outputs_raw(sector);
+            comm_arm(desired);
+        } else {
+            /* The ISR may advance several sectors during the divisions above.
+             * Transfer this phase correction to the edge that is upcoming now. */
+            uint8_t elapsed = (uint8_t)(comm_scheduler.edge_count - edge_count);
+            desired = (uint16_t)(desired + ((period * elapsed) >> 8));
+            uint16_t deadline = comm_scheduler.next_comm_tick;
+            int16_t correction = sector_correction(deadline, desired, period);
+            if ((TIM_SR(TIM21) & TIM_SR_CC2IF) != 0u ||
+                (int16_t)(deadline - sched_now_us()) <= 4) {
+                /* Preserve an imminent edge, but correct the following one.
+                 * Dropping this correction can lose phase lock at harmonics
+                 * of the 100 us sensor service. */
+                comm_scheduler.correction_us = correction;
+            } else {
+                comm_scheduler.correction_us = 0;
+                comm_arm((uint16_t)(deadline + correction));
+            }
+        }
     }
-    if (phase_delta == 0u) {
-        phase_delta = 1u;
-    }
-
-    uint32_t speed_k = speed / 1000u;
-    if (speed_k == 0u) {
-        TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
-        timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
-        return 0xffu;
-    }
-    uint32_t dt_us = (((uint32_t)phase_delta * 1000u) + speed_k - 1u) / speed_k;
-    if (dt_us < COMM_MIN_EVENT_US) {
-        dt_us = COMM_MIN_EVENT_US;
-    }
-    if (dt_us > COMM_MAX_EVENT_US) {
-        TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
-        timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
-        return 0xffu;
-    }
-
-    comm_scheduler.next_comm_tick = (uint16_t)(now + (uint16_t)dt_us);
-    TIM_CCR2(TIM21) = comm_scheduler.next_comm_tick;
-    timer_clear_flag(TIM21, TIM_SR_CC2IF | TIM_SR_CC2OF);
-    TIM_DIER(TIM21) |= TIM_DIER_CC2IE;
-    return sector;
+    nvic_enable_irq(NVIC_TIM21_IRQ);
 }
 #endif
 
 static void comm_scheduler_stop(void)
 {
-    TIM_DIER(TIM21) &= ~(TIM_DIER_CC1IE | TIM_DIER_CC2IE);
+    TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
+    comm_scheduler.active = false;
     comm_scheduler.sector = 0xffu;
     comm_scheduler.last_duty = INT16_MIN;
     tmag5273_async_cancel();
@@ -954,16 +952,13 @@ static void comm_scheduler_start(void)
     uint16_t now = sched_now_us();
     comm_scheduler.sector = 0xffu;
     comm_scheduler.position_tick = now;
+    comm_scheduler.sample_limit_us = SENSOR_STALE_US;
     comm_scheduler.last_duty = INT16_MIN;
-    comm_scheduler.next_sensor_tick = (uint16_t)(now + SENSOR_TICK_US);
     comm_scheduler.next_comm_tick = now;
     tmag5273_async_start_xy(now);
-    TIM_CCR1(TIM21) = comm_scheduler.next_sensor_tick;
-    timer_clear_flag(TIM21, TIM_SR_CC1IF | TIM_SR_CC2IF | TIM_SR_CC1OF | TIM_SR_CC2OF | TIM_SR_UIF);
-    TIM_DIER(TIM21) |= TIM_DIER_CC1IE;
-#if PNY_DRIVE_BRUSHED
     TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
-#endif
+    timer_clear_flag(TIM21, TIM_SR_CC2IF);
+    comm_scheduler.active = true;
 }
 
 static bool sensor_start_read(void)
@@ -973,9 +968,19 @@ static bool sensor_start_read(void)
             delay_ms(1);
             continue;
         }
+#if PNY_DRIVE_BRUSHED
         if (sensor_set_run_mode() && refresh_sensor_xy(false)) {
             return true;
         }
+#else
+        /* Take the initial angle before enabling fast continuous XY reads. */
+        if (sensor_set_full_mode()) {
+            refresh_sensor_xyz(false);
+            if (sensor_ready && sensor_set_run_mode()) {
+                return true;
+            }
+        }
+#endif
         sensor_ready = false;
         delay_ms(1);
     }
@@ -1018,37 +1023,23 @@ static void mct_apply_config(void)
     }
 }
 
-static uint8_t mct_config_bad_mask(void)
+static bool mct_config_valid(void)
 {
-    uint8_t bad = 0u;
-
-    uint8_t ic_status = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_IC_STATUS);
-    if ((ic_status & MCT_IC_STATUS_NPOR) == 0u) {
-        bad |= 1u << 0;
+    if ((mct8316z_read_reg(MCT8316Z_REG_IC_STATUS) & MCT_IC_STATUS_NPOR) == 0u) {
+        return false;
     }
-
     for (uint8_t i = 0; i < sizeof(mct_expected_config) / sizeof(mct_expected_config[0]); i++) {
-        uint8_t reg = mct_expected_config[i].reg;
-        uint8_t value = (uint8_t)mct8316z_read_reg(reg);
-        if (value != mct_expected_config[i].value) {
-            bad |= mct_expected_config[i].bad_mask;
+        if ((uint8_t)mct8316z_read_reg(mct_expected_config[i].reg) != mct_expected_config[i].value) {
+            return false;
         }
     }
-
     uint8_t control7 = (uint8_t)mct8316z_read_reg(MCT8316Z_REG_CONTROL7);
-    if ((control7 & MCT8316Z_HALL_HYS_HIGH) != MCT8316Z_HALL_HYS_HIGH) {
-        bad |= 1u << 4;
-    }
-    if ((control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) != MCT8316Z_HALL_HYS_HIGH) {
-        bad |= 1u << 5;
-    }
-
-    return bad;
+    return (control7 & (MCT8316Z_HALL_HYS_HIGH | MCT8316Z_DIR_REVERSE)) == MCT8316Z_HALL_HYS_HIGH;
 }
 
 static void mct_recover_if_needed(void)
 {
-    if (mct_config_bad_mask() == 0u) {
+    if (mct_config_valid()) {
         return;
     }
 
@@ -1059,7 +1050,7 @@ static void mct_recover_if_needed(void)
     apply_pwm_duty(0);
     delay_ms(2);
 
-    if (mct_config_bad_mask() == 0u) {
+    if (mct_config_valid()) {
         if (restart_timer) {
             comm_scheduler_start();
         }
@@ -1095,9 +1086,9 @@ static void control_disable(void)
     report_speed = false;
 }
 
-static int32_t control_term(control_gain_t gain_q8, int32_t error_turn32)
+static __attribute__((noinline)) int32_t control_term(control_gain_t gain_q8, int32_t error_turn32)
 {
-    return (int32_t)(((int64_t)gain_q8 * error_turn32 * CONTROL_TURN32_NUM) >> CONTROL_TURN32_SHIFT);
+    return (int32_t)(((int64_t)(gain_q8 * CONTROL_TURN32_NUM) * error_turn32) >> CONTROL_TURN32_SHIFT);
 }
 
 static int16_t clamp_duty_i32(int32_t duty)
@@ -1140,6 +1131,11 @@ static int16_t brushed_friction_duty(int32_t position_error)
 
 static int16_t control_duty(void)
 {
+#if !PNY_DRIVE_BRUSHED
+    if ((control_kp_q8 | control_kd_q8 | control_kv_q8) == 0) {
+        return clamp_duty_i32(control_kf);
+    }
+#endif
     int32_t position_error = target_position_turn32 - position_from_zero(absolute_position_turn32);
     int32_t velocity_error = target_velocity_turn32_per_s - velocity_turn32_per_s;
 #if PNY_DRIVE_BRUSHED
@@ -1192,7 +1188,7 @@ static void run_begin(void)
     }
     update_position_from_angle(current_angle_turn16);
     velocity_reset(absolute_position_turn32);
-    observer_state.position_turn32 = absolute_position_turn32;
+    observer_state.position_turn32 = current_angle_turn16;
 
     int16_t duty;
     int8_t direction;
@@ -1223,11 +1219,11 @@ static void run_begin(void)
     comm_scheduler.position_tick = sched_now_us();
     uint8_t sector = comm_sector_at_tick(comm_scheduler.position_tick, direction);
     set_hall_outputs_raw(sector);
-    apply_pwm_duty(duty);
     current_mode = PNY_MODE_RUN;
+    apply_pwm_duty(duty);
     comm_scheduler_start();
     comm_scheduler.sector = sector;
-    comm_scheduler_schedule_sector_event(sched_now_us(), direction);
+    /* Velocity is zero until fresh samples arrive; SysTick arms the first edge. */
 #endif
 }
 
@@ -1331,9 +1327,6 @@ static uint8_t current_flags(uint8_t faults)
 
 static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
 {
-    tmag5273_stats_t tmag_stats;
-    tmag5273_get_stats(&tmag_stats);
-
     payload->result = result;
     payload->mode = current_mode;
     payload->faults = current_faults();
@@ -1352,6 +1345,8 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->i2c_start_us = sensor_i2c_start_us;
     payload->i2c_end_us = sensor_i2c_end_us;
     payload->isr_overrun_count = isr_overrun_count;
+    tmag5273_stats_t tmag_stats;
+    tmag5273_get_stats(&tmag_stats);
     payload->i2c_timeout_count = tmag_stats.timeout_count;
     payload->i2c_nack_count = tmag_stats.nack_count;
     payload->i2c_recover_count = tmag_stats.recover_count;
@@ -1378,10 +1373,16 @@ static void refresh_status_sensor(void)
     }
 }
 
-static void fill_update_status(pny_status_payload_t *payload)
+static void send_status_response(uint8_t cmd, uint8_t result)
+{
+    fill_status_payload(&uart_state.status, result);
+    send_frame(cmd, &uart_state.status, sizeof(uart_state.status));
+}
+
+static void send_update_status(void)
 {
     refresh_status_sensor();
-    fill_status_payload(payload, PNY_RESULT_OK);
+    send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);
 }
 
 static uint8_t prepare_update_boot(void)
@@ -1489,7 +1490,7 @@ static uint8_t calibration_start(uint8_t sweep_dir)
 #endif
 }
 
-static void calibration_poll(void)
+static __attribute__((noinline)) void calibration_poll(void)
 {
     if (!cal_state.active || current_mode != PNY_MODE_CAL) {
         return;
@@ -1580,8 +1581,17 @@ static void capture_tick_1ms(void)
 static void comm_stop_from_isr(void)
 {
     current_mode = PNY_MODE_IDLE;
-    comm_scheduler_stop();
+    TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
     stop_motor_outputs();
+    /* Main finishes sensor cleanup; TIM21 may have preempted its I2C ISR. */
+}
+
+static void comm_fault(void)
+{
+    sensor_ready = false;
+    capture_state.active = false;
+    control_disable();
+    comm_stop_from_isr();
 }
 
 #if PNY_DRIVE_BRUSHED
@@ -1647,11 +1657,7 @@ static void comm_control_tick(uint16_t now)
     }
     current_direction = direction;
 
-    uint8_t sector = comm_sector_at_tick(now, direction);
-    if (comm_scheduler.sector > 5u || sector != comm_scheduler.sector) {
-        set_hall_outputs_raw(sector);
-        comm_scheduler.sector = sector;
-    }
+    (void)now;
 
     if (duty != comm_scheduler.last_duty) {
         apply_pwm_duty(duty);
@@ -1660,20 +1666,11 @@ static void comm_control_tick(uint16_t now)
 #endif
 }
 
-static void comm_sensor_tick(uint16_t scheduled_tick)
+static void comm_sensor_tick(void)
 {
     static uint8_t vel_counter;
-    uint16_t now = sched_now_us();
-    uint16_t next = scheduled_tick;
-
-    do {
-        next = (uint16_t)(next + SENSOR_TICK_US);
-    } while ((int16_t)(next - now) <= 0);
-    comm_scheduler.next_sensor_tick = next;
-    TIM_CCR1(TIM21) = next;
-
 #if !PNY_DRIVE_BRUSHED
-    int32_t last_position = absolute_position_turn32;
+    uint16_t last_angle = current_angle_turn16;
     uint16_t last_tick = comm_scheduler.position_tick;
 #endif
     tmag5273_xy_sample_t sample;
@@ -1681,61 +1678,44 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
 
     if (have_sample) {
         apply_sensor_xy_sample(&sample, true);
-        uint16_t sample_tick = sensor_i2c_start_us;
+        uint16_t sample_tick = sample.sample_tick;
 #if PNY_DRIVE_BRUSHED
         brushed_velocity_update(absolute_position_turn32, sample_tick);
 #else
         uint16_t sample_dt = (uint16_t)(sample_tick - last_tick);
-        bool velocity_updated = false;
-        switch (observer_mode) {
-        case PNY_OBSERVER_AB_FAST:
-            observer_ab_update(absolute_position_turn32, sample_tick, 8u, 128u);
-            velocity_updated = true;
-            break;
-        case PNY_OBSERVER_AB_MID:
-            observer_ab_update(absolute_position_turn32, sample_tick, 12u, 192u);
-            velocity_updated = true;
-            break;
-        case PNY_OBSERVER_AB_SLOW:
-            observer_ab_update(absolute_position_turn32, sample_tick, 16u, 256u);
-            velocity_updated = true;
-            break;
-        default:
-            observer_state.position_turn32 = absolute_position_turn32;
-            break;
-        }
-
-        if (!velocity_updated) {
-            int32_t sample_velocity = comm_velocity_turn32_per_s;
+        int16_t delta = (int16_t)(current_angle_turn16 - last_angle);
+        comm_position = (int32_t)((uint32_t)comm_position + (uint32_t)(int32_t)delta);
+        if (observer_mode >= PNY_OBSERVER_AB_FAST) {
+            uint8_t gain = (uint8_t)(observer_mode - PNY_OBSERVER_AB_FAST);
+            observer_ab_update(current_angle_turn16, sample_tick,
+                               gain == 0u ? 4u : (uint8_t)(8u + 4u * gain),
+                               gain == 0u ? 32u : (uint16_t)(128u + 64u * gain));
+        } else {
+            observer_state.position_turn32 = current_angle_turn16;
+            int32_t velocity = comm_velocity_turn32_per_s;
             if (sample_dt > 0u && sample_dt < SENSOR_STALE_US) {
-                sample_velocity = ((absolute_position_turn32 - last_position) * 1000) / (int32_t)sample_dt * 1000;
+                velocity = (delta * 1000 / (int32_t)sample_dt) * 1000;
             }
-            int32_t secant_velocity = comm_velocity_update(absolute_position_turn32, sample_tick);
-            if (observer_mode == PNY_OBSERVER_SECANT && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
-                comm_velocity_turn32_per_s = secant_velocity;
-            } else if (observer_mode == PNY_OBSERVER_SECANT_LP2 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
-                comm_velocity_turn32_per_s += (secant_velocity - comm_velocity_turn32_per_s) / 2;
-            } else if (observer_mode == PNY_OBSERVER_SECANT_LP4 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
-                comm_velocity_turn32_per_s += (secant_velocity - comm_velocity_turn32_per_s) / 4;
-            } else if (observer_mode == PNY_OBSERVER_SECANT_LP8 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
-                comm_velocity_turn32_per_s += (secant_velocity - comm_velocity_turn32_per_s) / 8;
-            } else if (observer_mode == PNY_OBSERVER_SECANT_LP16 && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
-                comm_velocity_turn32_per_s += (secant_velocity - comm_velocity_turn32_per_s) / 16;
-            } else {
-                comm_velocity_turn32_per_s += (sample_velocity - comm_velocity_turn32_per_s) / 2;
+            int32_t secant = comm_velocity_update(comm_position, sample_tick);
+            uint8_t divisor = 2u;
+            if (observer_mode >= PNY_OBSERVER_SECANT && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
+                velocity = secant;
+                divisor = (uint8_t)(1u << (observer_mode - PNY_OBSERVER_SECANT));
             }
+            comm_velocity_turn32_per_s += (velocity - comm_velocity_turn32_per_s) / divisor;
         }
         velocity_turn32_per_s = comm_velocity_turn32_per_s;
 #endif
         comm_scheduler.position_tick = sample_tick;
     }
 
+    if (current_mode != PNY_MODE_RUN) {
+        return;
+    }
     uint16_t control_tick = sched_now_us();
-#if PNY_DRIVE_BRUSHED
     (void)tmag5273_async_start_xy(control_tick);
-#endif
-    if ((uint16_t)(control_tick - comm_scheduler.position_tick) > SENSOR_STALE_US) {
-        comm_stop_from_isr();
+    if ((uint16_t)(control_tick - comm_scheduler.position_tick) > comm_scheduler.sample_limit_us) {
+        comm_fault();
         return;
     }
 
@@ -1753,71 +1733,58 @@ static void comm_sensor_tick(uint16_t scheduled_tick)
 #endif
 }
 
-#if !PNY_DRIVE_BRUSHED
-static void comm_sector_tick(uint16_t scheduled_tick)
-{
-    uint16_t now = sched_now_us();
-    if ((int16_t)(now - scheduled_tick) < 0) {
-        now = scheduled_tick;
-    }
-    if ((uint16_t)(now - comm_scheduler.position_tick) > SENSOR_STALE_US) {
-        comm_stop_from_isr();
-        return;
-    }
-
-    int8_t direction = current_direction;
-    if (direction == 0 || current_duty == 0) {
-        TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
-        return;
-    }
-
-    uint8_t sector = comm_scheduler_schedule_sector_event(now, direction);
-    if (sector > 5u) {
-        return;
-    }
-    if (sector != comm_scheduler.sector) {
-        set_hall_outputs_raw(sector);
-        comm_scheduler.sector = sector;
-    }
-    if (current_duty != comm_scheduler.last_duty) {
-        apply_pwm_duty(current_duty);
-        comm_scheduler.last_duty = current_duty;
-    }
-}
-#endif
-
 void tim21_isr(void)
 {
-    uint16_t start = sched_now_us();
-    uint32_t flags = TIM_SR(TIM21) & TIM_DIER(TIM21);
-
 #if !PNY_DRIVE_BRUSHED
-    if ((flags & TIM_SR_CC2IF) != 0u) {
-        uint16_t scheduled_tick = comm_scheduler.next_comm_tick;
+    if ((TIM_SR(TIM21) & TIM_DIER(TIM21) & TIM_SR_CC2IF) == 0u) {
+        return;
+    }
+    uint16_t now = sched_now_us();
+    uint16_t late = (uint16_t)(now - comm_scheduler.next_comm_tick);
+    uint32_t period = comm_scheduler.period_q8;
+    if (current_duty == 0 || current_mode != PNY_MODE_RUN) {
+        TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
         timer_clear_flag(TIM21, TIM_SR_CC2IF);
-        comm_sector_tick(scheduled_tick);
+        return;
     }
+    if ((uint16_t)(now - comm_scheduler.position_tick) > comm_scheduler.sample_limit_us || late >= (period >> 8)) {
+        isr_overrun_count++;
+        comm_fault();
+        return;
+    }
+    /* The edge comes first. No angle calculation or division in this ISR. */
+    uint8_t sector = comm_scheduler.next_sector;
+    set_hall_outputs_raw(sector);
+    comm_scheduler.sector = sector;
+    comm_scheduler.next_sector = sector_next(sector, comm_scheduler.step);
+    comm_scheduler.edge_count++;
+    uint16_t next = sector_deadline(comm_scheduler.next_comm_tick, period, &comm_scheduler.fraction);
+    next = (uint16_t)(next + comm_scheduler.correction_us);
+    comm_scheduler.correction_us = 0;
+    comm_arm(next);
 #endif
-    if ((flags & TIM_SR_CC1IF) != 0u) {
-        uint16_t scheduled_tick = comm_scheduler.next_sensor_tick;
-        timer_clear_flag(TIM21, TIM_SR_CC1IF);
-        comm_sensor_tick(scheduled_tick);
-    }
-    if ((TIM_SR(TIM21) & TIM_SR_UIF) != 0u) {
-        timer_clear_flag(TIM21, TIM_SR_UIF);
-    }
+}
 
+/* STM32L011 has TIM2 and TIM21, but no TIM22. SysTick supplies the
+ * 100 us control service while TIM21 remains dedicated to sector edges. */
+void sys_tick_handler(void)
+{
+    static uint8_t millisecond_ticks;
+    if (++millisecond_ticks == 1000u / SENSOR_TICK_US) {
+        millisecond_ticks = 0u;
+        system_millis++;
+    }
+    if (current_mode != PNY_MODE_RUN || !comm_scheduler.active) {
+        return;
+    }
+    uint16_t start = sched_now_us();
+    comm_sensor_tick();
     isr_duration_us = (uint16_t)(sched_now_us() - start);
     if (isr_duration_us > isr_max_us) {
         isr_max_us = isr_duration_us;
     }
-    if ((TIM_SR(TIM21) & TIM_SR_CC1OF) != 0u) {
+    if (isr_duration_us >= SENSOR_TICK_US) {
         isr_overrun_count++;
-        timer_clear_flag(TIM21, TIM_SR_CC1OF);
-    }
-    if ((TIM_SR(TIM21) & TIM_SR_CC2OF) != 0u) {
-        isr_overrun_count++;
-        timer_clear_flag(TIM21, TIM_SR_CC2OF);
     }
 }
 
@@ -1832,18 +1799,6 @@ static bool uart_quiet_active(uint32_t now_ms)
     return uart_quiet_until_ms != 0u && (int32_t)(now_ms - uart_quiet_until_ms) < 0;
 }
 
-static void send_status_response(uint8_t cmd, uint8_t result)
-{
-    pny_status_payload_t payload;
-    fill_status_payload(&payload, result);
-    send_frame(cmd, &payload, sizeof(payload));
-}
-
-static void handle_get_status(void)
-{
-    refresh_status_sensor();
-    send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);
-}
 
 static void handle_zero_position(const uint8_t *payload, uint8_t len)
 {
@@ -2004,13 +1959,13 @@ static void handle_set_control(const uint8_t *payload, uint8_t len)
         return;
     }
 
-    nvic_disable_irq(NVIC_TIM21_IRQ);
+    systick_interrupt_disable();
     control_kp_q8 = kp_q8;
     control_kd_q8 = kd_q8;
     control_kv_q8 = kv_q8;
     control_kf = kf;
     control_clip = clip;
-    nvic_enable_irq(NVIC_TIM21_IRQ);
+    systick_interrupt_enable();
 #else
     if (len != sizeof(pny_control_payload_t)) {
         send_status_response(PNY_CMD_SET_CONTROL, PNY_RESULT_BAD_ARG);
@@ -2025,13 +1980,13 @@ static void handle_set_control(const uint8_t *payload, uint8_t len)
         return;
     }
 
-    nvic_disable_irq(NVIC_TIM21_IRQ);
+    systick_interrupt_disable();
     control_kp_q8 = control.kp_q8;
     control_kd_q8 = control.kd_q8;
     control_kv_q8 = control.kv_q8;
     control_kf = control.kf;
     control_clip = control.clip;
-    nvic_enable_irq(NVIC_TIM21_IRQ);
+    systick_interrupt_enable();
 #endif
     send_status_response(PNY_CMD_SET_CONTROL, control_apply());
 }
@@ -2210,11 +2165,10 @@ static void send_capture_status(uint8_t result)
     send_frame(PNY_CMD_DEBUG, &out, sizeof(out));
 }
 
-static void handle_capture_start(const uint8_t *payload, uint8_t len)
+static __attribute__((noinline)) uint8_t capture_start(const uint8_t *payload, uint8_t len)
 {
     if (len != sizeof(pny_capture_start_payload_t)) {
-        send_capture_status(PNY_RESULT_BAD_ARG);
-        return;
+        return PNY_RESULT_BAD_ARG;
     }
 
     pny_capture_start_payload_t in;
@@ -2223,21 +2177,18 @@ static void handle_capture_start(const uint8_t *payload, uint8_t len)
         (in.sample_hz != 250u && in.sample_hz != 500u && in.sample_hz != 1000u) ||
         in.advance_deg < ADVANCE_MIN_DEG || in.advance_deg > ADVANCE_MAX_DEG ||
         in.duty > DUTY_LIMIT || in.duty < -DUTY_LIMIT) {
-        send_capture_status(PNY_RESULT_RANGE);
-        return;
+        return PNY_RESULT_RANGE;
     }
 
     if (current_mode == PNY_MODE_CAL) {
-        send_capture_status(PNY_RESULT_BUSY);
-        return;
+        return PNY_RESULT_BUSY;
     }
     uint8_t result = run_ready();
     if (result != PNY_RESULT_OK) {
-        send_capture_status(result);
-        return;
+        return result;
     }
 
-    nvic_disable_irq(NVIC_TIM21_IRQ);
+    systick_interrupt_disable();
     memset(&capture_state, 0, sizeof(capture_state));
     capture_state.sample_hz = in.sample_hz;
     capture_state.duration_ms = in.duration_ms;
@@ -2246,61 +2197,62 @@ static void handle_capture_start(const uint8_t *payload, uint8_t len)
 
     current_lead_turn16 = lead_deg_to_turn16(in.advance_deg);
     control_set_duty(in.duty, DUTY_LIMIT);
+    release_brake();
 
-    nvic_enable_irq(NVIC_TIM21_IRQ);
+    systick_interrupt_enable();
     if (current_mode != PNY_MODE_RUN) {
         run_begin();
         if (current_mode != PNY_MODE_RUN) {
             capture_state.active = false;
             capture_state.done = true;
             control_disable();
-            send_capture_status(PNY_RESULT_BAD_STATE);
-            return;
+            return PNY_RESULT_BAD_STATE;
         }
     }
 
-    send_capture_status(PNY_RESULT_OK);
+    return PNY_RESULT_OK;
 }
 
-static void handle_capture_read(const uint8_t *payload, uint8_t len)
+static __attribute__((noinline)) void handle_capture_read(const uint8_t *payload, uint8_t len)
 {
-    pny_capture_read_payload_t out;
-    memset(&out, 0, sizeof(out));
-    out.subcmd = PNY_DEBUG_CAPTURE_READ;
+    bool valid = len == 4u && payload[0] == PNY_DEBUG_CAPTURE_READ && payload[3] <= PNY_CAPTURE_READ_MAX_SAMPLES;
+    uint16_t offset = valid ? (uint16_t)(payload[1] | ((uint16_t)payload[2] << 8)) : 0u;
+    uint8_t want = valid ? payload[3] : 0u;
+    /* Save the request before reusing its parser buffer for the reply. */
+    pny_capture_read_payload_t *out = &uart_state.capture_reply;
+    memset(out, 0, sizeof(*out));
+    out->subcmd = PNY_DEBUG_CAPTURE_READ;
 
-    if (len != 4u || payload[0] != PNY_DEBUG_CAPTURE_READ || payload[3] > PNY_CAPTURE_READ_MAX_SAMPLES) {
-        out.result = PNY_RESULT_BAD_ARG;
-        send_frame(PNY_CMD_DEBUG, &out, 5u);
+    if (!valid) {
+        out->result = PNY_RESULT_BAD_ARG;
+        send_frame(PNY_CMD_DEBUG, out, 5u);
         return;
     }
     if (capture_state.active) {
-        out.result = PNY_RESULT_BUSY;
-        send_frame(PNY_CMD_DEBUG, &out, 5u);
+        out->result = PNY_RESULT_BUSY;
+        send_frame(PNY_CMD_DEBUG, out, 5u);
         return;
     }
 
-    uint16_t offset;
-    memcpy(&offset, &payload[1], sizeof(offset));
     if (offset > capture_state.sample_count) {
-        out.result = PNY_RESULT_RANGE;
-        send_frame(PNY_CMD_DEBUG, &out, 5u);
+        out->result = PNY_RESULT_RANGE;
+        send_frame(PNY_CMD_DEBUG, out, 5u);
         return;
     }
 
-    uint8_t want = payload[3];
     uint16_t available = (uint16_t)(capture_state.sample_count - offset);
     if (want > available) {
         want = (uint8_t)available;
     }
 
-    out.result = PNY_RESULT_OK;
-    out.offset = offset;
-    out.count = want;
+    out->result = PNY_RESULT_OK;
+    out->offset = offset;
+    out->count = want;
     for (uint8_t i = 0; i < want; i++) {
-        out.samples[i].angle_turn16 = capture_state.samples[offset + i].angle_turn16;
-        out.samples[i].rpm = capture_state.samples[offset + i].rpm;
+        out->samples[i].angle_turn16 = capture_state.samples[offset + i].angle_turn16;
+        out->samples[i].rpm = capture_state.samples[offset + i].rpm;
     }
-    send_frame(PNY_CMD_DEBUG, &out, (uint8_t)(5u + (want * sizeof(pny_capture_sample_t))));
+    send_frame(PNY_CMD_DEBUG, out, (uint8_t)(5u + (want * sizeof(pny_capture_sample_t))));
 }
 
 static void handle_set_observer(const uint8_t *payload, uint8_t len)
@@ -2317,13 +2269,35 @@ static void handle_set_observer(const uint8_t *payload, uint8_t len)
         return;
     }
 
+    systick_interrupt_disable();
     observer_lead_us = in.lead_us;
     observer_mode = in.mode;
-    observer_state.position_turn32 = absolute_position_turn32;
+    observer_state.position_turn32 = current_angle_turn16;
+    observer_velocity_remainder = 0;
+    systick_interrupt_enable();
     send_capture_status(PNY_RESULT_OK);
 }
 
-static void handle_cal(const uint8_t *payload, uint8_t len)
+static void handle_cal_read_blob(const uint8_t *payload, uint8_t len)
+{
+    uint8_t count = len == 4u ? payload[3] : 0u;
+    uint16_t offset = len == 4u ? (uint16_t)(payload[1] | ((uint16_t)payload[2] << 8)) : 0u;
+    const uint8_t *blob = (const uint8_t *)pennyesc_calibration_active();
+    uint8_t *reply = (uint8_t *)&uart_state;
+    reply[0] = PNY_RESULT_BAD_ARG;
+    if (count == 0u || count >= PNY_FRAME_MAX_PAYLOAD || offset + count > sizeof(pennyesc_calibration_blob_t)) {
+        count = 0u;
+    } else if (!blob) {
+        reply[0] = PNY_RESULT_NOT_CALIBRATED;
+        count = 0u;
+    } else {
+        reply[0] = PNY_RESULT_OK;
+        memcpy(reply + 1, blob + offset, count);
+    }
+    send_frame(PNY_CMD_CAL, reply, (uint8_t)(count + 1u));
+}
+
+static __attribute__((noinline)) void handle_cal(const uint8_t *payload, uint8_t len)
 {
     if (len == 0u) {
         pny_cal_status_payload_t out = {PNY_RESULT_BAD_ARG, 0, 0, 0};
@@ -2332,6 +2306,9 @@ static void handle_cal(const uint8_t *payload, uint8_t len)
     }
 
     switch (payload[0]) {
+    case PNY_CAL_READ_BLOB:
+        handle_cal_read_blob(payload, len);
+        break;
     case PNY_CAL_START:
         handle_cal_start(&payload[1], (uint8_t)(len - 1u));
         break;
@@ -2361,7 +2338,7 @@ static void handle_cal(const uint8_t *payload, uint8_t len)
     }
 }
 
-static void handle_debug(const uint8_t *payload, uint8_t len)
+static __attribute__((noinline)) void handle_debug(const uint8_t *payload, uint8_t len)
 {
     if (len == 0u) {
         send_capture_status(PNY_RESULT_BAD_ARG);
@@ -2370,7 +2347,7 @@ static void handle_debug(const uint8_t *payload, uint8_t len)
 
     switch (payload[0]) {
     case PNY_DEBUG_CAPTURE_START:
-        handle_capture_start(payload, len);
+        send_capture_status(capture_start(payload, len));
         break;
     case PNY_DEBUG_CAPTURE_STATUS:
         send_capture_status(PNY_RESULT_OK);
@@ -2387,7 +2364,7 @@ static void handle_debug(const uint8_t *payload, uint8_t len)
     }
 }
 
-static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
+static __attribute__((noinline)) void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
 {
     uint8_t address = header >> 4;
     uint8_t cmd = header & 0x0Fu;
@@ -2395,12 +2372,7 @@ static void process_frame(uint8_t header, const uint8_t *payload, uint8_t len)
     if (address != ESC_ADDRESS) {
         return;
     }
-    uart_last_frame_ms = system_millis;
-
     switch (cmd) {
-    case PNY_CMD_GET_STATUS:
-        handle_get_status();
-        break;
     case PNY_CMD_GET_POS_VEL:
     {
         pny_pos_vel_payload_t out;
@@ -2463,20 +2435,16 @@ static void uart_poll(void)
             continue;
         }
 
-        if (pennyesc_uart_update_feed_byte(
-                byte,
-                ESC_ADDRESS,
-                system_millis,
-                fill_update_status,
-                prepare_update_boot)) {
-            pny_frame_parser_reset(&frame_parser);
-            continue;
-        }
-
         const uint8_t *frame;
         uint8_t frame_len;
         if (pny_frame_parser_push(&frame_parser, byte, system_millis, UART_FRAME_TIMEOUT_MS, &frame, &frame_len)) {
-            process_frame(frame[1], &frame[3], frame[2]);
+            if ((frame[1] >> 4) == ESC_ADDRESS) {
+                uart_last_frame_ms = system_millis;
+            }
+            if (!pennyesc_uart_update_handle_frame(frame, frame_len, ESC_ADDRESS,
+                    system_millis, send_update_status, prepare_update_boot)) {
+                process_frame(frame[1], &frame[3], frame[2]);
+            }
         }
     }
 
@@ -2512,6 +2480,9 @@ int main(void)
     }
 
     while (1) {
+        if (current_mode == PNY_MODE_IDLE && comm_scheduler.active) {
+            comm_scheduler_stop();
+        }
         uart_poll();
         if (current_mode == PNY_MODE_CAL) {
             calibration_poll();

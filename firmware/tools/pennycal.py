@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
-import glob
 import math
 import struct
 import time
@@ -13,7 +12,6 @@ from typing import Callable, Iterable, Sequence
 
 import numpy as np
 import serial
-from serial.tools import list_ports
 from pnyproto import (
     FAULT_FLASH,
     FAULT_SENSOR,
@@ -33,6 +31,7 @@ from pnyproto import (
     CAL_COMMIT,
     CAL_INFO,
     CAL_READ_POINT,
+    CAL_READ_BLOB,
     CAL_START,
     CAL_STATUS,
     CAL_WRITE_BLOB,
@@ -50,59 +49,11 @@ from pnyproto import (
     crc8,
     decode_frame,
     encode_frame,
+    read_frame,
+    find_serial_port,
+    serial_port_allowed,
 )
 
-
-def serial_port_allowed(value: str, text: str = "") -> bool:
-    combined = f"{value} {text}".lower()
-    blocked = ("bluetooth", "debug", "incoming-port", "debug-console")
-    return bool(value) and not any(token in combined for token in blocked)
-
-
-def find_serial_port(port: str | None) -> str:
-    if port and port != "auto":
-        return port
-
-    ports = []
-    for port_info in list_ports.comports():
-        text = " ".join(
-            [
-                port_info.device or "",
-                port_info.description or "",
-                port_info.manufacturer or "",
-                port_info.hwid or "",
-            ]
-        )
-        if serial_port_allowed(port_info.device or "", text):
-            ports.append(port_info)
-
-    def score(port_info) -> tuple[int, str]:
-        text = " ".join(
-            [
-                port_info.device or "",
-                port_info.description or "",
-                port_info.manufacturer or "",
-                port_info.hwid or "",
-            ]
-        ).lower()
-        value = 0
-        if getattr(port_info, "vid", None) == 0x303A:
-            value += 100
-        if "esp32" in text or "espressif" in text:
-            value += 80
-        if "usbmodem" in text or "cdc" in text or "com" in text:
-            value += 20
-        return value, port_info.device or ""
-
-    if ports:
-        return sorted(ports, key=lambda item: (-score(item)[0], score(item)[1]))[0].device
-
-    for pattern in ("/dev/cu.usbmodem*", "/dev/ttyACM*", "/dev/ttyUSB*"):
-        matches = [value for value in sorted(glob.glob(pattern)) if serial_port_allowed(value)]
-        if matches:
-            return matches[0]
-
-    raise TimeoutError("no serial port found")
 
 LUT_BITS = 5
 SEGMENT_SIZE = 1 << LUT_BITS
@@ -751,50 +702,7 @@ class Stm32Client:
         self.address = address
 
     def _read_frame(self, expected_cmd: int, timeout: float) -> bytes:
-        deadline = time.monotonic() + timeout
-        buf = bytearray()
-        expected_len: int | None = None
-
-        while time.monotonic() < deadline:
-            chunk = self.port.read(1)
-            if not chunk:
-                continue
-            byte = chunk[0]
-
-            if not buf:
-                if byte != FRAME_START:
-                    continue
-                buf.append(byte)
-                continue
-
-            if len(buf) < 3 and byte == FRAME_START:
-                buf.clear()
-                expected_len = None
-                buf.append(byte)
-                continue
-
-            buf.append(byte)
-            if len(buf) == 3:
-                if buf[2] > FRAME_MAX_PAYLOAD:
-                    buf.clear()
-                    expected_len = None
-                    continue
-                expected_len = buf[2] + 4
-
-            if expected_len is not None and len(buf) == expected_len:
-                try:
-                    address, cmd, payload = decode_frame(bytes(buf))
-                except ValueError:
-                    buf.clear()
-                    expected_len = None
-                    continue
-                if address != self.address or cmd != expected_cmd:
-                    buf.clear()
-                    expected_len = None
-                    continue
-                return payload
-
-        raise TimeoutError(f"timeout waiting for command 0x{expected_cmd:X} response")
+        return read_frame(self.port, self.address, expected_cmd, timeout)
 
     def exchange(self, cmd: int, payload: bytes = b"", timeout: float = 0.5) -> bytes:
         frame = encode_frame(self.address, cmd, payload)
@@ -898,6 +806,18 @@ class Stm32Client:
     def cal_info(self) -> CalibrationInfo:
         payload = self.exchange_retry(CMD_CAL, struct.pack("<B", CAL_INFO), timeout=0.5)
         return CalibrationInfo(*struct.unpack("<BBHIH", payload))
+
+    def cal_read_blob(self) -> bytes:
+        blob = bytearray()
+        while len(blob) < CAL_BLOB_SIZE:
+            count = min(FRAME_MAX_PAYLOAD - 1, CAL_BLOB_SIZE - len(blob))
+            payload = self.exchange(CMD_CAL, struct.pack("<BHB", CAL_READ_BLOB, len(blob), count))
+            if len(payload) != count + 1 or payload[0] != RESULT_OK:
+                raise CalibrationError("calibration read failed")
+            blob.extend(payload[1:])
+        if not validate_blob(blob)[0]:
+            raise CalibrationError("calibration read CRC mismatch")
+        return bytes(blob)
 
     def wait_until_ready(self, timeout: float = 8.0) -> Status:
         self.port.reset_input_buffer()

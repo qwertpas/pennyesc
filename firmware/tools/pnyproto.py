@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import glob
+import time
+
+from serial.tools import list_ports
+
 FRAME_START = 0xAA
 FRAME_MAX_PAYLOAD = 64
 
@@ -26,6 +31,7 @@ CAL_WRITE_BLOB = 0x4
 CAL_COMMIT = 0x5
 CAL_CLEAR = 0x6
 CAL_INFO = 0x7
+CAL_READ_BLOB = 0x8
 
 DEBUG_CAPTURE_START = 0x1
 DEBUG_CAPTURE_STATUS = 0x2
@@ -112,3 +118,80 @@ def decode_frame(frame: bytes) -> tuple[int, int, bytes]:
     if crc8(frame[:-1]) != frame[-1]:
         raise ValueError("bad frame crc")
     return frame[1] >> 4, frame[1] & 0xF, frame[3:-1]
+
+
+def read_frame(port, address: int, expected_cmd: int, timeout: float) -> bytes:
+    deadline = time.monotonic() + timeout
+    buf = bytearray()
+    while time.monotonic() < deadline:
+        chunk = port.read(1)
+        if not chunk:
+            continue
+        byte = chunk[0]
+        if not buf and byte != FRAME_START:
+            continue
+        buf.append(byte)
+        if len(buf) == 3 and buf[2] > FRAME_MAX_PAYLOAD:
+            buf.clear()
+        elif len(buf) >= 4 and len(buf) == buf[2] + 4:
+            try:
+                frame_address, cmd, payload = decode_frame(bytes(buf))
+            except ValueError:
+                pass
+            else:
+                if frame_address == address and cmd == expected_cmd:
+                    return payload
+            buf.clear()
+    raise TimeoutError(f"timeout waiting for command 0x{expected_cmd:X} response")
+
+
+def serial_port_allowed(value: str, text: str = "") -> bool:
+    combined = f"{value} {text}".lower()
+    blocked = ("bluetooth", "debug", "incoming-port", "debug-console")
+    return bool(value) and not any(token in combined for token in blocked)
+
+
+def find_serial_port(port: str | None) -> str:
+    if port and port != "auto":
+        return port
+
+    ports = []
+    for port_info in list_ports.comports():
+        text = " ".join(
+            [
+                port_info.device or "",
+                port_info.description or "",
+                port_info.manufacturer or "",
+                port_info.hwid or "",
+            ]
+        )
+        if serial_port_allowed(port_info.device or "", text):
+            ports.append(port_info)
+
+    def score(port_info) -> tuple[int, str]:
+        text = " ".join(
+            [
+                port_info.device or "",
+                port_info.description or "",
+                port_info.manufacturer or "",
+                port_info.hwid or "",
+            ]
+        ).lower()
+        value = 0
+        if getattr(port_info, "vid", None) == 0x303A:
+            value += 100
+        if "esp32" in text or "espressif" in text:
+            value += 80
+        if "usbmodem" in text or "cdc" in text or "com" in text:
+            value += 20
+        return value, port_info.device or ""
+
+    if ports:
+        return sorted(ports, key=lambda item: (-score(item)[0], score(item)[1]))[0].device
+
+    for pattern in ("/dev/cu.usbmodem*", "/dev/ttyACM*", "/dev/ttyUSB*"):
+        matches = [value for value in sorted(glob.glob(pattern)) if serial_port_allowed(value)]
+        if matches:
+            return matches[0]
+
+    raise TimeoutError("no serial port found")

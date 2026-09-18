@@ -525,13 +525,6 @@ static void uart_poll(void)
             continue;
         }
 
-        if (frame_idx < 3u && byte == PNY_FRAME_START) {
-            frame_buf[0] = byte;
-            frame_idx = 1u;
-            frame_expected = 0u;
-            continue;
-        }
-
         frame_buf[frame_idx++] = byte;
         if (frame_idx == 3u) {
             if (frame_buf[2] > PNY_FRAME_MAX_PAYLOAD) {

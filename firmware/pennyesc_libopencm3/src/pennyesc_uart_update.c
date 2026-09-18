@@ -2,9 +2,7 @@
 #include "pennyesc_boot.h"
 #include "pennyesc_frame.h"
 #include <libopencm3/stm32/usart.h>
-#include <string.h>
 
-static pny_frame_parser_t parser;
 static const uint8_t boot_sync = 0x7Fu;
 
 #if defined(PNY_UART_UPDATE)
@@ -20,12 +18,12 @@ static uint8_t frame_header(uint8_t address, uint8_t cmd)
     return (uint8_t)((address << 4) | (cmd & 0x0Fu));
 }
 
-static bool handle_frame(
+bool pennyesc_uart_update_handle_frame(
     const uint8_t *frame,
     uint8_t frame_len,
     uint8_t address,
     uint32_t now_ms,
-    pennyesc_uart_update_fill_status_fn fill_status,
+    pennyesc_uart_update_send_status_fn send_status,
     pennyesc_uart_update_prepare_boot_fn prepare_boot
 )
 {
@@ -42,14 +40,8 @@ static bool handle_frame(
         return false;
     }
 
-    if (cmd == PNY_CMD_GET_STATUS) {
-        pny_status_payload_t payload;
-        memset(&payload, 0, sizeof(payload));
-        if (fill_status != 0) {
-            fill_status(&payload);
-        }
-        payload.result = PNY_RESULT_OK;
-        pny_frame_send(frame_header(address, PNY_CMD_GET_STATUS), &payload, sizeof(payload));
+    if (cmd == PNY_CMD_GET_STATUS && send_status != 0) {
+        send_status();
         return true;
     }
 
@@ -102,9 +94,11 @@ uint32_t pennyesc_uart_update_app_baud(uint32_t default_baud)
 #endif
 }
 
-void pennyesc_uart_update_boot_window(volatile uint32_t *now_ms, uint8_t address)
+/* Keep the startup parser off the main loop stack during motor operation. */
+__attribute__((noinline)) void pennyesc_uart_update_boot_window(volatile uint32_t *now_ms, uint8_t address)
 {
 #if defined(PNY_UART_UPDATE)
+    pny_frame_parser_t parser = {0};
     uint32_t deadline = *now_ms + PNY_UART_UPDATE_BOOT_WINDOW_MS;
 
     pny_frame_parser_reset(&parser);
@@ -126,7 +120,12 @@ void pennyesc_uart_update_boot_window(volatile uint32_t *now_ms, uint8_t address
             continue;
         }
 
-        if (handle_frame(frame, frame_len, address, *now_ms, 0, 0)) {
+        if ((frame[1] >> 4) == address && (frame[1] & 0x0fu) == PNY_CMD_GET_STATUS) {
+            pny_status_payload_t status = {0};
+            pny_frame_send(frame_header(address, PNY_CMD_GET_STATUS), &status, sizeof(status));
+            continue;
+        }
+        if (pennyesc_uart_update_handle_frame(frame, frame_len, address, *now_ms, 0, 0)) {
             pennyesc_boot_poll(*now_ms + 100u);
         }
     }
@@ -134,23 +133,6 @@ void pennyesc_uart_update_boot_window(volatile uint32_t *now_ms, uint8_t address
     (void)now_ms;
     (void)address;
 #endif
-}
-
-bool pennyesc_uart_update_feed_byte(
-    uint8_t byte,
-    uint8_t address,
-    uint32_t now_ms,
-    pennyesc_uart_update_fill_status_fn fill_status,
-    pennyesc_uart_update_prepare_boot_fn prepare_boot
-)
-{
-    const uint8_t *frame;
-    uint8_t frame_len;
-
-    if (!pny_frame_parser_push(&parser, byte, now_ms, 10u, &frame, &frame_len)) {
-        return false;
-    }
-    return handle_frame(frame, frame_len, address, now_ms, fill_status, prepare_boot);
 }
 
 void pennyesc_uart_update_poll(uint32_t now_ms)

@@ -42,6 +42,7 @@ enum {
     PNY_CAL_COMMIT = 0x5,
     PNY_CAL_CLEAR = 0x6,
     PNY_CAL_INFO = 0x7,
+    PNY_CAL_READ_BLOB = 0x8,
 };
 
 enum {
@@ -99,7 +100,8 @@ enum {
     PNY_FAULT_FLASH = 1 << 2,
 };
 
-typedef struct __attribute__((packed)) {
+/* Status buffers are word-aligned in RAM; the packed 60-byte wire layout is unchanged. */
+typedef struct __attribute__((packed, aligned(4))) {
     uint8_t result;
     uint8_t mode;
     uint8_t flags;

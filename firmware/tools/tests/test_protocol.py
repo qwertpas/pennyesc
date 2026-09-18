@@ -1,3 +1,4 @@
+import io
 import sys
 import struct
 import time
@@ -9,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pennycal import (  # noqa: E402
     CAL_BLOB_SIZE,
     BrushedControl,
+    CalibrationError,
     CMD_GET_STATUS,
     Stm32Client,
     build_blob,
@@ -74,6 +76,18 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(client.exchange(CMD_GET_STATUS, timeout=0.08), b"\x01")
         self.assertEqual(port.reset_calls, 0)
 
+    def test_stream_parser(self) -> None:
+        from pnyproto import read_frame
+        for address in range(16):
+            for cmd in range(16):
+                frame = encode_frame(address, cmd, b"\xaa\x00")
+                self.assertEqual(read_frame(io.BytesIO(frame), address, cmd, 0.1), b"\xaa\x00")
+        bad = encode_frame(1, 1, b"bad")[:-1] + b"\x00"
+        noise = b"\x00\x7f\xaa\x11\xff" + bad + encode_frame(2, 1, b"wrong address")
+        self.assertEqual(read_frame(io.BytesIO(noise + encode_frame(1, 1, b"ok")), 1, 1, 0.1), b"ok")
+        with self.assertRaises(TimeoutError):
+            read_frame(io.BytesIO(bad), 1, 1, 0.001)
+
     def test_frame_roundtrip(self) -> None:
         payload = bytes(range(10))
         frame = encode_frame(3, CMD_GET_STATUS, payload)
@@ -103,6 +117,28 @@ class ProtocolTests(unittest.TestCase):
             rebuilt.extend(chunk)
             offset += len(chunk)
         self.assertEqual(bytes(rebuilt), data)
+
+    def test_calibration_read_and_crc(self) -> None:
+        blob = build_blob((100, 0, 0, 0, 100, 0), tuple(range(256)), 1.25, 0.75, 12345, 1)
+        client = Stm32Client(None, 1)
+        requests = []
+
+        def exchange(command, payload):
+            subcmd, offset, count = struct.unpack("<BHB", payload)
+            self.assertEqual((command, subcmd), (4, 8))
+            self.assertLessEqual(count, 63)
+            requests.append(offset)
+            return b"\0" + blob[offset:offset + count]
+
+        client.exchange = exchange
+        self.assertEqual(client.cal_read_blob(), blob)
+        self.assertEqual(requests, list(range(0, 640, 63)))
+        blob = blob[:-1] + bytes([blob[-1] ^ 1])
+        with self.assertRaises(CalibrationError):
+            client.cal_read_blob()
+        client.exchange = lambda command, payload: b"\0"
+        with self.assertRaises(CalibrationError):
+            client.cal_read_blob()
 
 
 if __name__ == "__main__":

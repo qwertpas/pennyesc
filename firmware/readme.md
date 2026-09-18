@@ -64,11 +64,55 @@ Common calls:
 | `esc.sendPositionRad(rad)`                         | Move to an absolute position relative to current zero.         |
 | `esc.zeroPosition()`                               | Set the current shaft position as zero.                        |
 
+## BLDC commutation timing
+
+The `pennyesc_uart` build uses TIM21 as a free-running 1 MHz clock and its second compare channel for sector edges. SysTick services sensor and control work every 100 us and divides ten ticks into the application's millisecond clock. It keeps running while the motor is idle. TIM21 has the highest interrupt priority, I²C is next, and SysTick is lower. The STM32L011 has TIM2 and TIM21; it does not have TIM22.
+
+For the six-pole-pair motor, a sector lasts 98.04 us at 17,000 rpm and 33.33 us at 50,000 rpm. Each edge advances the sector sequence and schedules the next edge from the previous deadline, carrying fractional microseconds forward. Sensor corrections move a deadline by at most a quarter-sector. If a sector ISR fires during the calculation, its edge count carries that correction forward to the currently upcoming edge. Corrections within 4 us of an edge are applied to the following edge; discarding them caused nearly a full sector of error in an accelerating simulation near harmonics of the sensor tick. Expired compares generate an immediate timer event instead of waiting for the 16-bit timer to wrap. Adjacent Hall sectors change a single pin without first clearing all three inputs.
+
+The BLDC sensor profile retains the committed firmware's continuous XY conversion, 1x averaging, and 8-bit X/Y results. Reads also include conversion status so duplicate, incomplete, reset, and diagnostic-failure results are rejected. Reads are paced by the 100 us control tick; accepted sample intervals on ESC1 are usually about 100 us. The I²C clock remains below the sensor's 1 MHz limit. This is faster acquisition than the discarded triggered XYX experiment, which produced fresh samples about 400 us apart and changed the motor's tuning.
+
+The observer uses **I²C read start** as its timestamp reference. Fast alpha-beta gains are `(1/4, 1/32)` to reduce acceleration lag; mid and slow retain `(1/12, 1/192)` and `(1/16, 1/256)`. The default residual lead is **145 us**, with **90 electrical degrees** of advance. These combine into one phase: `pole_pairs * (estimated_angle + estimated_speed * (sample_age + lead)) + alignment + advance`. The 145 us value was selected from the measured 140–150 us working range on ESC1 after checking alignment; it is not a measured sensor-only delay. The legacy secant modes use five sample endpoints with actual timestamps.
+
+Sensor initialization restores standard register reads before checking the device ID, since fast-read mode can survive an MCU reset. It acknowledges the latched undervoltage flag from the previous supply ramp. Other diagnostic bits remain set, and fresh conversion results still reject active faults. See the [TI TMAG5273 datasheet](https://www.ti.com/lit/ds/symlink/tmag5273.pdf) for read modes, conversion timing, and diagnostic registers.
+
+An entire missed sector, an impossible speed estimate, or stale measurements shuts off PWM. Above low speed, the stale limit is half a predicted mechanical revolution (about 594 us at 50,000 rpm); otherwise it is 10 ms. Sensor cleanup happens outside the commutation interrupt. Mechanical phase wraps separately from the saturating accumulated position counter.
+
+ESC1's static phase check found a −23.7° electrical alignment bias, consistent in forward and reverse sweeps. Its existing calibration was backed up and only the alignment field and CRC were changed (4669 → 8986); the affine transform and angle lookup table were preserved. The backup and corrected blobs are in `pennyesc_libopencm3/data/esc1-calibration-{before-alignment,aligned}-2026-09-17.bin`. This board-specific correction is stored in ESC1, not hard-coded into the firmware.
+
+With the corrected alignment, lead was swept at fixed 90° advance using 1 kHz on-board speed capture and repeated duty ±400 acceleration runs. The selected 145 us setting completed three runs per direction without a speed collapse up to the test cutoff near 28,000 rpm. Relative to 120 us with the same corrected calibration and observer, median acceleration improved about 19% forward / 27% reverse over 18,000–22,000 rpm, and 37% / 72% over 22,000–26,000 rpm. There were only two reference runs and three selected-setting runs per direction; these are bench comparisons, not a global torque optimum. The 160 us setting collapsed in forward runs and 180 us collapsed in both directions, so neither was retained. See `pennyesc_libopencm3/data/esc1-torque-timing-2026-09-17.png` and `esc1-torque-timing-summary-2026-09-17.json`. Earlier duty-only comparisons are retained in `esc1-timing-comparison-2026-09-17.json`.
+
+Brief steady checks at 145 us and 90° held approximately +26,100 / −26,800 rpm at duty ±300. Duty ±350 continued accelerating to the 29,000 rpm test cutoff. No collapse or reported fault occurred in those runs. These checks lasted 350 ms per command and do not establish thermal performance or a stable maximum speed. The final flashed default image was then checked without a lead/advance override through the GUI’s `SET_CONTROL` duty path: ±100 spun reliably, ±300 held about +26,200 / −27,000 rpm, and ±350 continued to the speed cutoff. That final check had no sensor, I²C, UART, or driver faults, and ended braked; details are in `esc1-final-torque-defaults-2026-09-17.json`.
+
+The capture command releases the brake at startup, switches duty off at its duration limit, and becomes inactive on a commutation fault. `tools/pny_accel.py` randomizes short runs, stops after a speed drop or near 28,000 rpm, waits for rest, records calibration/image identifiers, and rejects collapsed runs from acceleration scoring. It restores 145 us lead and 90° advance afterward:
+
+```bash
+python3 firmware/tools/pny_accel.py --port /dev/cu.usbmodem101 --duty 400 --leads 140 145 150 --advances 90 --repeats 3 --output /tmp/esc1-acceleration.json
+```
+
+Acceleration is compared through matched RPM bands after 9 ms centered smoothing and persistent threshold crossings. It is a net torque proxy at the same load and inertia, not a measurement of torque in Nm, efficiency, or heating. Control ISR overruns of the 100 us budget still occur in short high-speed runs; the dedicated sector ISR has priority.
+
+For further bench validation, log full status velocity, accepted sample intervals, I²C errors, and overruns. Scope Hall outputs and I²C to measure edge phase and jitter, and compare current at the same speed and load. Compact capture packets saturate above 32,767 rpm; use status or `getPosVel()` for higher speeds. Status `isr_us`/`isr_max_us` measure the control ISR including preemption, not the short sector ISR. **50,000 rpm remains a software timing test point, not a verified motor speed.**
+
+## Development checks
+
+Run from the repository root; these commands build and test without uploading:
+
+```bash
+python3 -m pytest firmware/tools/tests -q
+pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -e pennyesc_brushed_uart -e stepper_swd -e seed -e readdress -t buildprog
+pio run -d firmware/esp32s3demo_example -t buildprog
+```
+
+The C checks compile production timing, sensor, and framing functions against mocked registers with undefined-behavior checks. They cover startup control dispatch, the idle clock, target timer availability, 17,000/50,000 rpm sector scheduling, timer wrap, late compares, corrections across ISR preemption and imminent edges, a combined 0–50,000 rpm / 50 ms ramp with simulated 0–60 us calculation time in both directions, observer prediction, sensor modes, initialization after reset, freshness/errors, and every address/command header. Observer simulations assume a specified sample delay; they do not determine the board's actual delay, interrupt latency, or motor dynamics.
+
+The BLDC build uses 13,540 of 13,696 application flash bytes and 1,292 of 1,792 application RAM bytes; the remaining 500 RAM bytes hold the stack. Keep the startup parser and large reply buffers off the running control stack, and check nested interrupt stack use when changing these paths. Historical simulations such as `tools/observer_sim.py` describe earlier firmware and are retained with experimental sources and captured data.
+
 ## Brushed Motor Firmware
 
 The `pennyesc_brushed_uart` build drives a brushed motor from OUTA to OUTB. Leave OUTC disconnected. Positive duty drives OUTA to OUTB, negative duty drives OUTB to OUTA, zero duty coasts, and `brake()` turns on the driver's low-side brake.
 
-The brushed build is intended for a magnetic encoder on the geared output shaft. It reads full-resolution X/Y/Z field data and updates the angle, velocity, and motor control at the TMAG5273 three-axis limit of 10kHz. It uses a small integer angle conversion directly from X/Y, so the output does not need to rotate through a full turn for calibration. `zeroPosition()`, position commands, status packets, addressing, daisy chaining, and UART firmware updates use the same API as the normal firmware.
+The brushed build is intended for a magnetic encoder on the geared output shaft. It reads full-resolution X/Y/Z field data and services sensor reads and motor control at 10 kHz; angle and velocity update only when a fresh conversion is accepted. It uses a small integer angle conversion directly from X/Y, so the output does not need to rotate through a full turn for calibration. `zeroPosition()`, position commands, status packets, addressing, daisy chaining, and UART firmware updates use the same API as the normal firmware.
 
 Place the servo output away from its mechanical stops before zeroing it. First apply a small positive duty and confirm the reported position increases; swap the two motor leads if it decreases. Start with a current-limited 4.8-8.4V supply and a low control clip; the `brushed_position` example uses `60/799` and moves only `0.2` radians from zero.
 
@@ -143,7 +187,7 @@ To update the firmware running on the PennyESC itself, it is meant to be flashed
 If you need to calibrate or configure the pennyesc, flash the ESP32 bridge firmware from `firmware/esp32s3demo_example/src/bridge.cpp`:
 
 ```bash
-python3 -m platformio run -d firmware/esp32s3demo_example -e bridge -t upload
+pio run -d firmware/esp32s3demo_example -e bridge -t upload
 ```
 
 Scan for connected PennyESC addresses:
@@ -156,21 +200,21 @@ Update PennyESC firmware over UART after it has been seeded and connected to the
 
 ```bash
 ESC_ADDRESS=1 \
-python3 -m platformio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
+pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_upload
 ```
 
 Change a board from one ESC address to another, then use the new address for later commands:
 
 ```bash
 CURRENT_ESC_ADDRESS=1 NEW_ESC_ADDRESS=2 \
-python3 -m platformio run -d firmware/pennyesc_libopencm3 -e readdress -t uart_readdress
+pio run -d firmware/pennyesc_libopencm3 -e readdress -t uart_readdress
 ```
 
 Seed a PennyESC over an STLink. Use this for a fresh board or a board that is bricked and needs the UART bootloader restored:
 
 ```bash
 ESC_ADDRESS=1 \
-python3 -m platformio run -d firmware/pennyesc_libopencm3 -e seed -t seed_upload
+pio run -d firmware/pennyesc_libopencm3 -e seed -t seed_upload
 ```
 
 ## Low-level Protocol
@@ -208,7 +252,7 @@ Commands are defined in `firmware/Lib/pennyesc_protocol.h`.
 | `PNY_CMD_GET_POS_VEL`   | `0xE` | none                          | `pny_pos_vel_payload_t` |
 
 
-All multi-byte fields are little-endian.
+All multi-byte fields are little-endian. `PNY_CAL_READ_BLOB` (`0x8` under `PNY_CMD_CAL`) takes the subcommand byte, a `uint16` offset, and a `uint8` count (1–63). It returns a result byte followed by the requested calibration bytes on success. Invalid ranges and missing calibration return only an error byte. `Stm32Client.cal_read_blob()` assembles all 640 bytes and verifies the CRC, allowing a calibration backup before changes.
 
 Debug capture subcommands:
 

@@ -13,16 +13,17 @@
 #define PNY_UART_UPDATE_BOOT_WINDOW_MS 500u
 #endif
 
-typedef void (*pennyesc_uart_update_fill_status_fn)(pny_status_payload_t *payload);
+typedef void (*pennyesc_uart_update_send_status_fn)(void);
 typedef uint8_t (*pennyesc_uart_update_prepare_boot_fn)(void);
 
 uint32_t pennyesc_uart_update_app_baud(uint32_t default_baud);
 void pennyesc_uart_update_boot_window(volatile uint32_t *now_ms, uint8_t address);
-bool pennyesc_uart_update_feed_byte(
-    uint8_t byte,
+bool pennyesc_uart_update_handle_frame(
+    const uint8_t *frame,
+    uint8_t frame_len,
     uint8_t address,
     uint32_t now_ms,
-    pennyesc_uart_update_fill_status_fn fill_status,
+    pennyesc_uart_update_send_status_fn send_status,
     pennyesc_uart_update_prepare_boot_fn prepare_boot
 );
 void pennyesc_uart_update_poll(uint32_t now_ms);

@@ -1,41 +1,45 @@
 #include "pennyesc_frame.h"
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/usart.h>
-#include <string.h>
 
-static void uart_tx_start(void)
+static __attribute__((noinline)) void uart_tx_start(void)
 {
     gpio_set(GPIOA, GPIO9);
-    gpio_set_af(GPIOA, GPIO_AF4, GPIO9);
-    gpio_set_output_options(GPIOA, GPIO_OTYPE_PP, GPIO_OSPEED_HIGH, GPIO9);
-    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9);
+    /* PA9's alternate function and drive strength are configured at startup. */
+    GPIO_PUPDR(GPIOA) &= ~(3u << 18);
+    GPIO_MODER(GPIOA) = (GPIO_MODER(GPIOA) & ~(3u << 18)) | (GPIO_MODE_AF << 18);
     USART_ICR(USART2) = USART_ICR_TCCF;
     USART_CR1(USART2) |= USART_CR1_TE;
     while ((USART_ISR(USART2) & USART_ISR_TEACK) == 0u) {
     }
 }
 
-static void uart_tx_stop(void)
+static __attribute__((noinline)) void uart_tx_stop(void)
 {
     while ((USART_ISR(USART2) & USART_ISR_TC) == 0u) {
     }
     USART_CR1(USART2) &= ~USART_CR1_TE;
     while ((USART_ISR(USART2) & USART_ISR_TEACK) != 0u) {
     }
-    gpio_mode_setup(GPIOA, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, GPIO9);
+    GPIO_MODER(GPIOA) &= ~(3u << 18);
+    GPIO_PUPDR(GPIOA) = (GPIO_PUPDR(GPIOA) & ~(3u << 18)) | (GPIO_PUPD_PULLUP << 18);
+}
+
+static uint8_t crc8_byte(uint8_t crc, uint8_t byte)
+{
+    crc ^= byte;
+    for (uint8_t bit = 0; bit < 8; bit++) {
+        crc = (crc & 0x80u) ? (uint8_t)((crc << 1) ^ 0x07u) : (uint8_t)(crc << 1);
+    }
+    return crc;
 }
 
 uint8_t pny_frame_crc8(const uint8_t *data, uint8_t len)
 {
     uint8_t crc = 0u;
-
     for (uint8_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (uint8_t bit = 0; bit < 8; bit++) {
-            crc = (crc & 0x80u) ? (uint8_t)((crc << 1) ^ 0x07u) : (uint8_t)(crc << 1);
-        }
+        crc = crc8_byte(crc, data[i]);
     }
-
     return crc;
 }
 
@@ -65,13 +69,6 @@ bool pny_frame_parser_push(
         if (byte == PNY_FRAME_START) {
             parser->buf[parser->idx++] = byte;
         }
-        return false;
-    }
-
-    if (parser->idx < 3u && byte == PNY_FRAME_START) {
-        parser->buf[0] = byte;
-        parser->idx = 1u;
-        parser->expected = 0u;
         return false;
     }
 
@@ -107,19 +104,18 @@ bool pny_frame_parser_push(
 
 void pny_frame_send(uint8_t header, const void *payload, uint8_t payload_len)
 {
-    uint8_t frame[PNY_FRAME_BUF_SIZE];
+    uint32_t prefix = PNY_FRAME_START | ((uint32_t)header << 8) | ((uint32_t)payload_len << 16);
+    const uint8_t *bytes = payload;
+    uint8_t crc = 0u;
 
-    frame[0] = PNY_FRAME_START;
-    frame[1] = header;
-    frame[2] = payload_len;
-    if (payload_len != 0u) {
-        memcpy(&frame[3], payload, payload_len);
-    }
-    frame[3 + payload_len] = pny_frame_crc8(frame, (uint8_t)(3u + payload_len));
-
+    /* Stream the frame: a second 68-byte stack buffer leaves too little room
+     * for nested sensor and commutation interrupts on the 2 KB MCU. */
     uart_tx_start();
-    for (uint8_t i = 0; i < (uint8_t)(4u + payload_len); i++) {
-        usart_send_blocking(USART2, frame[i]);
+    for (uint8_t i = 0; i < (uint8_t)(3u + payload_len); i++) {
+        uint8_t byte = i < 3u ? (uint8_t)(prefix >> (8u * i)) : bytes[i - 3u];
+        crc = crc8_byte(crc, byte);
+        usart_send_blocking(USART2, byte);
     }
+    usart_send_blocking(USART2, crc);
     uart_tx_stop();
 }

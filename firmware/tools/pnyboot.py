@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import struct
 import time
 from pathlib import Path
 
 import serial
-from serial.tools import list_ports
 
-from pnyproto import BOOT_MAGIC, CMD_ENTER_BOOT, CMD_GET_STATUS, CMD_SET_QUIET, RESULT_OK, decode_frame, encode_frame
+from pnyproto import BOOT_MAGIC, CMD_ENTER_BOOT, CMD_GET_STATUS, CMD_SET_QUIET, RESULT_OK, decode_frame, encode_frame, read_frame, find_serial_port
 
 FLASH_BASE = 0x08000580
 FLASH_PAGE_BYTES = 128
@@ -32,56 +30,6 @@ BOOT_HANDOFF_S = 1.5
 BOOT_WINDOW_S = 8.0
 
 
-def serial_port_allowed(value: str, text: str = "") -> bool:
-    combined = f"{value} {text}".lower()
-    blocked = ("bluetooth", "debug", "incoming-port", "debug-console")
-    return bool(value) and not any(token in combined for token in blocked)
-
-
-def find_serial_port(port: str | None) -> str:
-    if port and port != "auto":
-        return port
-
-    ports = []
-    for port_info in list_ports.comports():
-        text = " ".join(
-            [
-                port_info.device or "",
-                port_info.description or "",
-                port_info.manufacturer or "",
-                port_info.hwid or "",
-            ]
-        )
-        if serial_port_allowed(port_info.device or "", text):
-            ports.append(port_info)
-
-    def score(port_info) -> tuple[int, str]:
-        text = " ".join(
-            [
-                port_info.device or "",
-                port_info.description or "",
-                port_info.manufacturer or "",
-                port_info.hwid or "",
-            ]
-        ).lower()
-        value = 0
-        if getattr(port_info, "vid", None) == 0x303A:
-            value += 100
-        if "esp32" in text or "espressif" in text:
-            value += 80
-        if "usbmodem" in text or "cdc" in text or "com" in text:
-            value += 20
-        return value, port_info.device or ""
-
-    if ports:
-        return sorted(ports, key=lambda item: (-score(item)[0], score(item)[1]))[0].device
-
-    for pattern in ("/dev/cu.usbmodem*", "/dev/ttyACM*", "/dev/ttyUSB*"):
-        matches = [value for value in sorted(glob.glob(pattern)) if serial_port_allowed(value)]
-        if matches:
-            return matches[0]
-
-    raise BootError("no serial port found")
 APP_DISCOVERY_TIMEOUT_S = 0.03
 APP_DISCOVERY_READ_TIMEOUT_S = 0.005
 APP_DISCOVERY_SETTLE_S = 0.025
@@ -119,43 +67,7 @@ def xor_bytes(data: bytes) -> int:
 
 
 def read_app_frame(port: serial.Serial, expected_cmd: int, address: int, timeout: float) -> bytes:
-    deadline = time.monotonic() + timeout
-    buf = bytearray()
-    expected_len: int | None = None
-
-    while time.monotonic() < deadline:
-        chunk = port.read(1)
-        if not chunk:
-            continue
-        byte = chunk[0]
-
-        if not buf:
-            if byte != 0xAA:
-                continue
-            buf.append(byte)
-            continue
-
-        if len(buf) < 3 and byte == 0xAA:
-            buf.clear()
-            expected_len = None
-            buf.append(byte)
-            continue
-
-        buf.append(byte)
-        if len(buf) == 3:
-            expected_len = buf[2] + 4
-        if expected_len is not None and len(buf) == expected_len:
-            frame = bytes(buf)
-            buf.clear()
-            expected_len = None
-            try:
-                frame_address, frame_cmd, payload = decode_frame(frame)
-            except ValueError:
-                continue
-            if frame_address == address and frame_cmd == expected_cmd:
-                return payload
-
-    raise TimeoutError(f"timeout waiting for app response 0x{expected_cmd:02X}")
+    return read_frame(port, address, expected_cmd, timeout)
 
 
 def load_image(path: Path) -> tuple[bytes, bytes, list[int]]:
