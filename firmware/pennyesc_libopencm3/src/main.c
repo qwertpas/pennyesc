@@ -40,6 +40,10 @@
 #define PWM_PERIOD 799
 #define DUTY_LIMIT 799
 #define DEFAULT_CONTROL_CLIP 150
+#define POSITION_HYSTERESIS_TURN32 65536
+#ifndef PNY_DEFAULT_MAX_POSITION_TURN32
+#define PNY_DEFAULT_MAX_POSITION_TURN32 INT32_MAX
+#endif
 #define POSITION_DEADBAND_TURN32 626
 #define VELOCITY_DEADBAND_TURN32_PER_S 1043
 #define CONTROL_GAIN_Q 8
@@ -211,6 +215,8 @@ static volatile int16_t control_clip = DEFAULT_CONTROL_CLIP;
 static volatile bool report_speed;
 static volatile int32_t current_lead_turn16 = LEAD_DEFAULT_TURN16;
 static volatile int16_t observer_lead_us = OBSERVER_LEAD_US;
+static volatile int32_t max_position_turn32 = PNY_DEFAULT_MAX_POSITION_TURN32;
+static volatile bool max_position_limited;
 #if PNY_DRIVE_BRUSHED
 static volatile uint8_t observer_mode = PNY_OBSERVER_AB_MID;
 #else
@@ -1157,6 +1163,15 @@ static int16_t control_duty(void)
 }
 
 static void control_set_duty(int16_t duty, int16_t clip)
+    int32_t position = position_from_zero(absolute_position_turn32);
+    if (position >= max_position_turn32) {
+        max_position_limited = true;
+    } else if (position <= max_position_turn32 - POSITION_HYSTERESIS_TURN32) {
+        max_position_limited = false;
+    }
+    if (max_position_limited && *duty > 0) {
+        *duty = 0;
+    }
 {
     target_position_set = false;
     control_kp_q8 = 0;
@@ -2338,6 +2353,26 @@ static __attribute__((noinline)) void handle_cal(const uint8_t *payload, uint8_t
     }
 }
 
+    case PNY_DEBUG_SET_MAX_POSITION:
+    {
+        uint8_t result = PNY_RESULT_BAD_ARG;
+        if (len == 5u) {
+            int32_t limit;
+            memcpy(&limit, payload + 1, sizeof(limit));
+            if (limit >= 0) {
+                if (limit != max_position_turn32) {
+                    max_position_turn32 = limit;
+                    max_position_limited = position_from_zero(absolute_position_turn32) >= limit;
+                }
+                result = PNY_RESULT_OK;
+            } else {
+                result = PNY_RESULT_RANGE;
+            }
+        }
+        uint8_t reply[2] = {PNY_DEBUG_SET_MAX_POSITION, result};
+        send_frame(PNY_CMD_DEBUG, reply, sizeof(reply));
+        break;
+    }
 static __attribute__((noinline)) void handle_debug(const uint8_t *payload, uint8_t len)
 {
     if (len == 0u) {
