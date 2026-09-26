@@ -249,18 +249,6 @@ public:
         return sendStatusCommand(PNY_CMD_SET_CONTROL, &payload, sizeof(payload), status, timeout_ms);
     }
 
-    bool setMaxPositionTurn32(int32_t position, uint32_t timeout_ms = 20u)
-    {
-        uint8_t payload[5] = {PNY_DEBUG_SET_MAX_POSITION};
-        uint8_t reply[6];
-        uint8_t reply_len = 0;
-        memcpy(payload + 1, &position, sizeof(position));
-        return sendFrame(PNY_CMD_DEBUG, payload, sizeof(payload)) &&
-            readFrame(PNY_CMD_DEBUG, reply, sizeof(reply), reply_len, timeout_ms) &&
-            reply_len == sizeof(reply) && reply[2] == 2 &&
-            reply[3] == PNY_DEBUG_SET_MAX_POSITION && reply[4] == PNY_RESULT_OK;
-    }
-
     bool enterBootloader(uint32_t timeout_ms = 800u)
     {
         uint8_t payload[4];
