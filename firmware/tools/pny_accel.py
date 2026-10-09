@@ -164,7 +164,7 @@ def run(args):
         finally:
             try:
                 data["stopped"] = asdict(stop(client))
-                set_lead(client, 145)
+                set_lead(client, 120)
                 client.set_advance_deg(90)
             finally:
                 args.output.write_text(json.dumps(data, indent=2) + "\n")
@@ -177,7 +177,7 @@ def main():
     parser.add_argument("--address", type=int, default=1)
     parser.add_argument("--duty", type=int, default=400)
     parser.add_argument("--duration", type=int, default=200, help="milliseconds, at most 200")
-    parser.add_argument("--leads", type=int, nargs="+", default=[140, 145, 150])
+    parser.add_argument("--leads", type=int, nargs="+", default=[100, 120, 140])
     parser.add_argument("--advances", type=int, nargs="+", default=[90])
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--rest", type=float, default=3, help="rest seconds between runs")

@@ -38,24 +38,4 @@ static inline uint32_t sector_period_q8(uint32_t speed_k)
     return period <= (COMM_MAX_PERIOD_US << 8) ? period : 0u;
 }
 
-static inline uint16_t sector_deadline(uint16_t previous, uint32_t period_q8, uint8_t *fraction)
-{
-    uint32_t total = period_q8 + *fraction;
-    *fraction = (uint8_t)total;
-    return (uint16_t)(previous + (total >> 8));
-}
-
-/* Limit each phase correction to 1/4 sector without changing sector order. */
-static inline int16_t sector_correction(uint16_t deadline, uint16_t desired, uint32_t period_q8)
-{
-    int32_t correction = (int16_t)(desired - deadline);
-    int32_t limit = (int32_t)(period_q8 >> 10);
-    if (correction > limit) {
-        correction = limit;
-    } else if (correction < -limit) {
-        correction = -limit;
-    }
-    return (int16_t)correction;
-}
-
 #endif

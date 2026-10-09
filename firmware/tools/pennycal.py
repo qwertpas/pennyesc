@@ -49,7 +49,7 @@ from pnyproto import (
     crc8,
     decode_frame,
     encode_frame,
-    read_frame,
+    FrameReader,
     find_serial_port,
     serial_port_allowed,
 )
@@ -175,9 +175,10 @@ class Control:
     kv: float = 0.0
     kf: int = 0
     clip: int = 150
+    deadband_turn32: int | None = None
 
     def payload(self) -> bytes:
-        return struct.pack(
+        payload = struct.pack(
             "<hhhhh",
             int(round(self.kp * CONTROL_GAIN_SCALE)),
             int(round(self.kd * CONTROL_GAIN_SCALE)),
@@ -185,6 +186,9 @@ class Control:
             int(self.kf),
             int(self.clip),
         )
+        if self.deadband_turn32 is not None:
+            payload += struct.pack("<H", self.deadband_turn32)
+        return payload
 
 
 @dataclasses.dataclass
@@ -700,9 +704,10 @@ class Stm32Client:
     def __init__(self, port: serial.Serial, address: int = 0) -> None:
         self.port = port
         self.address = address
+        self.reader = FrameReader(port)
 
     def _read_frame(self, expected_cmd: int, timeout: float) -> bytes:
-        return read_frame(self.port, self.address, expected_cmd, timeout)
+        return self.reader.read(self.address, expected_cmd, timeout)
 
     def exchange(self, cmd: int, payload: bytes = b"", timeout: float = 0.5) -> bytes:
         frame = encode_frame(self.address, cmd, payload)
@@ -759,6 +764,12 @@ class Stm32Client:
 
     def send_position_rad(self, position_rad: float) -> None:
         self.send_position(int(round(position_rad * RAD_TO_TURN32)))
+
+    def send_trajectory(self, position_rad: float, velocity_rad_s: float, feedforward: int) -> None:
+        payload = struct.pack("<iih", int(round(position_rad * RAD_TO_TURN32)),
+                              int(round(velocity_rad_s * RAD_TO_TURN32)), feedforward)
+        self.port.write(encode_frame(self.address, CMD_SEND_POSITION, payload))
+        self.port.flush()
 
     def set_velocity(self, velocity_turn32_per_s: int) -> Status:
         payload = self.exchange(CMD_SET_VELOCITY, struct.pack("<i", velocity_turn32_per_s), timeout=0.15)

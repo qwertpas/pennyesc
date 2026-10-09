@@ -120,29 +120,58 @@ def decode_frame(frame: bytes) -> tuple[int, int, bytes]:
     return frame[1] >> 4, frame[1] & 0xF, frame[3:-1]
 
 
-def read_frame(port, address: int, expected_cmd: int, timeout: float) -> bytes:
-    deadline = time.monotonic() + timeout
-    buf = bytearray()
-    while time.monotonic() < deadline:
-        chunk = port.read(1)
-        if not chunk:
-            continue
-        byte = chunk[0]
-        if not buf and byte != FRAME_START:
-            continue
-        buf.append(byte)
-        if len(buf) == 3 and buf[2] > FRAME_MAX_PAYLOAD:
-            buf.clear()
-        elif len(buf) >= 4 and len(buf) == buf[2] + 4:
+class FrameReader:
+    def __init__(self, port):
+        self.port = port
+        self.buffer = bytearray()
+        self.frames = []
+        self.crc_errors = 0
+
+    def feed(self, chunk: bytes) -> None:
+        self.buffer.extend(chunk)
+        while self.buffer:
+            start = self.buffer.find(bytes((FRAME_START,)))
+            if start < 0:
+                self.buffer.clear()
+                return
+            del self.buffer[:start]
+            if len(self.buffer) < 3:
+                return
+            count = self.buffer[2] + 4
+            if self.buffer[2] > FRAME_MAX_PAYLOAD:
+                del self.buffer[0]
+                continue
+            if len(self.buffer) < count:
+                return
             try:
-                frame_address, cmd, payload = decode_frame(bytes(buf))
+                frame = decode_frame(bytes(self.buffer[:count]))
             except ValueError:
-                pass
+                self.crc_errors += 1
+                del self.buffer[0]
             else:
-                if frame_address == address and cmd == expected_cmd:
+                self.frames.append(frame)
+                del self.buffer[:count]
+
+    def poll(self):
+        count = self.port.in_waiting
+        if count:
+            self.feed(self.port.read(count))
+        frames, self.frames = self.frames, []
+        return frames
+
+    def read(self, address: int, expected_cmd: int, timeout: float) -> bytes:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for index, (got_address, cmd, payload) in enumerate(self.frames):
+                if got_address == address and cmd == expected_cmd:
+                    del self.frames[index]
                     return payload
-            buf.clear()
-    raise TimeoutError(f"timeout waiting for command 0x{expected_cmd:X} response")
+            self.feed(self.port.read(max(1, getattr(self.port, 'in_waiting', 0))))
+        raise TimeoutError(f"timeout waiting for command 0x{expected_cmd:X} response")
+
+
+def read_frame(port, address: int, expected_cmd: int, timeout: float) -> bytes:
+    return FrameReader(port).read(address, expected_cmd, timeout)
 
 
 def serial_port_allowed(value: str, text: str = "") -> bool:

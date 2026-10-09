@@ -33,6 +33,44 @@ class FirmwareTests(unittest.TestCase):
                             "-I", str(FIRMWARE / "Lib"), str(path), "-o", str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
+    def test_calibration_after_brake(self):
+        main = (STM32 / "src/main.c").read_text()
+        source = '''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#include "pennyesc_protocol.h"
+#define PNY_DRIVE_BRUSHED 0
+static uint8_t current_mode;
+static bool scheduler, brake, sensor_ok = true;
+static struct { bool active; uint8_t total_points, sweep_dir, index; } cal_state;
+static void control_disable(void) {}
+static void run_stop(void) { scheduler = false; current_mode = PNY_MODE_IDLE; }
+static bool sensor_init_full_mode(void) { assert(!scheduler); return sensor_ok; }
+static void mct_apply_config(void) {}
+static void delay_ms(unsigned ms) { (void)ms; }
+static void release_brake(void) { brake = false; }
+static void calibration_arm_point(uint8_t index) { cal_state.index = index; }
+''' + function(main, "calibration_start") + '''
+int main(void) {
+    current_mode = PNY_MODE_RUN; scheduler = true; brake = true;
+    assert(calibration_start(0) == PNY_RESULT_OK);
+    assert(current_mode == PNY_MODE_CAL && cal_state.active);
+    assert(!scheduler && !brake && cal_state.index == 0);
+    assert(calibration_start(1) == PNY_RESULT_BAD_STATE);
+    current_mode = PNY_MODE_IDLE;
+    assert(calibration_start(2) == PNY_RESULT_BAD_ARG);
+    sensor_ok = false;
+    assert(calibration_start(0) == PNY_RESULT_BAD_STATE);
+    assert(current_mode == PNY_MODE_IDLE && !cal_state.active);
+    sensor_ok = true;
+    assert(calibration_start(1) == PNY_RESULT_OK && cal_state.sweep_dir == 1);
+    return 0;
+}
+'''
+        self.run_c(source)
+
     def test_capture(self):
         main = (STM32 / "src/main.c").read_text()
         state = main[main.index("typedef struct {\n    volatile bool active;\n    volatile bool done;"):]
@@ -45,7 +83,7 @@ class FirmwareTests(unittest.TestCase):
     def test_timing(self):
         main = (STM32 / "src/main.c").read_text()
         names = ["comm_fault", "position_target_direction", "abs_u32", "observer_ab_update", "observer_position_at_tick", "commutation_phase_at_tick", "comm_sector_start_phase",
-                 "comm_arm", "comm_scheduler_schedule_sector_event", "tim21_isr"]
+                 "comm_arm", "comm_schedule_absolute", "comm_scheduler_schedule_sector_event", "comm_control_tick", "tim21_isr"]
         functions = "\n".join(function(main, name) for name in names)
         # Use the actual shared ISR state layout as well as the actual functions.
         state = main[main.index("typedef struct {\n    volatile bool active;\n    volatile uint8_t sector;"):]
@@ -70,8 +108,10 @@ class FirmwareTests(unittest.TestCase):
         state = state[:state.index("} comm_scheduler_t;") + len("} comm_scheduler_t;")]
         names = ["systick_setup", "comm_scheduler_start", "comm_scheduler_stop", "sys_tick_handler"]
         source = (STM32 / "test/startup.c").read_text()
-        self.run_c(source.replace("/* STATE */", state).replace(
-            "/* FUNCTIONS */", "\n".join(function(main, name) for name in names)))
+        for tick in (100, 200):
+            self.run_c(source.replace("#define SENSOR_TICK_US 100u", f"#define SENSOR_TICK_US {tick}u").replace(
+                "/* STATE */", state).replace(
+                "/* FUNCTIONS */", "\n".join(function(main, name) for name in names)))
 
     def test_sensor_initialization(self):
         driver = (STM32 / "src/tmag5273.c").read_text()

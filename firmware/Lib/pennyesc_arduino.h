@@ -2,6 +2,7 @@
 #define PENNYESC_ARDUINO_H
 
 #include <Arduino.h>
+#include <driver/gpio.h>
 #include <string.h>
 #include "pennyesc_protocol.h"
 
@@ -106,7 +107,7 @@ public:
         baud_ = baud;
         serial().end();
         serial().begin(baud, config, rx_, tx_);
-        pinMode(rx_, INPUT_PULLUP);
+        gpio_pullup_en((gpio_num_t)rx_);
     }
 
     void clearRx()
@@ -566,6 +567,7 @@ protected:
     {
         uart().end();
         uart().begin(baud, config, rx_, tx_);
+        gpio_pullup_en((gpio_num_t)rx_);
     }
 
     void beginApp()
@@ -861,9 +863,13 @@ protected:
             flushBridgeEscape();
         }
 
-        while (uart().available() > 0) {
-            uint8_t byte = (uint8_t)uart().read();
-            usb_->write(&byte, 1u);
+        uint8_t reply[64];
+        size_t count = 0;
+        while (count < sizeof(reply) && uart().available() > 0) {
+            reply[count++] = (uint8_t)uart().read();
+        }
+        if (count != 0) {
+            usb_->write(reply, count);
         }
     }
 

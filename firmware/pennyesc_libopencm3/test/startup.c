@@ -39,8 +39,9 @@ static void comm_sensor_tick(void) { control_calls++; now += work_us; }
 /* FUNCTIONS */
 int main(void) {
     systick_setup();
-    assert(tick_enabled && reload == 3199); // 32 MHz / 3200 = 10 kHz.
-    for (unsigned i = 0; i < 10; ++i) sys_tick_handler();
+    assert(tick_enabled && reload == 32u * SENSOR_TICK_US - 1u);
+    unsigned ticks = 1000u / SENSOR_TICK_US;
+    for (unsigned i = 0; i < ticks; ++i) sys_tick_handler();
     assert(system_millis == 1 && control_calls == 0);
     current_mode = PNY_MODE_RUN;
     sys_tick_handler(); // RUN can be set before scheduler initialization finishes.
@@ -51,17 +52,17 @@ int main(void) {
     assert(comm_scheduler.position_tick == now && comm_scheduler.sample_limit_us == SENSOR_STALE_US);
     sys_tick_handler();
     assert(control_calls == 1 && isr_duration_us == 20 && isr_max_us == 20);
-    for (unsigned i = 0; i < 8; ++i) sys_tick_handler();
-    assert(system_millis == 2 && control_calls == 9);
+    for (unsigned i = 0; i < ticks - 2; ++i) sys_tick_handler();
+    assert(system_millis == 2 && control_calls == ticks - 1);
     work_us = SENSOR_TICK_US;
     sys_tick_handler();
     assert(isr_overrun_count == 1);
     comm_scheduler_stop();
     assert(!comm_scheduler.active && sensor_cancels == 1 && tick_enabled);
-    for (unsigned i = 0; i < 9; ++i) sys_tick_handler();
-    assert(system_millis == 3 && control_calls == 10);
+    for (unsigned i = 0; i < ticks - 1; ++i) sys_tick_handler();
+    assert(system_millis == 3 && control_calls == ticks);
     system_millis = UINT32_MAX;
-    for (unsigned i = 0; i < 10; ++i) sys_tick_handler();
+    for (unsigned i = 0; i < ticks; ++i) sys_tick_handler();
     assert(system_millis == 0); // Stopping the motor must never stop application time.
     return 0;
 }

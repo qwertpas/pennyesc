@@ -52,12 +52,18 @@
 #define REVERSE_HALL_PHASE_TURN16 32768
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
-/* Bench-tuned with continuous XY reads and the short TIM21 sector ISR. */
-#define OBSERVER_LEAD_US 145
+/* Residual lead relative to the sensor read-start timestamp. */
+#if ESC_ADDRESS == 3
+#define OBSERVER_LEAD_US 100
+#else
+#define OBSERVER_LEAD_US 120
+#endif
 #define OBSERVER_LEAD_MIN_US -1000
 #define OBSERVER_LEAD_MAX_US 1000
+#ifndef SENSOR_TICK_US
 #define SENSOR_TICK_US 100u
-#define VEL_UPDATE_SAMPLES 10u
+#endif
+#define VEL_UPDATE_SAMPLES (1000u / SENSOR_TICK_US)
 #define SCHED_TIMER_PERIOD 0xffffu
 #define SENSOR_STALE_US 10000u
 #define SENSOR_START_RETRIES 4u
@@ -159,16 +165,15 @@ typedef struct {
 typedef struct {
     volatile bool active;
     volatile uint8_t sector;
-    volatile uint8_t next_sector;
     volatile int8_t step;
     volatile uint32_t period_q8;
-    uint8_t fraction;
-    volatile uint8_t edge_count;
+    volatile uint16_t phase;
+    volatile uint16_t phase_tick;
+    volatile int32_t phase_rate_q8;
     volatile uint16_t next_comm_tick;
     volatile uint16_t position_tick;
     volatile uint16_t sample_limit_us;
     int16_t last_duty;
-    volatile int16_t correction_us;
 } comm_scheduler_t;
 
 typedef union {
@@ -208,6 +213,7 @@ static volatile control_gain_t control_kd_q8;
 static volatile int16_t control_kv_q8;
 static volatile int16_t control_kf;
 static volatile int16_t control_clip = DEFAULT_CONTROL_CLIP;
+static volatile uint16_t control_deadband_turn32;
 static volatile bool report_speed;
 static volatile int32_t current_lead_turn16 = LEAD_DEFAULT_TURN16;
 static volatile int16_t observer_lead_us = OBSERVER_LEAD_US;
@@ -863,31 +869,36 @@ static __attribute__((noinline)) void comm_arm(uint16_t deadline)
     }
 }
 
+static void comm_schedule_absolute(uint16_t now)
+{
+    uint16_t elapsed = (uint16_t)(now - comm_scheduler.phase_tick);
+    uint16_t phase = (uint16_t)(comm_scheduler.phase +
+        ((comm_scheduler.phase_rate_q8 * (int32_t)elapsed) >> 8));
+    uint8_t sector = (uint8_t)(((uint32_t)phase * 6u) >> 16);
+    if (sector != comm_scheduler.sector) {
+        set_hall_outputs_raw(sector);
+        comm_scheduler.sector = sector;
+    }
+    int8_t step = comm_scheduler.step;
+    uint16_t boundary = step > 0 ? comm_sector_start_phase(sector_next(sector, 1)) :
+        (uint16_t)(comm_sector_start_phase(sector) - 1u);
+    uint16_t distance = step > 0 ? (uint16_t)(boundary - phase) : (uint16_t)(phase - boundary);
+    /* The angle is authoritative at every event. Integer period rounding
+     * changes edge jitter by <1 us; it cannot accumulate into phase drift. */
+    uint32_t period = comm_scheduler.period_q8 >> 8;
+    uint32_t dt = ((uint32_t)distance * 6u * period + 65535u) >> 16;
+    if (dt == 0u) dt = 1u;
+    comm_arm((uint16_t)(now + dt));
+}
+
 static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
 {
     int32_t velocity = comm_velocity_turn32_per_s;
-    /* Divide before multiplying to keep extreme observer transients in range. */
     uint32_t speed_k = (abs_u32(velocity) / 1000u) * POLE_PAIRS;
     uint32_t period = sector_period_q8(speed_k);
-    int8_t step = velocity >= 0 ? 1 : -1;
     uint16_t phase = (uint16_t)commutation_phase_at_tick(now, direction);
-    uint8_t sector = (uint8_t)(((uint32_t)phase * 6u) >> 16);
-    uint8_t next_sector;
-    uint8_t edge_count;
-    do {
-        edge_count = comm_scheduler.edge_count;
-        next_sector = comm_scheduler.next_sector;
-    } while (edge_count != comm_scheduler.edge_count);
-    bool running = (TIM_DIER(TIM21) & TIM_DIER_CC2IE) != 0u;
-    bool start = !running || step != comm_scheduler.step;
-    if (start) {
-        next_sector = sector_next(sector, step);
-    }
-    uint16_t boundary = step > 0 ? comm_sector_start_phase(next_sector) :
-        (uint16_t)(comm_sector_start_phase(sector_next(next_sector, 1)) - 1u);
-    int32_t distance = step > 0 ? (int16_t)(boundary - phase) : (int16_t)(phase - boundary);
-    int32_t dt = speed_k != 0u ? distance * 1000 / (int32_t)speed_k : 0;
-    uint16_t desired = (uint16_t)(now + dt);
+    int32_t rate = (int32_t)(speed_k * 256u / 1000u);
+    if (velocity < 0) rate = -rate;
 
     nvic_disable_irq(NVIC_TIM21_IRQ);
     if (current_mode != PNY_MODE_RUN || direction == 0 || current_duty == 0) {
@@ -895,44 +906,24 @@ static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
     } else if (period == 0u) {
         comm_scheduler.sample_limit_us = SENSOR_STALE_US;
         TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
+        uint8_t sector = (uint8_t)(((uint32_t)phase * 6u) >> 16);
         if (sector != comm_scheduler.sector) {
             set_hall_outputs_raw(sector);
             comm_scheduler.sector = sector;
         }
     } else if (period < (COMM_MIN_PERIOD_US << 8)) {
-        /* Invalid speed estimate: stop instead of generating an IRQ storm. */
         comm_fault();
     } else {
         comm_scheduler.period_q8 = period;
-        /* Stop before losing half a mechanical turn between measurements. */
+        comm_scheduler.phase = phase;
+        comm_scheduler.phase_tick = now;
+        comm_scheduler.phase_rate_q8 = rate;
+        comm_scheduler.step = velocity >= 0 ? 1 : -1;
         uint32_t limit = (period >> 8) * (3u * POLE_PAIRS);
         comm_scheduler.sample_limit_us = limit < SENSOR_STALE_US ? (uint16_t)limit : SENSOR_STALE_US;
-        if (start) {
-            comm_scheduler.step = step;
-            comm_scheduler.fraction = 0u;
-            comm_scheduler.correction_us = 0;
-            comm_scheduler.sector = sector;
-            comm_scheduler.next_sector = next_sector;
-            set_hall_outputs_raw(sector);
-            comm_arm(desired);
-        } else {
-            /* The ISR may advance several sectors during the divisions above.
-             * Transfer this phase correction to the edge that is upcoming now. */
-            uint8_t elapsed = (uint8_t)(comm_scheduler.edge_count - edge_count);
-            desired = (uint16_t)(desired + ((period * elapsed) >> 8));
-            uint16_t deadline = comm_scheduler.next_comm_tick;
-            int16_t correction = sector_correction(deadline, desired, period);
-            if ((TIM_SR(TIM21) & TIM_SR_CC2IF) != 0u ||
-                (int16_t)(deadline - sched_now_us()) <= 4) {
-                /* Preserve an imminent edge, but correct the following one.
-                 * Dropping this correction can lose phase lock at harmonics
-                 * of the 100 us sensor service. */
-                comm_scheduler.correction_us = correction;
-            } else {
-                comm_scheduler.correction_us = 0;
-                comm_arm((uint16_t)(deadline + correction));
-            }
-        }
+        /* Include time spent calculating above; publishing an old phase as
+         * current would introduce a speed-dependent commutation error. */
+        comm_schedule_absolute(sched_now_us());
     }
     nvic_enable_irq(NVIC_TIM21_IRQ);
 }
@@ -1143,6 +1134,14 @@ static int16_t control_duty(void)
         position_error >= -BRUSHED_POSITION_HOLD_TURN32 &&
         position_error <= BRUSHED_POSITION_HOLD_TURN32) {
         return 0;
+    }
+#else
+    if (position_error > control_deadband_turn32) {
+        position_error -= control_deadband_turn32;
+    } else if (position_error < -(int32_t)control_deadband_turn32) {
+        position_error += control_deadband_turn32;
+    } else {
+        position_error = 0;
     }
 #endif
     int32_t duty =
@@ -1466,7 +1465,7 @@ static uint8_t calibration_start(uint8_t sweep_dir)
     (void)sweep_dir;
     return PNY_RESULT_BAD_STATE;
 #else
-    if (current_mode != PNY_MODE_IDLE) {
+    if (current_mode == PNY_MODE_CAL) {
         return PNY_RESULT_BAD_STATE;
     }
     if (sweep_dir > 1u) {
@@ -1475,13 +1474,14 @@ static uint8_t calibration_start(uint8_t sweep_dir)
 
     memset(&cal_state, 0, sizeof(cal_state));
     control_disable();
-    stop_motor_outputs();
+    run_stop();
     if (!sensor_init_full_mode()) {
         return PNY_RESULT_BAD_STATE;
     }
     mct_apply_config();
     delay_ms(2);
     current_mode = PNY_MODE_CAL;
+    release_brake();
     cal_state.active = true;
     cal_state.total_points = PNY_CAL_POINTS_PER_SWEEP;
     cal_state.sweep_dir = sweep_dir;
@@ -1647,17 +1647,10 @@ static void comm_control_tick(uint16_t now)
         return;
     }
 
-    if (current_direction != 0 && direction != current_direction) {
-        current_mode = PNY_MODE_IDLE;
-        current_duty = 0;
-        current_direction = 0;
-        comm_scheduler_stop();
-        stop_motor_outputs();
-        return;
+    if (direction != current_direction) {
+        current_direction = direction;
+        comm_scheduler_schedule_sector_event(now, direction);
     }
-    current_direction = direction;
-
-    (void)now;
 
     if (duty != comm_scheduler.last_duty) {
         apply_pwm_duty(duty);
@@ -1688,8 +1681,8 @@ static void comm_sensor_tick(void)
         if (observer_mode >= PNY_OBSERVER_AB_FAST) {
             uint8_t gain = (uint8_t)(observer_mode - PNY_OBSERVER_AB_FAST);
             observer_ab_update(current_angle_turn16, sample_tick,
-                               gain == 0u ? 4u : (uint8_t)(8u + 4u * gain),
-                               gain == 0u ? 32u : (uint16_t)(128u + 64u * gain));
+                               (uint8_t)(8u + 4u * gain),
+                               (uint16_t)(128u + 64u * gain));
         } else {
             observer_state.position_turn32 = current_angle_turn16;
             int32_t velocity = comm_velocity_turn32_per_s;
@@ -1740,28 +1733,19 @@ void tim21_isr(void)
         return;
     }
     uint16_t now = sched_now_us();
-    uint16_t late = (uint16_t)(now - comm_scheduler.next_comm_tick);
-    uint32_t period = comm_scheduler.period_q8;
     if (current_duty == 0 || current_mode != PNY_MODE_RUN) {
         TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
         timer_clear_flag(TIM21, TIM_SR_CC2IF);
         return;
     }
-    if ((uint16_t)(now - comm_scheduler.position_tick) > comm_scheduler.sample_limit_us || late >= (period >> 8)) {
+    if ((uint16_t)(now - comm_scheduler.position_tick) > comm_scheduler.sample_limit_us) {
         isr_overrun_count++;
         comm_fault();
         return;
     }
-    /* The edge comes first. No angle calculation or division in this ISR. */
-    uint8_t sector = comm_scheduler.next_sector;
-    set_hall_outputs_raw(sector);
-    comm_scheduler.sector = sector;
-    comm_scheduler.next_sector = sector_next(sector, comm_scheduler.step);
-    comm_scheduler.edge_count++;
-    uint16_t next = sector_deadline(comm_scheduler.next_comm_tick, period, &comm_scheduler.fraction);
-    next = (uint16_t)(next + comm_scheduler.correction_us);
-    comm_scheduler.correction_us = 0;
-    comm_arm(next);
+    /* Re-select from absolute angle even after a delayed interrupt. A free-
+     * running sector counter can remain one or more sectors out of phase. */
+    comm_schedule_absolute(now);
 #endif
 }
 
@@ -1834,24 +1818,14 @@ static void handle_brake(const uint8_t *payload, uint8_t len)
     }
 
     control_disable();
-    report_speed = true;
     capture_state.active = false;
     clear_motor_outputs();
-    uint8_t result = PNY_RESULT_OK;
-    if (current_mode != PNY_MODE_RUN) {
-        result = run_ready();
-        if (result == PNY_RESULT_OK) {
-            run_begin();
-            if (current_mode != PNY_MODE_RUN) {
-                result = PNY_RESULT_BAD_STATE;
-            }
-        }
+    if (current_mode != PNY_MODE_RUN && encoder_angle_valid() && run_ready() == PNY_RESULT_OK) {
+        run_begin();
     }
-    if (result != PNY_RESULT_OK) {
-        report_speed = false;
-    }
+    report_speed = current_mode == PNY_MODE_RUN;
     apply_brake();
-    send_status_response(PNY_CMD_BRAKE, result);
+    send_status_response(PNY_CMD_BRAKE, PNY_RESULT_OK);
 }
 
 static uint8_t apply_duty_payload(const uint8_t *payload, uint8_t len)
@@ -1890,15 +1864,21 @@ static void handle_set_position(const uint8_t *payload, uint8_t len)
 
 static void handle_send_position(const uint8_t *payload, uint8_t len)
 {
-    if (len != 4u) {
+    if (len != 4u && len != 10u) {
         return;
     }
 
     int32_t position_turn32;
     memcpy(&position_turn32, payload, sizeof(position_turn32));
 
+    systick_interrupt_disable();
     target_position_turn32 = position_turn32;
+    if (len == 10u) {
+        memcpy((void *)&target_velocity_turn32_per_s, payload + 4u, 4u);
+        memcpy((void *)&control_kf, payload + 8u, 2u);
+    }
     target_position_set = true;
+    systick_interrupt_enable();
     if (current_mode != PNY_MODE_RUN) {
         control_apply();
     }
@@ -1967,7 +1947,7 @@ static void handle_set_control(const uint8_t *payload, uint8_t len)
     control_clip = clip;
     systick_interrupt_enable();
 #else
-    if (len != sizeof(pny_control_payload_t)) {
+    if (len != sizeof(pny_control_payload_t) && len != sizeof(pny_control_payload_t) + 2u) {
         send_status_response(PNY_CMD_SET_CONTROL, PNY_RESULT_BAD_ARG);
         return;
     }
@@ -1986,6 +1966,8 @@ static void handle_set_control(const uint8_t *payload, uint8_t len)
     control_kv_q8 = control.kv_q8;
     control_kf = control.kf;
     control_clip = control.clip;
+    control_deadband_turn32 = len == sizeof(control) + 2u ?
+        (uint16_t)(payload[sizeof(control)] | ((uint16_t)payload[sizeof(control) + 1u] << 8)) : 0u;
     systick_interrupt_enable();
 #endif
     send_status_response(PNY_CMD_SET_CONTROL, control_apply());

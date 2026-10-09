@@ -1,0 +1,314 @@
+[
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/adc_common_v2.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/adc_common_v2.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/adc_common_v2.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/adc_common_v2.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/crc_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/crc_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/crc_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/crc_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/crc_v2.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/crc_v2.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/crc_v2.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/crc_v2.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/crs_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/crs_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/crs_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/crs_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/desig_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/desig_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/desig_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/desig_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/desig_common_v1.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/desig_common_v1.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/desig_common_v1.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/desig_common_v1.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/dma_common_l1f013.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/dma_common_l1f013.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/dma_common_l1f013.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/dma_common_l1f013.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/dma_common_csel.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/dma_common_csel.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/dma_common_csel.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/dma_common_csel.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/exti_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/exti_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/exti_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/exti_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/flash_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/flash_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/flash_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/flash_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/flash_common_l01.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/flash_common_l01.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/flash_common_l01.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/flash_common_l01.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/gpio_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/gpio_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/gpio_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/gpio_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/gpio_common_f0234.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/gpio_common_f0234.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/gpio_common_f0234.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/gpio_common_f0234.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/i2c_common_v2.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/i2c_common_v2.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/i2c_common_v2.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/i2c_common_v2.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/iwdg_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/iwdg_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/iwdg_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/iwdg_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/lptimer_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/lptimer_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/lptimer_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/lptimer_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/pwr_common_v1.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/pwr_common_v1.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/pwr_common_v1.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/pwr_common_v1.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/pwr_common_v2.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/pwr_common_v2.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/pwr_common_v2.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/pwr_common_v2.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/l0/rcc.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/l0/rcc.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/l0/rcc.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/l0/rcc.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/rcc_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/rcc_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/rcc_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/rcc_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/rng_common_v1.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/rng_common_v1.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/rng_common_v1.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/rng_common_v1.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/rtc_common_l1f024.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/rtc_common_l1f024.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/rtc_common_l1f024.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/rtc_common_l1f024.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/spi_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/spi_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/spi_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/spi_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/spi_common_v1.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/spi_common_v1.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/spi_common_v1.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/spi_common_v1.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/spi_common_v1_frf.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/spi_common_v1_frf.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/spi_common_v1_frf.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/spi_common_v1_frf.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/timer_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/timer_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/timer_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/timer_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/usart_common_all.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/usart_common_all.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/usart_common_all.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/usart_common_all.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/usart_common_v2.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/usart_common_v2.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/usart_common_v2.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/usart_common_v2.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_control.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_control.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_control.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_control.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_standard.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_standard.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_standard.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_standard.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_msc.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_msc.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_msc.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_msc.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_hid.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_hid.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_hid.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_hid.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_audio.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_audio.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_audio.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_audio.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_cdc.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_cdc.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_cdc.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_cdc.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_midi.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_midi.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/usb/usb_midi.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/usb/usb_midi.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/st_usbfs_core.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/st_usbfs_core.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/common/st_usbfs_core.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/common/st_usbfs_core.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/st_usbfs_v2.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/st_usbfs_v2.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/stm32/st_usbfs_v2.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/stm32/st_usbfs_v2.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/vector.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/vector.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/vector.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/vector.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/systick.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/systick.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/systick.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/systick.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/scb.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/scb.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/scb.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/scb.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/nvic.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/nvic.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/nvic.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/nvic.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/assert.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/assert.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/assert.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/assert.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/sync.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/sync.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/sync.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/sync.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/dwt.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include /Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/dwt.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "/Users/chris/.platformio/packages/framework-libopencm3/lib/cm3/dwt.c",
+        "output": ".pio/build/carbonhopper_esc/FrameworkLibOpenCM3/lib/cm3/dwt.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/src/main.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -Iinclude -Isrc -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include src/main.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "src/main.c",
+        "output": ".pio/build/carbonhopper_esc/src/main.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/src/mct8316z.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -Iinclude -Isrc -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include src/mct8316z.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "src/mct8316z.c",
+        "output": ".pio/build/carbonhopper_esc/src/mct8316z.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/src/pennyesc_boot.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -Iinclude -Isrc -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include src/pennyesc_boot.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "src/pennyesc_boot.c",
+        "output": ".pio/build/carbonhopper_esc/src/pennyesc_boot.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/src/pennyesc_calibration.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -Iinclude -Isrc -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include src/pennyesc_calibration.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "src/pennyesc_calibration.c",
+        "output": ".pio/build/carbonhopper_esc/src/pennyesc_calibration.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/src/pennyesc_frame.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -Iinclude -Isrc -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include src/pennyesc_frame.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "src/pennyesc_frame.c",
+        "output": ".pio/build/carbonhopper_esc/src/pennyesc_frame.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/src/pennyesc_uart_update.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -Iinclude -Isrc -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include src/pennyesc_uart_update.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "src/pennyesc_uart_update.c",
+        "output": ".pio/build/carbonhopper_esc/src/pennyesc_uart_update.o"
+    },
+    {
+        "command": "/Users/chris/.platformio/packages/toolchain-gccarmnoneeabi@1.70201.0/bin/arm-none-eabi-gcc -o .pio/build/carbonhopper_esc/src/tmag5273.o -c -Wimplicit-function-declaration -Wmissing-prototypes -Wstrict-prototypes -Os -ggdb -ffunction-sections -fdata-sections -flto -fno-unwind-tables -fno-asynchronous-unwind-tables -mthumb -mcpu=cortex-m0plus -Os -ffunction-sections -fdata-sections -Wall -Wextra -Wredundant-decls -Wshadow -fno-common -DPLATFORMIO=60119 -DSTM32L011xx -DPNY_UART_UPDATE=1 -DPNY_ESC_ADDRESS=3 -DSTM32L0 -DF_CPU=32000000L -Iinclude -Isrc -I/Users/chris/Kicad/pennyesc/firmware/Lib -I/Users/chris/.platformio/packages/framework-libopencm3 -I/Users/chris/.platformio/packages/framework-libopencm3/include src/tmag5273.c",
+        "directory": "/Users/chris/Kicad/pennyesc/firmware/pennyesc_libopencm3",
+        "file": "src/tmag5273.c",
+        "output": ".pio/build/carbonhopper_esc/src/tmag5273.o"
+    }
+]

@@ -6,6 +6,7 @@
 #include "pennyesc_timing.h"
 #define PNY_DRIVE_BRUSHED 0
 #define PNY_MODE_RUN 1
+#define PNY_MODE_IDLE 0
 #define POLE_PAIRS 6
 #define REVERSE_HALL_PHASE_TURN16 32768
 #define SENSOR_STALE_US 10000u
@@ -26,6 +27,10 @@ static const uint16_t comm_sector_start_turn16[] = {0, 10923, 21846, 32768, 4369
 static int32_t observer_velocity_remainder;
 static int32_t comm_velocity_turn32_per_s, current_lead_turn16, observer_lead_us;
 static int current_mode, current_duty, sensor_ready, isr_overrun_count;
+static int8_t current_direction, command_direction;
+static int16_t command_duty, applied_duty;
+static bool report_speed;
+static int control_kp_q8, control_kd_q8, control_kv_q8, control_kf;
 static uint16_t clock_tick;
 static int hall, edges, stopped, software_events;
 static unsigned preempt_on_mask;
@@ -67,6 +72,11 @@ static void set_hall_outputs_raw(uint8_t sector) {
 }
 static void clear_motor_outputs(void) { current_duty = 0; hall = -1; }
 static void control_disable(void) { current_duty = 0; }
+static void comm_scheduler_stop(void) { comm_scheduler.active = false; dier = 0; stopped++; }
+static void get_drive_command(int16_t *duty, int8_t *direction) {
+    *duty = command_duty; *direction = command_direction;
+}
+static void apply_pwm_duty(int16_t duty) { applied_duty = duty; }
 static void comm_stop_from_isr(void) { current_mode = 0; dier = 0; stopped++; }
 /* FUNCTIONS */
 
@@ -101,27 +111,23 @@ static void reset(void) {
 
 static void spin(unsigned rpm, int direction) {
     reset();
+    elapsed_us = 0;
+    clock_tick = 0;
+    comm_scheduler.position_tick = 0;
     comm_velocity_turn32_per_s = direction * (int32_t)((uint64_t)rpm * 65536 / 60);
-    comm_scheduler_schedule_sector_event(clock_tick, direction);
-    assert(dier & TIM_DIER_CC2IE);
     double ideal_period = 60000000.0 / (rpm * 36.0);
-    assert(fabs(comm_scheduler.period_q8 / 256.0 - ideal_period) < 0.02);
-    uint16_t previous = comm_scheduler.next_comm_tick;
-    unsigned elapsed = 0;
-    for (unsigned i = 0; i < 10000; ++i) {
-        uint16_t deadline = comm_scheduler.next_comm_tick;
-        // ISR latency varies 0..3 us and crosses the 16-bit timer wrap repeatedly.
-        clock_tick = deadline + (i % 4);
-        comm_scheduler.position_tick = clock_tick;
-        sr |= TIM_SR_CC2IF;
-        int expected = sector_next(hall, direction);
-        tim21_isr();
-        assert(!stopped && hall == expected);
-        if (i) elapsed += (uint16_t)(deadline - previous);
-        previous = deadline;
+    for (unsigned i = 0; i < 250000; i++) {
+        if (i % 100 == 0) {
+            observer_state.position_turn32 = (uint16_t)((int64_t)comm_velocity_turn32_per_s * i / 1000000);
+            comm_scheduler.position_tick = clock_tick;
+            comm_scheduler_schedule_sector_event(clock_tick, direction);
+            assert(fabs(comm_scheduler.period_q8 / 256.0 - ideal_period) < 0.02);
+            uint16_t phase = (uint16_t)commutation_phase_at_tick(clock_tick, direction);
+            assert(hall == (int)(((uint32_t)phase * 6u) >> 16));
+        }
+        advance_time(1);
+        assert(!stopped);
     }
-    assert(fabs(elapsed - ideal_period * 9999) < 200.0);
-    assert(isr_overrun_count == 0);
 }
 
 static double ramp_seconds = 1.0;
@@ -181,6 +187,18 @@ static void scheduled_ramp(int direction, unsigned work_us) {
 }
 
 int main(void) {
+    reset();
+    comm_scheduler.active = true;
+    current_direction = 1;
+    comm_velocity_turn32_per_s = 104300;
+    observer_state.position_turn32 = 1000;
+    command_direction = -1;
+    command_duty = -80;
+    comm_control_tick(clock_tick);
+    assert(current_mode == PNY_MODE_RUN && comm_scheduler.active && stopped == 0);
+    assert(current_direction == -1 && applied_duty == -80);
+    assert(observer_state.position_turn32 == 1000 && comm_velocity_turn32_per_s == 104300);
+    assert(hall == (uint8_t)(((uint32_t)(uint16_t)commutation_phase_at_tick(clock_tick, -1) * 6u) >> 16));
     assert(abs_u32(INT32_MIN) == 2147483648u);
     assert(position_target_direction(INT32_MAX, INT32_MIN, 100) == 1);
     assert(position_target_direction(INT32_MIN, INT32_MAX, 100) == -1);
@@ -195,6 +213,7 @@ int main(void) {
     observer_ramp(1, 120, 4, 32); observer_ramp(-1, 120, 4, 32);
     spin(17000, 1); spin(17000, -1);
     spin(50000, 1); spin(50000, -1);
+    spin(60000, 1); spin(60000, -1);
     for (unsigned work = 0; work <= 60; work += 20) {
         scheduled_ramp(1, work); scheduled_ramp(-1, work);
     }
@@ -213,38 +232,34 @@ int main(void) {
     // Clear the previous event before arming a future edge.
     comm_arm(10); assert(!(sr & TIM_SR_CC2IF));
     assert(ccr == 10 && (dier & TIM_DIER_CC2IE));
-    // Sensor updates preserve an imminent edge and bound phase corrections.
-    assert(sector_correction(2, 40, 33u << 8) == 8);
-    assert(sector_correction(10, 90, 40u << 8) == 10);
-    assert(sector_correction(10, 65400, 40u << 8) == -10);
-    reset(); comm_velocity_turn32_per_s = 54613333;
-    comm_scheduler_schedule_sector_event(clock_tick, 1);
-    uint8_t next = comm_scheduler.next_sector;
-    uint16_t edge = comm_scheduler.next_comm_tick;
-    clock_tick++;
-    observer_state.position_turn32 += 1000;
-    comm_scheduler_schedule_sector_event(clock_tick, 1);
-    assert(comm_scheduler.next_sector == next);
-    assert(abs((int16_t)(comm_scheduler.next_comm_tick - edge)) <= 8);
-    // A sector ISR can fire while the sensor correction is being calculated.
-    // Carry the correction forward to the new upcoming edge rather than lose it.
+    // A phase step larger than the old 15-degree correction limit is applied
+    // at once, in both directions, rather than leaving an oscillator off-sector.
     for (int direction = -1; direction <= 1; direction += 2) {
+        reset(); comm_velocity_turn32_per_s = direction * 54613333;
+        comm_scheduler_schedule_sector_event(clock_tick, direction);
+        observer_state.position_turn32 += direction * 3000;
+        comm_scheduler_schedule_sector_event(clock_tick, direction);
+        uint16_t phase = (uint16_t)commutation_phase_at_tick(clock_tick, direction);
+        assert(hall == (int)(((uint32_t)phase * 6u) >> 16));
+        // The ISR may fire while the new phase is being calculated.
         for (unsigned count = 1; count <= 6; count++) {
             reset(); comm_velocity_turn32_per_s = direction * 54613333;
-            comm_scheduler.edge_count = 253; // Exercise the event counter wrap.
             comm_scheduler_schedule_sector_event(clock_tick, direction);
             observer_state.position_turn32 += direction * 600;
             preempt_on_mask = count;
             comm_scheduler_schedule_sector_event(clock_tick, direction);
-            assert(!stopped && comm_scheduler.next_sector == sector_next(hall, direction));
-            int correction = (int16_t)(comm_scheduler.next_comm_tick - deadline_after_preemption);
-            assert(correction <= -4 && correction >= -8);
+            phase = (uint16_t)commutation_phase_at_tick(clock_tick, direction);
+            assert(!stopped && hall == (int)(((uint32_t)phase * 6u) >> 16));
         }
     }
-    // A missed full sector stops output; it must not race through skipped sectors.
-    clock_tick = comm_scheduler.next_comm_tick + (comm_scheduler.period_q8 >> 8);
+    // A delayed interrupt selects the CURRENT sector; it cannot replay the
+    // obsolete next-sector counter. Measurements are still fresh here.
+    reset(); comm_velocity_turn32_per_s = 54613333;
+    comm_scheduler_schedule_sector_event(clock_tick, 1);
+    clock_tick = comm_scheduler.next_comm_tick + 80;
     sr |= TIM_SR_CC2IF; tim21_isr();
-    assert(stopped == 1 && current_duty == 0 && !sensor_ready && !capture_state.active);
+    uint16_t phase = (uint16_t)commutation_phase_at_tick(clock_tick, 1);
+    assert(!stopped && hall == (int)(((uint32_t)phase * 6u) >> 16));
     // Loss of measurements stops even when compare timing is otherwise healthy.
     reset(); comm_velocity_turn32_per_s = 54613333;
     comm_scheduler_schedule_sector_event(clock_tick, 1);

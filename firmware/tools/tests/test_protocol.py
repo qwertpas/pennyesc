@@ -22,6 +22,26 @@ from pennycal import (  # noqa: E402
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_reader_preserves_partial_reply_after_timeout(self) -> None:
+        from pnyproto import FrameReader
+        reader = FrameReader(io.BytesIO())
+        frame = encode_frame(2, CMD_GET_STATUS, b"\xaa\x00\x01\x02")
+        reader.feed(frame[:5])
+        with self.assertRaises(TimeoutError):
+            reader.read(2, CMD_GET_STATUS, 0.001)
+        reader.feed(frame[5:])
+        self.assertEqual(reader.read(2, CMD_GET_STATUS, 0.01), b"\xaa\x00\x01\x02")
+
+    def test_reader_recovers_frames_inside_corrupted_data(self) -> None:
+        from pnyproto import FrameReader
+        reader = FrameReader(io.BytesIO())
+        first = encode_frame(2, 14, b"position")
+        second = encode_frame(2, CMD_GET_STATUS, b"status")
+        reader.feed(b"\xaa\x21\x0c\x00" + first + second)
+        self.assertEqual(reader.read(2, CMD_GET_STATUS, 0.01), b"status")
+        self.assertEqual(reader.read(2, 14, 0.01), b"position")
+        self.assertGreater(reader.crc_errors, 0)
+
     def test_brushed_control_supports_high_gain(self) -> None:
         payload = BrushedControl(kp=300.0, kd=12.5, clip=500).payload()
         self.assertEqual(len(payload), 14)
