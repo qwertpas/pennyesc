@@ -1,5 +1,7 @@
 # PennyESC, a tiny and cheap brushless motor controller
 
+<img src="pics/motors.jpg" width="800" alt="Three motors connected to PennyESC controllers">
+
 <img src="pics/pcb.png" width="800" alt="Latest PennyESC PCB rendering">
 
 ## Current state of the project:
