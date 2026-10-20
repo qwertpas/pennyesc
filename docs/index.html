@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f8">
+  <title>penny-gui</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="vendor/uPlot.min.css">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+<main>
+  <div class="toolbar" aria-label="Connection">
+    <button id="connect" class="primary">Connect</button>
+    <span id="connection" class="state">Disconnected</span>
+    <button id="scan" data-connected>Scan</button>
+    <label>ESC <select id="address" aria-label="ESC address"></select></label>
+    <span id="motor" class="muted">—</span>
+    <span class="spacer"></span>
+    <output id="rate">0 samples/s</output>
+    <button id="brake" class="danger" data-connected>Brake</button>
+  </div>
+  <p id="message" role="status" aria-live="polite" hidden></p>
+  <div class="tabs" role="tablist" aria-label="Views">
+    <button id="tab-telemetry" role="tab" aria-selected="true" aria-controls="telemetry">Telemetry</button>
+    <button id="tab-calibration" role="tab" aria-selected="false" aria-controls="calibration">Calibration</button>
+    <button id="tab-summary" role="tab" aria-selected="false" aria-controls="summary">Session</button>
+    <button id="tab-firmware" role="tab" aria-selected="false" aria-controls="firmware">Firmware</button>
+  </div>
+  <section id="telemetry" role="tabpanel" aria-labelledby="tab-telemetry">
+    <div class="tools">
+      <output id="values" class="mono muted">Position — · Velocity —</output>
+      <span class="spacer"></span>
+      <label><input id="show-magnetic" type="checkbox"> Magnetic field</label>
+      <label>Window <select id="window"><option value="5">5 s</option><option value="10" selected>10 s</option><option value="30">30 s</option></select></label>
+      <button id="pause">Pause</button><button id="clear-live">Clear</button><button id="export-live">Export CSV</button>
+    </div>
+    <div class="live-plots">
+      <div id="position" class="plot" aria-label="Position plot"></div>
+      <div id="velocity" class="plot" aria-label="Velocity plot"></div>
+      <div id="magnetic" class="plot" aria-label="Magnetic field plot" hidden></div>
+    </div>
+  </section>
+  <section id="calibration" role="tabpanel" aria-labelledby="tab-calibration" hidden>
+    <div class="tools">
+      <button id="calibrate" class="primary" data-connected>Run calibration</button>
+      <button id="check-motor" data-connected>Check motor</button>
+      <button id="read-calibration" data-connected>Read calibration</button>
+      <button id="clear-calibration">Clear plots</button>
+      <span id="cal-state" class="muted">—</span>
+      <span class="spacer"></span>
+      <button id="export-calibration" disabled>Export session</button>
+    </div>
+    <div class="progress-row"><progress id="cal-progress" max="100" value="0"></progress><output id="cal-progress-text"></output></div>
+    <div class="cal-plots">
+      <div id="xy" class="plot" aria-label="Magnetic field XY plot"></div>
+      <div id="field-step" class="plot" aria-label="Magnetic field versus step plot"></div>
+      <div id="residual" class="plot" aria-label="Residual error plot"></div>
+    </div>
+  </section>
+  <section id="summary" role="tabpanel" aria-labelledby="tab-summary" hidden>
+    <div class="tools"><output id="session-state">No session</output><span class="spacer"></span><button id="export-session" disabled>Export session</button></div>
+    <pre id="session-data"></pre>
+  </section>
+  <section id="firmware" role="tabpanel" aria-labelledby="tab-firmware" hidden>
+    <div class="firmware-grid">
+      <fieldset><legend>Bridge</legend>
+        <label>Board <select id="board"></select></label>
+        <div class="pins">
+          <label>RX <select id="rx" aria-label="RX GPIO"></select></label>
+          <label>TX <select id="tx" aria-label="TX GPIO"></select></label>
+          <label>GND <select id="gnd" aria-label="GND GPIO"></select></label>
+        </div>
+        <div class="tools"><button id="apply-pins" data-connected>Apply pins</button><button id="default-pins">Board defaults</button></div>
+        <button id="flash-bridge" class="primary">Flash bridge</button>
+      </fieldset>
+      <fieldset><legend>PennyESC</legend>
+        <label>Firmware <select id="esc-image"><option value="bundled">PennyESC</option><option value="file">Choose .bin…</option></select></label>
+        <input id="firmware-file" type="file" accept=".bin,application/octet-stream" hidden aria-label="PennyESC firmware file">
+        <label>Address after flashing <select id="verify-address"></select></label>
+        <div class="tools"><button id="flash-esc" class="primary" data-connected>Flash PennyESC</button><button id="recover-esc" data-connected>Recover from bootloader</button></div>
+      </fieldset>
+    </div>
+    <div class="progress-row"><progress id="flash-progress" max="100" value="0"></progress><output id="flash-state"></output></div>
+    <pre id="flash-log" class="log" aria-label="Firmware log"></pre>
+  </section>
+  <div class="commands">
+    <form id="control-form" class="tools">
+      <div class="tools drive-row">
+      <label>Mode <select id="mode"><option value="duty">Duty</option><option value="pos">Position</option><option value="vel">Velocity</option></select></label>
+      <label><span id="target-label">Duty</span> <input id="target" type="number" step="1" min="-799" max="799" value="0" required></label>
+      <select id="target-unit" aria-label="Target unit"><option value="duty">duty</option></select><span id="target-unit-text">duty</span>
+      <button id="set-target" type="button" data-connected>Set</button>
+      <button id="zero" type="button" data-connected>Zero</button>
+      <label class="key-control"><input id="key-control" type="checkbox" title="Hold − or +; release to stop"> Key control (− / +)</label>
+      </div>
+      <div class="tools gains-row">
+      <label>kp <input id="kp" type="number" step="any" min="-128" max="127.996" value="0" required></label>
+      <label>kd <input id="kd" type="number" step="any" min="-128" max="127.996" value="0" required></label>
+      <label>kv <input id="kv" type="number" step="any" min="-128" max="127.996" value="0" required></label>
+      <label>kf <input id="kf" type="number" min="-799" max="799" value="0" required></label>
+      <label>Duty limit <input id="clip" type="number" min="0" max="799" value="150" required></label>
+      <button data-connected>Apply</button>
+      <span class="muted">Duty ranges between -799 and 799.</span>
+      </div>
+    </form>
+    <form id="command-form" class="command-row">
+      <label class="sr-only" for="command">Command</label>
+      <input id="command" class="mono" placeholder="status | mode pos | pos 100 | mode vel | rpm 12000 | duty 100 | help" autocomplete="off" spellcheck="false">
+      <button id="send">Send</button><button id="clear-log" type="button">Clear log</button>
+    </form>
+    <pre id="log" class="log" aria-label="Command log" aria-live="off"></pre>
+  </div>
+</main>
+</body>
+</html>

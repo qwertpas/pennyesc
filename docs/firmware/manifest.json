@@ -1,0 +1,307 @@
+{
+  "version": 1,
+  "bridges": [
+    {
+      "id": "xiao-esp32s3",
+      "name": "XIAO ESP32-S3",
+      "chip": "ESP32-S3",
+      "flashSize": "8MB",
+      "rx": 7,
+      "tx": 44,
+      "gnd": -1,
+      "inputPins": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        43,
+        44
+      ],
+      "outputPins": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        43,
+        44
+      ],
+      "groundPins": [
+        1,
+        2,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        43,
+        44
+      ],
+      "flash": [
+        {
+          "path": "xiao-esp32s3/bootloader.bin",
+          "address": 0,
+          "bytes": 20224,
+          "sha256": "f0733191bf618ec796115ecc378b5311264723f3d0a3650fd098e386ffd6531b"
+        },
+        {
+          "path": "xiao-esp32s3/partitions.bin",
+          "address": 32768,
+          "bytes": 3072,
+          "sha256": "148b959cbff1c38aa8e1d5c0ba9d612c54997b945e56a63f41223eef650653a1"
+        },
+        {
+          "path": "xiao-esp32s3/boot_app0.bin",
+          "address": 57344,
+          "bytes": 8192,
+          "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
+        },
+        {
+          "path": "xiao-esp32s3/firmware.bin",
+          "address": 65536,
+          "bytes": 363200,
+          "sha256": "cae25714bc1ce9971c11d0bd7035ec53d7c4b98a313e81bcf708cd6578188a7f"
+        }
+      ]
+    },
+    {
+      "id": "qtpy-esp32s3",
+      "name": "ESP32S3 SuperMini",
+      "chip": "ESP32-S3",
+      "flashSize": "4MB",
+      "rx": 13,
+      "tx": 12,
+      "gnd": -1,
+      "inputPins": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        21,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48
+      ],
+      "outputPins": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        21,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48
+      ],
+      "groundPins": [
+        1,
+        2,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        21,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        47,
+        48
+      ],
+      "flash": [
+        {
+          "path": "qtpy-esp32s3/bootloader.bin",
+          "address": 0,
+          "bytes": 20224,
+          "sha256": "fa943b78d627d72e228d607cf1b99ea794fab1ce1bcbaae65d95a8b0ccc47e67"
+        },
+        {
+          "path": "qtpy-esp32s3/partitions.bin",
+          "address": 32768,
+          "bytes": 3072,
+          "sha256": "148b959cbff1c38aa8e1d5c0ba9d612c54997b945e56a63f41223eef650653a1"
+        },
+        {
+          "path": "qtpy-esp32s3/boot_app0.bin",
+          "address": 57344,
+          "bytes": 8192,
+          "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
+        },
+        {
+          "path": "qtpy-esp32s3/firmware.bin",
+          "address": 65536,
+          "bytes": 394032,
+          "sha256": "995434445d172cdc283f7e26f2bef5d4f134f6f001adf0265cabfcb0249e9bb4"
+        }
+      ]
+    },
+    {
+      "id": "esp32-h2",
+      "name": "ESP32-H2",
+      "chip": "ESP32-H2",
+      "flashSize": "4MB",
+      "rx": 0,
+      "tx": 1,
+      "gnd": 2,
+      "inputPins": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        8,
+        9,
+        10,
+        11,
+        12,
+        22,
+        24,
+        25
+      ],
+      "outputPins": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        8,
+        9,
+        10,
+        11,
+        12,
+        22,
+        24,
+        25
+      ],
+      "groundPins": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        10,
+        11,
+        12,
+        22,
+        24
+      ],
+      "flash": [
+        {
+          "path": "esp32-h2/bootloader.bin",
+          "address": 0,
+          "bytes": 20688,
+          "sha256": "a099771e71b918c1381022d58b86640db79246ad19d47c31ec3c674c6e7e8774"
+        },
+        {
+          "path": "esp32-h2/partitions.bin",
+          "address": 32768,
+          "bytes": 3072,
+          "sha256": "148b959cbff1c38aa8e1d5c0ba9d612c54997b945e56a63f41223eef650653a1"
+        },
+        {
+          "path": "esp32-h2/boot_app0.bin",
+          "address": 57344,
+          "bytes": 8192,
+          "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"
+        },
+        {
+          "path": "esp32-h2/firmware.bin",
+          "address": 65536,
+          "bytes": 373872,
+          "sha256": "1c87a6884416249637c3d4a283363e4c40c68122b4015058d6ba851a2c12c7be"
+        }
+      ]
+    }
+  ],
+  "pennyesc": {
+    "path": "pennyesc.bin",
+    "address": 134219136,
+    "bytes": 13428,
+    "sha256": "e4fa58258c1a7bb1180ffd7a0cece17e7d03a2237b7d36edfe090207dbaf9224",
+    "name": "pennyesc",
+    "escAddress": 1,
+    "maxBytes": 14336,
+    "pageBytes": 128
+  }
+}

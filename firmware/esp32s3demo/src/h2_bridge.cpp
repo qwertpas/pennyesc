@@ -9,10 +9,8 @@ static const int GND_PIN = 2;
 
 void setup()
 {
-    pinMode(GND_PIN, OUTPUT);
-    digitalWrite(GND_PIN, LOW);
     Serial.begin(115200);
-    bridge.begin(Serial, Serial1, RX_PIN, TX_PIN);
+    bridge.begin(Serial, Serial1, RX_PIN, TX_PIN, 1, GND_PIN);
 }
 
 void loop()

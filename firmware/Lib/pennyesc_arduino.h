@@ -3,6 +3,8 @@
 
 #include <Arduino.h>
 #include <driver/gpio.h>
+#include <Preferences.h>
+#include <stdio.h>
 #include <string.h>
 #include "pennyesc_protocol.h"
 
@@ -486,10 +488,11 @@ public:
         HardwareSerial &uart = Serial1,
         int rx = 12,
         int tx = 13,
-        uint8_t address = 1
+        uint8_t address = 1,
+        int gnd = -1
     )
     {
-        beginMode(usb, uart, rx, tx, address, false, false);
+        beginMode(usb, uart, rx, tx, address, gnd, false, false);
     }
 
     void beginBackground(
@@ -497,18 +500,17 @@ public:
         HardwareSerial &uart = Serial1,
         int rx = 12,
         int tx = 13,
-        uint8_t address = 1
+        uint8_t address = 1,
+        int gnd = -1
     )
     {
-        beginMode(usb, uart, rx, tx, address, true, true);
+        beginMode(usb, uart, rx, tx, address, gnd, true, true);
     }
 
     bool poll()
     {
         if (bridge_mode_ == ModeShell) {
             return shellPoll();
-        } else if (bridge_mode_ == ModeUpload) {
-            rawBridgePoll();
         } else {
             bridgePoll();
         }
@@ -522,6 +524,7 @@ protected:
         int rx,
         int tx,
         uint8_t address,
+        int gnd,
         bool background,
         bool prefix_only
     )
@@ -530,6 +533,27 @@ protected:
         uart_ = &uart;
         rx_ = rx;
         tx_ = tx;
+        gnd_ = gnd;
+        default_rx_ = rx;
+        default_tx_ = tx;
+        default_gnd_ = gnd;
+        Preferences settings;
+        if (settings.begin("pennyesc", true)) {
+            uint32_t pins = settings.getUInt("pins", packPins(rx, tx, gnd));
+            settings.end();
+            int saved_rx = (int)(pins & 0xffu) - 1;
+            int saved_tx = (int)((pins >> 8) & 0xffu) - 1;
+            int saved_gnd = (int)((pins >> 16) & 0xffu) - 1;
+            if (validPins(saved_rx, saved_tx, saved_gnd)) {
+                rx_ = saved_rx;
+                tx_ = saved_tx;
+                gnd_ = saved_gnd;
+            }
+        }
+        if (gnd_ >= 0) {
+            digitalWrite(gnd_, LOW);
+            pinMode(gnd_, OUTPUT);
+        }
         prefix_only_ = prefix_only;
         setAddress(address);
         beginApp();
@@ -594,7 +618,129 @@ protected:
 
     virtual void printHelp()
     {
-        usb_->println("commands: help ping e<addr> s d<duty> bridge app bridge handoff bridge upload bridge rom bridge off");
+        usb_->println("commands: help ping pins [RX TX GND|default] e<addr> s d<duty> bridge app bridge handoff bridge upload bridge rom bridge off");
+    }
+
+    static const char *boardName()
+    {
+#if defined(ARDUINO_XIAO_ESP32S3)
+        return "xiao-esp32s3";
+#elif defined(ARDUINO_ADAFRUIT_QTPY_ESP32S3_N4R2)
+        return "qtpy-esp32s3";
+#elif defined(CONFIG_IDF_TARGET_ESP32H2)
+        return "esp32-h2";
+#else
+        return ARDUINO_BOARD;
+#endif
+    }
+
+    static bool validPin(int pin, bool output)
+    {
+        if (pin < 0 || !GPIO_IS_VALID_GPIO(pin) || (output && !GPIO_IS_VALID_OUTPUT_GPIO(pin))) {
+            return false;
+        }
+#if defined(ARDUINO_XIAO_ESP32S3)
+        return (pin >= 1 && pin <= 9) || pin == 43 || pin == 44;
+#elif defined(CONFIG_IDF_TARGET_ESP32H2)
+        // Reserve native USB, flash, the crystal and the USB-UART receive line.
+        return pin <= 5 || (pin >= 8 && pin <= 12) || pin == 22 || pin == 24 || pin == 25;
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+        // Keep native USB, flash and PSRAM pins available to their peripherals.
+        return pin <= 18 || pin == 21 || pin >= 35;
+#else
+        return false;
+#endif
+    }
+
+    static bool validPins(int rx, int tx, int gnd)
+    {
+        return validPin(rx, false) && validPin(tx, true)
+            && (gnd == -1 || validGround(gnd))
+            && rx != tx && rx != gnd && tx != gnd;
+    }
+
+    static bool validGround(int pin)
+    {
+        if (!validPin(pin, true)) return false;
+        // The external ground wire also holds this pin low during reset.
+#if defined(CONFIG_IDF_TARGET_ESP32H2)
+        return pin != 8 && pin != 9 && pin != 25;
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+        return pin != 0 && pin != 3 && pin != 45 && pin != 46;
+#else
+        return false;
+#endif
+    }
+
+    static uint32_t packPins(int rx, int tx, int gnd)
+    {
+        return (uint32_t)(rx + 1) | ((uint32_t)(tx + 1) << 8) | ((uint32_t)(gnd + 1) << 16);
+    }
+
+    void printPins()
+    {
+        usb_->print("# pins board=");
+        usb_->print(boardName());
+        usb_->print(" rx=");
+        usb_->print(rx_);
+        usb_->print(" tx=");
+        usb_->print(tx_);
+        usb_->print(" gnd=");
+        usb_->print(gnd_);
+        usb_->print(" default_rx=");
+        usb_->print(default_rx_);
+        usb_->print(" default_tx=");
+        usb_->print(default_tx_);
+        usb_->print(" default_gnd=");
+        usb_->print(default_gnd_);
+        for (int kind = 0; kind < 3; kind++) {
+            usb_->print(kind == 0 ? " input=" : kind == 1 ? " output=" : " ground=");
+            bool comma = false;
+            for (int pin = 0; pin < SOC_GPIO_PIN_COUNT; pin++) {
+                if (kind == 2 ? validGround(pin) : validPin(pin, kind != 0)) {
+                    if (comma) usb_->print(',');
+                    usb_->print(pin);
+                    comma = true;
+                }
+            }
+        }
+        usb_->println();
+    }
+
+    void changePins(int rx, int tx, int gnd)
+    {
+        if (!validPins(rx, tx, gnd)) {
+            usb_->println("# pins error=invalid");
+            return;
+        }
+        Preferences settings;
+        if (!settings.begin("pennyesc", false)) {
+            usb_->println("# pins error=save");
+            return;
+        }
+        size_t saved = settings.putUInt("pins", packPins(rx, tx, gnd));
+        settings.end();
+        if (saved != sizeof(uint32_t)) {
+            usb_->println("# pins error=save");
+            return;
+        }
+        uart().flush();
+        uart().end();
+        pinMode(rx_, INPUT);
+        pinMode(tx_, INPUT);
+        if (gnd_ >= 0) pinMode(gnd_, INPUT);
+        rx_ = rx;
+        tx_ = tx;
+        gnd_ = gnd;
+        if (gnd_ >= 0) {
+            digitalWrite(gnd_, LOW);
+            pinMode(gnd_, OUTPUT);
+        }
+        esc_.begin(uart(), rx_, tx_);
+        esc_.clearRx();
+        if (bridge_mode_ == ModeUpload) beginBoot();
+        if (bridge_mode_ == ModeRom) beginRom();
+        printPins();
     }
 
     virtual bool handleDebugLine(const char *line)
@@ -686,6 +832,24 @@ protected:
         }
         if (strcmp(line, "ping") == 0) {
             usb_->println("pong");
+            return;
+        }
+        if (strcmp(line, "pins") == 0) {
+            printPins();
+            return;
+        }
+        if (strcmp(line, "pins default") == 0) {
+            changePins(default_rx_, default_tx_, default_gnd_);
+            return;
+        }
+        if (strncmp(line, "pins ", 5) == 0) {
+            int rx, tx, gnd;
+            char extra;
+            if (sscanf(line + 5, "%d %d %d %c", &rx, &tx, &gnd, &extra) != 3) {
+                usb_->println("# pins error=invalid");
+            } else {
+                changePins(rx, tx, gnd);
+            }
             return;
         }
         if (line[0] == 'e') {
@@ -798,7 +962,17 @@ protected:
         if (line_len_ < 2u || line_buf_[0] != '!' || line_buf_[1] != '#') {
             return false;
         }
-        handleLine(line_buf_ + 2u);
+        const char *line = line_buf_ + 2u;
+        bool carriage_return = line_len_ > 2u && line_buf_[line_len_ - 1u] == '\r';
+        if (carriage_return) line_buf_[line_len_ - 1u] = '\0';
+        if (bridge_mode_ == ModeUpload && strcmp(line, "ping") != 0 && strcmp(line, "pins") != 0
+            && strncmp(line, "pins ", 5) != 0 && strcmp(line, "bridge app") != 0
+            && strcmp(line, "bridge handoff") != 0 && strcmp(line, "bridge upload") != 0
+            && strcmp(line, "bridge rom") != 0 && strcmp(line, "bridge off") != 0) {
+            if (carriage_return) line_buf_[line_len_ - 1u] = '\r';
+            return false;
+        }
+        handleLine(line);
         return true;
     }
 
@@ -832,9 +1006,6 @@ protected:
                 continue;
             }
 
-            if (ch == '\r') {
-                continue;
-            }
             if (ch == '\n') {
                 if (!handleBridgeEscape()) {
                     flushBridgeEscape();
@@ -847,7 +1018,7 @@ protected:
                 line_len_ = 0u;
                 continue;
             }
-            if (ch >= 0x20 && ch <= 0x7E && line_len_ + 1u < sizeof(line_buf_)) {
+            if (((ch >= 0x20 && ch <= 0x7E) || ch == '\r') && line_len_ + 1u < sizeof(line_buf_)) {
                 line_buf_[line_len_++] = ch;
                 bridge_escape_ms_ = millis();
                 continue;
@@ -873,19 +1044,6 @@ protected:
         }
     }
 
-    void rawBridgePoll()
-    {
-        while (usb_->available() > 0) {
-            uint8_t byte = (uint8_t)usb_->read();
-            uart().write(&byte, 1u);
-        }
-
-        while (uart().available() > 0) {
-            uint8_t byte = (uint8_t)uart().read();
-            usb_->write(&byte, 1u);
-        }
-    }
-
     HardwareSerial &uart() const { return *uart_; }
 
     Stream *usb_ = &Serial;
@@ -893,6 +1051,10 @@ protected:
     PennyEsc esc_;
     int rx_ = 12;
     int tx_ = 13;
+    int gnd_ = -1;
+    int default_rx_ = 12;
+    int default_tx_ = 13;
+    int default_gnd_ = -1;
     uint8_t address_ = 1u;
     BridgeMode bridge_mode_ = ModeShell;
     bool prefix_only_ = true;

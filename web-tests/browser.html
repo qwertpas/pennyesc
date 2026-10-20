@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>penny-gui browser test</title></head>
+<body>
+<script type="module">
+  import {installDevice} from './browser-device.js';
+  await installDevice();
+  const response = await fetch('../docs/index.html');
+  if (!response.ok) throw new Error('Could not load penny-gui');
+  const html = (await response.text()).replace('<head>', '<head><base href="/docs/">');
+  document.open();
+  document.write(html);
+  document.close();
+</script>
+</body>
+</html>
