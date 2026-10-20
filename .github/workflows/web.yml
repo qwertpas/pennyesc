@@ -1,5 +1,6 @@
 name: Browser checks
 on:
+  workflow_dispatch:
   push:
     paths: ['docs/**', 'web-tests/**', 'firmware/Lib/**', 'firmware/tools/tests/test_bridge.py', '.github/workflows/web.yml']
   pull_request:
