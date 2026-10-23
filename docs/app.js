@@ -149,7 +149,13 @@ function selectPins(info = board()) {
 }
 
 async function readPins() {
-  const response = await connection.shell('pins', {expected: line => line.startsWith('# pins ')});
+  let response;
+  try {
+    response = await connection.shell('pins', {expected: line => line.startsWith('# pins ')});
+  } catch (error) {
+    if (error.message === 'err') throw new Error('Update bridge firmware: Firmware → select board → Flash bridge.');
+    throw error;
+  }
   const fields = Object.fromEntries([...response.matchAll(/(\w+)=([^\s]+)/g)].map(m => [m[1], m[2]]));
   connectedBoard = manifest.bridges.find(item => item.id === fields.board);
   if (!connectedBoard) throw new Error(`Unknown bridge board: ${fields.board}`);
