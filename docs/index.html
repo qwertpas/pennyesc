@@ -27,7 +27,7 @@
   <div class="tabs" role="tablist" aria-label="Views">
     <button id="tab-telemetry" role="tab" aria-selected="true" aria-controls="telemetry">Telemetry</button>
     <button id="tab-calibration" role="tab" aria-selected="false" aria-controls="calibration">Calibration</button>
-    <button id="tab-aux" role="tab" aria-selected="false" aria-controls="aux">Aux</button>
+    <button id="tab-aux" role="tab" aria-selected="false" aria-controls="aux">PWM</button>
     <button id="tab-summary" role="tab" aria-selected="false" aria-controls="summary">Session</button>
     <button id="tab-firmware" role="tab" aria-selected="false" aria-controls="firmware">Firmware</button>
   </div>
@@ -67,12 +67,10 @@
       <div class="tools">
         <label>Pin <select id="aux-pin" aria-label="PWM GPIO"></select></label>
         <label>Pulse <input id="aux-pulse" type="number" min="1000" max="2000" step="1" value="1500" required> µs</label>
-        <label><input id="aux-output" type="checkbox" data-connected> Output</label>
         <output id="aux-state">Off</output>
       </div>
       <input id="aux-slider" type="range" min="1000" max="2000" step="1" value="1500" aria-label="PWM pulse width">
       <div id="aux-presets" class="tools" aria-label="PWM presets"></div>
-      <label><input id="aux-keys" type="checkbox"> Key control (1–9)</label>
     </fieldset>
   </section>
   <section id="summary" role="tabpanel" aria-labelledby="tab-summary" hidden>
@@ -105,11 +103,12 @@
     <form id="control-form" class="tools">
       <div class="tools drive-row">
       <label>Mode <select id="mode"><option value="duty">Duty</option><option value="pos">Position</option><option value="vel">Velocity</option></select></label>
-      <label><span id="target-label">Duty</span> <input id="target" type="number" step="1" min="-799" max="799" value="0" required></label>
+      <label><span id="target-label">Duty</span> <input id="target" type="number" step="1" min="-799" max="799" value="100" required></label>
       <select id="target-unit" aria-label="Target unit"><option value="duty">duty</option></select><span id="target-unit-text">duty</span>
       <button id="set-target" type="button" data-connected>Set</button>
       <button id="zero" type="button" data-connected>Zero</button>
       <label class="key-control"><input id="key-control" type="checkbox" title="Hold − or +; release to stop"> Key control (− / +)</label>
+      <label><input id="aux-output" type="checkbox" data-connected> PWM output (1-9)</label>
       </div>
       <div class="tools gains-row">
       <label>kp <input id="kp" type="number" step="any" min="-128" max="127.996" value="0" required></label>

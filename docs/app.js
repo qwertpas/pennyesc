@@ -17,7 +17,6 @@ let client, telemetry, manifest, session, raw = [], reduced = [], solved;
 let control = defaultControl(), busy = false, paused = false, dirty = true;
 let currentMode = 'duty';
 let connectedBoard;
-$('aux-keys').checked = localStorage.getItem('penny-aux-keys') === 'true';
 const keys = new DutyKeys({
   value: () => Math.abs(Number($('target').value)),
   async send(duty) {
@@ -66,7 +65,7 @@ function state() {
   $('address').disabled = busy;
   $('board').disabled = busy;
   $('send').disabled = busy;
-  for (const id of ['mode','kp','kd','kv','kf','clip','target','target-unit','rx','tx','gnd','default-pins','esc-image','verify-address','firmware-file','aux-keys']) $(id).disabled = busy;
+  for (const id of ['mode','kp','kd','kv','kf','clip','target','target-unit','rx','tx','gnd','default-pins','esc-image','verify-address','firmware-file']) $(id).disabled = busy;
   const unused = $('mode').value === 'duty' ? ['kp','kd','kv','kf'] : $('mode').value === 'pos' ? ['kv'] : ['kp'];
   for (const id of ['kp','kd','kv','kf']) {
     $(id).disabled = busy || unused.includes(id);
@@ -312,7 +311,7 @@ $('key-control').onchange = () => {
 };
 window.addEventListener('keydown', event => {
   keys.keyDown(event);
-  if (!$('aux-keys').checked || busy || !connection.connected) return;
+  if (!$('aux-output').checked || busy || !connection.connected) return;
   const pulse = auxPulse(event);
   if (pulse === undefined) return;
   event.preventDefault();
@@ -322,7 +321,6 @@ window.addEventListener('keyup', event => keys.keyUp(event));
 window.addEventListener('blur', () => { void keys.release(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) void keys.release(); });
 $('target').addEventListener('input', () => { void keys.release(); });
-$('aux-keys').onchange = () => localStorage.setItem('penny-aux-keys', $('aux-keys').checked);
 for (const id of ['aux-pin','aux-pulse','aux-slider','aux-output']) $(id).setAttribute('data-connected', '');
 for (let key = 1; key <= 9; key++) {
   const pulse = 1000 + (key - 1) * 125;
