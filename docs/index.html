@@ -26,6 +26,7 @@
   <div class="tabs" role="tablist" aria-label="Views">
     <button id="tab-telemetry" role="tab" aria-selected="true" aria-controls="telemetry">Telemetry</button>
     <button id="tab-calibration" role="tab" aria-selected="false" aria-controls="calibration">Calibration</button>
+    <button id="tab-aux" role="tab" aria-selected="false" aria-controls="aux">Aux</button>
     <button id="tab-summary" role="tab" aria-selected="false" aria-controls="summary">Session</button>
     <button id="tab-firmware" role="tab" aria-selected="false" aria-controls="firmware">Firmware</button>
   </div>
@@ -59,6 +60,19 @@
       <div id="field-step" class="plot" aria-label="Magnetic field versus step plot"></div>
       <div id="residual" class="plot" aria-label="Residual error plot"></div>
     </div>
+  </section>
+  <section id="aux" role="tabpanel" aria-labelledby="tab-aux" hidden>
+    <fieldset><legend>PWM · 200 Hz</legend>
+      <div class="tools">
+        <label>Pin <select id="aux-pin" aria-label="PWM GPIO"></select></label>
+        <label>Pulse <input id="aux-pulse" type="number" min="1000" max="2000" step="1" value="1500" required> µs</label>
+        <label><input id="aux-output" type="checkbox" data-connected> Output</label>
+        <output id="aux-state">Off</output>
+      </div>
+      <input id="aux-slider" type="range" min="1000" max="2000" step="1" value="1500" aria-label="PWM pulse width">
+      <div id="aux-presets" class="tools" aria-label="PWM presets"></div>
+      <label><input id="aux-keys" type="checkbox"> Key control (1–9)</label>
+    </fieldset>
   </section>
   <section id="summary" role="tabpanel" aria-labelledby="tab-summary" hidden>
     <div class="tools"><output id="session-state">No session</output><span class="spacer"></span><button id="export-session" disabled>Export session</button></div>

@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <driver/gpio.h>
+#include <driver/ledc.h>
 #include <Preferences.h>
 #include <stdio.h>
 #include <string.h>
@@ -618,7 +619,7 @@ protected:
 
     virtual void printHelp()
     {
-        usb_->println("commands: help ping pins [RX TX GND|default] e<addr> s d<duty> bridge app bridge handoff bridge upload bridge rom bridge off");
+        usb_->println("commands: help ping pins [RX TX GND|default] aux [PIN PULSE_US|off] e<addr> s d<duty> bridge app bridge handoff bridge upload bridge rom bridge off");
     }
 
     static const char *boardName()
@@ -709,7 +710,7 @@ protected:
 
     void changePins(int rx, int tx, int gnd)
     {
-        if (!validPins(rx, tx, gnd)) {
+        if (!validPins(rx, tx, gnd) || (aux_enabled_ && (aux_pin_ == rx || aux_pin_ == tx || aux_pin_ == gnd))) {
             usb_->println("# pins error=invalid");
             return;
         }
@@ -741,6 +742,65 @@ protected:
         if (bridge_mode_ == ModeUpload) beginBoot();
         if (bridge_mode_ == ModeRom) beginRom();
         printPins();
+    }
+
+    void printAux()
+    {
+        usb_->print("# aux pin=");
+        usb_->print(aux_pin_);
+        usb_->print(" pulse=");
+        usb_->print(aux_pulse_);
+        usb_->print(" hz=");
+        usb_->print(aux_enabled_ ? ledc_get_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0) : 200);
+        usb_->print(" enabled=");
+        usb_->println(aux_enabled_ ? 1 : 0);
+    }
+
+    void stopAux()
+    {
+        if (!aux_enabled_) return;
+        ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+        pinMode(aux_pin_, INPUT);
+        aux_enabled_ = false;
+    }
+
+    void setAux(int pin, int pulse)
+    {
+        if (!validPin(pin, true) || pin == rx_ || pin == tx_ || pin == gnd_ || pulse < 1000 || pulse > 2000) {
+            usb_->println("# aux error=invalid");
+            return;
+        }
+        // Native LEDC works with both Arduino cores used by the bridge boards.
+        const uint32_t duty = (uint32_t)pulse * (1u << 14) / 5000u;
+        if (!aux_enabled_ || pin != aux_pin_) {
+            stopAux();
+            ledc_timer_config_t timer = {};
+            timer.speed_mode = LEDC_LOW_SPEED_MODE;
+            timer.duty_resolution = LEDC_TIMER_14_BIT;
+            timer.timer_num = LEDC_TIMER_0;
+            timer.freq_hz = 200;
+            timer.clk_cfg = LEDC_AUTO_CLK;
+            ledc_channel_config_t channel = {};
+            channel.gpio_num = pin;
+            channel.speed_mode = LEDC_LOW_SPEED_MODE;
+            channel.channel = LEDC_CHANNEL_0;
+            channel.timer_sel = LEDC_TIMER_0;
+            channel.duty = duty;
+            if (ledc_timer_config(&timer) != ESP_OK || ledc_channel_config(&channel) != ESP_OK) {
+                pinMode(pin, INPUT);
+                usb_->println("# aux error=pwm");
+                return;
+            }
+        } else if (ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty) != ESP_OK
+                   || ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0) != ESP_OK) {
+            stopAux();
+            usb_->println("# aux error=pwm");
+            return;
+        }
+        aux_pin_ = pin;
+        aux_pulse_ = pulse;
+        aux_enabled_ = true;
+        printAux();
     }
 
     virtual bool handleDebugLine(const char *line)
@@ -832,6 +892,25 @@ protected:
         }
         if (strcmp(line, "ping") == 0) {
             usb_->println("pong");
+            return;
+        }
+        if (strcmp(line, "aux") == 0) {
+            printAux();
+            return;
+        }
+        if (strcmp(line, "aux off") == 0) {
+            stopAux();
+            printAux();
+            return;
+        }
+        if (strncmp(line, "aux ", 4) == 0) {
+            int pin, pulse;
+            char extra;
+            if (sscanf(line + 4, "%d %d %c", &pin, &pulse, &extra) != 2) {
+                usb_->println("# aux error=invalid");
+            } else {
+                setAux(pin, pulse);
+            }
             return;
         }
         if (strcmp(line, "pins") == 0) {
@@ -1055,6 +1134,9 @@ protected:
     int default_rx_ = 12;
     int default_tx_ = 13;
     int default_gnd_ = -1;
+    int aux_pin_ = 11;
+    int aux_pulse_ = 1500;
+    bool aux_enabled_ = false;
     uint8_t address_ = 1u;
     BridgeMode bridge_mode_ = ModeShell;
     bool prefix_only_ = true;

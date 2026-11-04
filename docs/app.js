@@ -6,7 +6,7 @@ import {flashBridge, flashEsc} from './flash.js';
 import {LiveData, Telemetry} from './telemetry.js';
 import {defaultControl, controlText, checkResult, runCommand} from './commands.js';
 import {Plot} from './plots.js';
-import {DutyKeys} from './keyboard.js';
+import {DutyKeys, auxPulse} from './keyboard.js';
 
 const $ = id => document.getElementById(id);
 const connection = new SerialConnection();
@@ -15,6 +15,7 @@ let client, telemetry, manifest, session, raw = [], reduced = [], solved;
 let control = defaultControl(), busy = false, paused = false, dirty = true;
 let currentMode = 'duty';
 let connectedBoard;
+$('aux-keys').checked = localStorage.getItem('penny-aux-keys') === 'true';
 const keys = new DutyKeys({
   value: () => Math.abs(Number($('target').value)),
   async send(duty) {
@@ -61,7 +62,7 @@ function state() {
   $('address').disabled = busy;
   $('board').disabled = busy;
   $('send').disabled = busy;
-  for (const id of ['mode','kp','kd','kv','kf','clip','target','target-unit','rx','tx','gnd','default-pins','esc-image','verify-address','firmware-file']) $(id).disabled = busy;
+  for (const id of ['mode','kp','kd','kv','kf','clip','target','target-unit','rx','tx','gnd','default-pins','esc-image','verify-address','firmware-file','aux-keys']) $(id).disabled = busy;
   const unused = $('mode').value === 'duty' ? ['kp','kd','kv','kf'] : $('mode').value === 'pos' ? ['kv'] : ['kp'];
   for (const id of ['kp','kd','kv','kf']) {
     $(id).disabled = busy || unused.includes(id);
@@ -146,6 +147,40 @@ function selectPins(info = board()) {
     $(id).replaceChildren(...values.map(pin => new Option(pin === -1 ? 'GND' : `GPIO ${pin}`, pin)));
     $(id).value = String(info[id]);
   }
+  if (!connection.connected) selectAuxPins(info);
+}
+
+function selectAuxPins(info) {
+  const previous = Number($('aux-pin').value || 11);
+  const pins = info.outputPins.filter(pin => ![info.rx, info.tx, info.gnd].includes(pin));
+  $('aux-pin').replaceChildren(...pins.map(pin => new Option(`GPIO ${pin}`, pin)));
+  $('aux-pin').value = String(pins.includes(previous) ? previous : pins.includes(11) ? 11 : pins[0]);
+}
+
+function showAux(response) {
+  const fields = Object.fromEntries([...response.matchAll(/(\w+)=([^\s]+)/g)].map(m => [m[1], Number(m[2])]));
+  $('aux-output').checked = fields.enabled === 1;
+  if (fields.enabled) {
+    $('aux-pin').value = String(fields.pin);
+    $('aux-pulse').value = $('aux-slider').value = fields.pulse;
+  }
+  $('aux-state').value = fields.enabled ? `${fields.pulse} µs · GPIO ${fields.pin}` : 'Off';
+}
+
+async function auxCommand(command) {
+  try {
+    showAux(await connection.shell(command, {expected: line => line.startsWith('# aux ')}));
+  } catch (error) {
+    message(error.message, true); log(error.message);
+  }
+}
+
+function setAuxPulse(pulse, enable = false) {
+  if (!Number.isInteger(pulse) || pulse < 1000 || pulse > 2000) return;
+  $('aux-pulse').value = $('aux-slider').value = pulse;
+  if (!busy && connection.connected && (enable || $('aux-output').checked)) {
+    void auxCommand(`aux ${$('aux-pin').value} ${pulse}`);
+  }
 }
 
 async function readPins() {
@@ -160,7 +195,9 @@ async function readPins() {
   connectedBoard = manifest.bridges.find(item => item.id === fields.board);
   if (!connectedBoard) throw new Error(`Unknown bridge board: ${fields.board}`);
   $('board').value = connectedBoard.id;
-  selectPins({...connectedBoard, rx: Number(fields.rx), tx: Number(fields.tx), gnd: Number(fields.gnd)});
+  const info = {...connectedBoard, rx: Number(fields.rx), tx: Number(fields.tx), gnd: Number(fields.gnd)};
+  selectPins(info);
+  selectAuxPins(info);
 }
 
 async function scan() {
@@ -186,13 +223,17 @@ async function scan() {
 
 $('connect').onclick = () => operation(async () => {
   if (connection.connected) {
-    try { await connection.mode('off'); }
+    try {
+      showAux(await connection.shell('aux off', {expected: line => line.startsWith('# aux ')}));
+      await connection.mode('off');
+    }
     finally { await connection.disconnect(); client = null; connectedBoard = null; }
     $('motor').textContent = '—'; setRate(0);
   } else {
     try {
       await connection.connect();
       await readPins();
+      showAux(await connection.shell('aux', {expected: line => line.startsWith('# aux ')}));
       await connection.mode('app');
       paused = false;
     } catch (error) {
@@ -205,6 +246,8 @@ $('connect').onclick = () => operation(async () => {
 connection.addEventListener('disconnect', event => {
   $('key-control').checked = false;
   void keys.disable();
+  $('aux-output').checked = false;
+  $('aux-state').value = 'Disconnected';
   client = null; connectedBoard = null; paused = true; setRate(0);
   message(event.error?.message ?? 'Serial port disconnected', true);
   void operation(() => connection.disconnect(), {resume: false});
@@ -257,11 +300,40 @@ $('key-control').onchange = () => {
   if (!$('key-control').checked) void keys.disable();
   state();
 };
-window.addEventListener('keydown', event => keys.keyDown(event));
+window.addEventListener('keydown', event => {
+  keys.keyDown(event);
+  if (!$('aux-keys').checked || busy || !connection.connected) return;
+  const pulse = auxPulse(event);
+  if (pulse === undefined) return;
+  event.preventDefault();
+  setAuxPulse(pulse, true);
+});
 window.addEventListener('keyup', event => keys.keyUp(event));
 window.addEventListener('blur', () => { void keys.release(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) void keys.release(); });
 $('target').addEventListener('input', () => { void keys.release(); });
+$('aux-keys').onchange = () => localStorage.setItem('penny-aux-keys', $('aux-keys').checked);
+for (const id of ['aux-pin','aux-pulse','aux-slider','aux-output']) $(id).setAttribute('data-connected', '');
+for (let key = 1; key <= 9; key++) {
+  const pulse = 1000 + (key - 1) * 125;
+  const button = document.createElement('button');
+  button.textContent = `${key} · ${pulse} µs`;
+  button.setAttribute('data-connected', '');
+  button.onclick = () => setAuxPulse(pulse, true);
+  $('aux-presets').append(button);
+}
+$('aux-output').onchange = () => {
+  if ($('aux-output').checked) {
+    if ($('aux-pulse').reportValidity()) setAuxPulse(Number($('aux-pulse').value), true);
+    else $('aux-output').checked = false;
+  } else void auxCommand('aux off');
+};
+$('aux-pin').onchange = () => setAuxPulse(Number($('aux-pulse').value));
+$('aux-pulse').onchange = () => {
+  if ($('aux-pulse').reportValidity()) setAuxPulse(Number($('aux-pulse').value));
+};
+$('aux-slider').oninput = () => { $('aux-pulse').value = $('aux-slider').value; };
+$('aux-slider').onchange = () => setAuxPulse(Number($('aux-slider').value));
 $('pause').onclick = async () => {
   if (busy) return;
   paused = !paused;
@@ -495,7 +567,7 @@ async function initialize() {
     manifest = await response.json();
     $('board').replaceChildren(...manifest.bridges.map(item => new Option(item.name, item.id)));
     const saved = localStorage.getItem('penny-board');
-    if (manifest.bridges.some(item => item.id === saved)) $('board').value = saved;
+    $('board').value = manifest.bridges.some(item => item.id === saved) ? saved : manifest.defaultBridge;
     $('verify-address').value = manifest.pennyesc.escAddress;
     selectPins(); state();
   } catch (error) { message(error.message, true); }

@@ -205,7 +205,7 @@ export class SerialConnection extends EventTarget {
       const line = await this._readLine(deadline - performance.now());
       if (!line) continue;
       lines.push(line);
-      if (line === 'err' || line.startsWith('# error') || line.startsWith('err ') || line.startsWith('# pins error=')) throw new Error(line);
+      if (line === 'err' || line.startsWith('# error') || line.startsWith('err ') || /^# (pins|aux) error=/.test(line)) throw new Error(line);
       if (expected) {
         if (typeof expected === 'function' ? expected(line) : line === expected) return lines.join('\n');
       } else {

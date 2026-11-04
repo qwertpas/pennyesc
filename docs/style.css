@@ -5,3 +5,5 @@
 .drive-row,.gains-row{width:100%;gap:12px}.drive-row{margin-bottom:3px}.key-control{margin-left:8px}input[type=checkbox]{width:16px;height:16px;min-height:0;accent-color:var(--green);margin:0}.inactive{color:#9aa2af}.inactive input{background:#eceff3;border-color:#e0e4e9;color:#a3aab5}#control-form #target{width:108px}#target-unit-text{color:var(--muted);margin-left:-5px}#control-form #target-unit[hidden]{display:none}input:disabled,select:disabled{cursor:default}
 
 .u-legend .raw .u-marker{border-radius:50%}.u-legend .cross .u-marker{border:0!important;background:none!important;position:relative}.u-legend .cross .u-marker:after{content:"×";position:absolute;font-size:17px;line-height:12px;left:0;top:-1px}.u-legend .circle .u-marker{border-radius:50%;border:0!important;background:currentColor!important}.u-legend .triangle .u-marker{border:0!important;background:currentColor!important;clip-path:polygon(50% 0,100% 100%,0 100%)}
+
+#aux{min-height:432px}#aux fieldset{max-width:950px}#aux-slider{width:100%;padding:0;accent-color:var(--green)}#aux-pulse{width:90px}

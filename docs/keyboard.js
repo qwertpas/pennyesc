@@ -11,6 +11,11 @@ function editing(target) {
     (target?.tagName === 'INPUT' && !['checkbox', 'button', 'submit'].includes(target.type));
 }
 
+export function auxPulse(event) {
+  if (event.repeat || event.ctrlKey || event.metaKey || event.altKey || editing(event.target) || !/^[1-9]$/.test(event.key)) return;
+  return 1000 + (Number(event.key) - 1) * 125;
+}
+
 export class DutyKeys {
   constructor({send, value, onError}) {
     Object.assign(this, {send, value, onError});

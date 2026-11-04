@@ -85,6 +85,31 @@ typedef int gpio_num_t;
 inline void gpio_pullup_en(gpio_num_t) {}
 '''
 
+LEDC = r'''
+#pragma once
+#define ESP_OK 0
+#define LEDC_LOW_SPEED_MODE 0
+#define LEDC_TIMER_14_BIT 14
+#define LEDC_TIMER_0 0
+#define LEDC_CHANNEL_0 0
+#define LEDC_AUTO_CLK 0
+struct ledc_timer_config_t { int speed_mode, duty_resolution, timer_num, freq_hz, clk_cfg; };
+struct ledc_channel_config_t { int gpio_num, speed_mode, channel, timer_sel; uint32_t duty; };
+static int pwm_pin = -1, pwm_hz = 0;
+static uint32_t pwm_duty = 0;
+inline int ledc_timer_config(ledc_timer_config_t *t) {
+    if (t->duty_resolution != 14) return -1;
+    pwm_hz = t->freq_hz; return ESP_OK;
+}
+inline int ledc_channel_config(ledc_channel_config_t *c) {
+    pwm_pin = c->gpio_num; pwm_duty = c->duty; return ESP_OK;
+}
+inline int ledc_set_duty(int, int, uint32_t duty) { pwm_duty = duty; return ESP_OK; }
+inline int ledc_update_duty(int, int) { return ESP_OK; }
+inline int ledc_stop(int, int, int) { pwm_pin = -1; pwm_duty = 0; return ESP_OK; }
+inline uint32_t ledc_get_freq(int, int) { return pwm_hz; }
+'''
+
 CHECK = r'''
 #include <cassert>
 #include "pennyesc_arduino.h"
@@ -101,6 +126,28 @@ int main() {
     send(bridge, usb, "pins\n");
     assert(usb.output.find("# pins board=" BOARD_ID) != std::string::npos);
     fputs(usb.output.c_str(), stdout);
+    usb.output.clear();
+    send(bridge, usb, "aux\n");
+    assert(usb.output == "# aux pin=11 pulse=1500 hz=200 enabled=0\n");
+    send(bridge, usb, "aux 3 1000\n");
+    assert(pwm_pin == 3 && pwm_hz == 200 && pwm_duty == 3276);
+    send(bridge, usb, "aux 3 2000\n");
+    assert(pwm_pin == 3 && pwm_duty == 6553);
+    for (const char *line : {"aux 3 999\n", "aux 3 2001\n", "aux 26 1500\n",
+                            "aux 3 1000x\n", "aux 3 1000 1\n", "pins 3 5 2\n"}) {
+        usb.output.clear();
+        send(bridge, usb, line);
+        assert(usb.output.find("error=invalid") != std::string::npos);
+        assert(pwm_pin == 3 && pwm_duty == 6553 && !stored);
+    }
+    send(bridge, usb, "aux " + std::to_string(DEFAULT_RX) + " 1500\n");
+    assert(pwm_pin == 3 && pwm_duty == 6553);
+    send(bridge, usb, "aux " + std::to_string(DEFAULT_TX) + " 1500\n");
+    assert(pwm_pin == 3 && pwm_duty == 6553);
+    send(bridge, usb, "aux 4 1500\n");
+    assert(pwm_pin == 4 && modes[3] == INPUT && pwm_duty == 4915);
+    send(bridge, usb, "aux off\n");
+    assert(pwm_pin == -1 && modes[4] == INPUT);
     send(bridge, usb, "pins 4 5 2\n");
     assert(uart.rx == 4 && uart.tx == 5 && modes[2] == OUTPUT && stored);
     uint32_t first = saved_pins;
@@ -134,6 +181,11 @@ int main() {
     assert(uart.output == binary + "!#payload\r\n");
     send(restored, usb, "!#bridge handoff\n");
     assert(uart.baud == 921600 && uart.config == SERIAL_8N1);
+    uart.output.clear();
+    send(restored, usb, "!#aux 3 1125\n");
+    assert(pwm_pin == 3 && pwm_duty == 3686 && uart.output.empty());
+    send(restored, usb, "!#aux off\n");
+    assert(pwm_pin == -1 && uart.output.empty());
     send(restored, usb, "!#bridge off\n");
     send(restored, usb, "pins default\n");
     assert(uart.rx == DEFAULT_RX && uart.tx == DEFAULT_TX && uart.baud == 921600);
@@ -145,14 +197,14 @@ class BridgeTests(unittest.TestCase):
     def test_shell_pins_and_binary_upload(self):
         boards = [
             ("ARDUINO_XIAO_ESP32S3", "CONFIG_IDF_TARGET_ESP32S3", "xiao-esp32s3", 7, 44, -1, 3),
-            ("ARDUINO_ADAFRUIT_QTPY_ESP32S3_N4R2", "CONFIG_IDF_TARGET_ESP32S3", "qtpy-esp32s3", 13, 12, -1, 0),
+            ("ARDUINO_ADAFRUIT_QTPY_ESP32S3_N4R2", "CONFIG_IDF_TARGET_ESP32S3", "qtpy-esp32s3", 12, 13, -1, 0),
             ("TEST_H2", "CONFIG_IDF_TARGET_ESP32H2", "esp32-h2", 0, 1, 2, 9),
         ]
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             (folder / "driver").mkdir()
             for name, source in [("Arduino.h", ARDUINO), ("Preferences.h", PREFERENCES),
-                                 ("driver/gpio.h", GPIO), ("check.cpp", CHECK)]:
+                                 ("driver/gpio.h", GPIO), ("driver/ledc.h", LEDC), ("check.cpp", CHECK)]:
                 (folder / name).write_text(source)
             for board, chip, name, rx, tx, gnd, strap in boards:
                 with self.subTest(board=name):

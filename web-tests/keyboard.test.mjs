@@ -1,8 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {DutyKeys} from '../docs/keyboard.js';
+import {DutyKeys, auxPulse} from '../docs/keyboard.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('Aux number keys span 1000–2000 µs without intercepting duty keys or text editing', () => {
+  assert.deepEqual(Array.from({length: 9}, (_, i) => auxPulse(event(String(i + 1)))),
+    [1000, 1125, 1250, 1375, 1500, 1625, 1750, 1875, 2000]);
+  for (const key of ['0', '-', '+', 'a']) assert.equal(auxPulse(event(key)), undefined);
+  for (const option of ['repeat', 'ctrlKey', 'metaKey', 'altKey']) {
+    assert.equal(auxPulse(event('9', {[option]: true})), undefined);
+  }
+  for (const field of [target('INPUT', 'number'), target('INPUT', 'text'), target('SELECT'), target('TEXTAREA'), target('DIV', '', true)]) {
+    assert.equal(auxPulse(event('9', {target: field})), undefined);
+  }
+  assert.equal(auxPulse(event('5', {code: 'Numpad5', target: target('INPUT', 'checkbox')})), 1500);
+});
 const target = (tagName = 'BUTTON', type = '', editable = false) => ({tagName, type,
   isContentEditable: editable, closest: () => ['TEXTAREA', 'SELECT'].includes(tagName) || editable});
 function event(key, options = {}) {

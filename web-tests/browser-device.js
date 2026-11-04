@@ -12,6 +12,7 @@ export class BrowserDevice {
     this.blob = Uint8Array.from(entry.solved.blob.match(/../g), pair => parseInt(pair, 16));
     this.board = 'xiao-esp32s3';
     this.pins = [7, 44, -1];
+    this.aux = {pin: 11, pulse: 1500, enabled: 0};
     this.mode = 'off';
     this.address = 1;
     this.sample = 0;
@@ -51,6 +52,15 @@ export class BrowserDevice {
     const command = decoder.decode(bytes).trim().replace(/^!#/, '');
     if (command === 'ping') return encoder.encode('pong\n');
     if (command === 'pins') return encoder.encode(this.pinsText());
+    if (command === 'aux' || command === 'aux off' || command.startsWith('aux ')) {
+      if (command === 'aux off') this.aux.enabled = 0;
+      else if (command !== 'aux') {
+        const [pin, pulse] = command.slice(4).split(/\s+/).map(Number);
+        if (this.pins.includes(pin) || pulse < 1000 || pulse > 2000) return encoder.encode('# aux error=invalid\n');
+        this.aux = {pin, pulse, enabled: 1};
+      }
+      return encoder.encode(`# aux pin=${this.aux.pin} pulse=${this.aux.pulse} hz=200 enabled=${this.aux.enabled}\n`);
+    }
     if (command.startsWith('pins ')) {
       const pins = command.slice(5).split(/\s+/).map(Number);
       if (pins.length !== 3 || pins.some(pin => !Number.isInteger(pin))) return encoder.encode('err pins\n');

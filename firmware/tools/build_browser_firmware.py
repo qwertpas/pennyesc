@@ -16,7 +16,7 @@ S3_PINS = [*range(19), 21, *range(35, 49)]
 H2_PINS = [*range(6), *range(8, 13), 22, 24, 25]
 BOARDS = [
     ("xiao_bridge", "xiao-esp32s3", "XIAO ESP32-S3", "ESP32-S3", "8MB", 7, 44, -1, [*range(1, 10), 43, 44]),
-    ("bootbridge", "qtpy-esp32s3", "ESP32S3 SuperMini", "ESP32-S3", "4MB", 13, 12, -1, S3_PINS),
+    ("bootbridge", "qtpy-esp32s3", "ESP32S3 SuperMini", "ESP32-S3", "4MB", 12, 13, -1, S3_PINS),
     ("h2_bridge", "esp32-h2", "ESP32-H2", "ESP32-H2", "4MB", 0, 1, 2, H2_PINS),
 ]
 
@@ -84,7 +84,7 @@ def main():
     app_bytes = int(re.search(r"#define PENNYESC_APP_BYTES (\d+)u", boot)[1])
     page_bytes = int(re.search(r"#define PENNYESC_PAGE_BYTES (\d+)u", boot)[1])
     app.update(name="pennyesc", escAddress=int(default_address[1]), maxBytes=app_bytes, pageBytes=page_bytes)
-    manifest = {"version": 1, "bridges": bridges, "pennyesc": app}
+    manifest = {"version": 1, "defaultBridge": "qtpy-esp32s3", "bridges": bridges, "pennyesc": app}
     (OUTPUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Packaged {len(bridges)} bridges and pennyesc in {OUTPUT}")
 
