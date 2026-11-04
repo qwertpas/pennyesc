@@ -13,6 +13,7 @@
 <body>
 <main>
   <div class="toolbar" aria-label="Connection">
+    <select id="transport" aria-label="Connection type"><option value="usb">USB</option><option value="ble">BLE</option></select>
     <button id="connect" class="primary">Connect</button>
     <span id="connection" class="state">Disconnected</span>
     <button id="scan" data-connected>Scan</button>
@@ -46,9 +47,9 @@
   </section>
   <section id="calibration" role="tabpanel" aria-labelledby="tab-calibration" hidden>
     <div class="tools">
-      <button id="calibrate" class="primary" data-connected>Run calibration</button>
-      <button id="check-motor" data-connected>Check motor</button>
-      <button id="read-calibration" data-connected>Read calibration</button>
+      <button id="calibrate" class="primary" data-connected data-usb>Run calibration</button>
+      <button id="check-motor" data-connected data-usb>Check motor</button>
+      <button id="read-calibration" data-connected data-usb>Read calibration</button>
       <button id="clear-calibration">Clear plots</button>
       <span id="cal-state" class="muted">—</span>
       <span class="spacer"></span>
@@ -87,14 +88,14 @@
           <label>TX <select id="tx" aria-label="TX GPIO"></select></label>
           <label>GND <select id="gnd" aria-label="GND GPIO"></select></label>
         </div>
-        <div class="tools"><button id="apply-pins" data-connected>Apply pins</button><button id="default-pins">Board defaults</button></div>
+        <div class="tools"><button id="apply-pins" data-connected data-usb>Apply pins</button><button id="default-pins">Board defaults</button></div>
         <button id="flash-bridge" class="primary">Flash bridge</button>
       </fieldset>
       <fieldset><legend>PennyESC</legend>
         <label>Firmware <select id="esc-image"><option value="bundled">PennyESC</option><option value="file">Choose .bin…</option></select></label>
         <input id="firmware-file" type="file" accept=".bin,application/octet-stream" hidden aria-label="PennyESC firmware file">
         <label>Address after flashing <select id="verify-address"></select></label>
-        <div class="tools"><button id="flash-esc" class="primary" data-connected>Flash PennyESC</button><button id="recover-esc" data-connected>Recover from bootloader</button></div>
+        <div class="tools"><button id="flash-esc" class="primary" data-connected data-usb>Flash PennyESC</button><button id="recover-esc" data-connected data-usb>Recover from bootloader</button></div>
       </fieldset>
     </div>
     <div class="progress-row"><progress id="flash-progress" max="100" value="0"></progress><output id="flash-state"></output></div>

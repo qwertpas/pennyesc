@@ -1,4 +1,5 @@
 import {SerialConnection, TimeoutError} from './serial.js';
+import {BleConnection} from './ble.js';
 import {DUTY_LIMIT, PennyClient} from './protocol.js';
 import {captureCalibration, reduceCapturePoints, solveCapture, uploadCalibration,
   readCalibration, captureRows, calibrationPlots} from './calibration.js';
@@ -9,7 +10,8 @@ import {Plot} from './plots.js';
 import {DutyKeys, auxPulse} from './keyboard.js';
 
 const $ = id => document.getElementById(id);
-const connection = new SerialConnection();
+const usb = new SerialConnection(), ble = new BleConnection();
+let connection = usb;
 const live = new LiveData();
 let client, telemetry, manifest, session, raw = [], reduced = [], solved;
 let control = defaultControl(), busy = false, paused = false, dirty = true;
@@ -55,10 +57,12 @@ function message(text, error = false) {
 
 function state() {
   $('connect').textContent = connection.connected ? 'Disconnect' : 'Connect';
-  $('connection').textContent = connection.connected ? 'Connected' : 'Disconnected';
+  $('connection').textContent = connection.connected ? `Connected · ${connection === ble ? 'BLE' : 'USB'}` : 'Disconnected';
   $('connection').classList.toggle('connected', connection.connected);
-  $('connect').disabled = busy || !manifest || !('serial' in navigator);
+  $('connect').disabled = busy || !manifest || !(connection === ble ? 'bluetooth' in navigator : 'serial' in navigator);
+  $('transport').disabled = busy || connection.connected;
   document.querySelectorAll('[data-connected]').forEach(button => { button.disabled = busy || !connection.connected; });
+  document.querySelectorAll('[data-usb]').forEach(button => { button.disabled ||= connection === ble; });
   $('address').disabled = busy;
   $('board').disabled = busy;
   $('send').disabled = busy;
@@ -71,7 +75,7 @@ function state() {
   $('key-control').disabled = busy || !connection.connected || $('mode').value !== 'duty';
   $('key-control').closest('label').classList.toggle('inactive', $('key-control').disabled);
   keys.enabled = $('key-control').checked && !$('key-control').disabled;
-  $('flash-bridge').disabled = busy || !manifest || !('serial' in navigator);
+  $('flash-bridge').disabled = busy || connection === ble || !manifest || !('serial' in navigator);
   $('export-session').disabled = !session || busy;
   $('export-calibration').disabled = !session || busy;
   $('pause').textContent = paused ? 'Resume' : 'Pause';
@@ -205,7 +209,7 @@ async function scan() {
   for (let address = 0; address < 16; address++) {
     $('motor').textContent = `Scanning ${address}…`;
     const probe = new PennyClient(connection, address);
-    try { checkResult(await probe.status(35)); found.push(address); }
+    try { checkResult(await probe.status(connection === ble ? 200 : 35)); found.push(address); }
     catch (error) { if (!(error instanceof TimeoutError)) throw error; }
   }
   const address = found.includes(Number($('address').value)) ? Number($('address').value) : found[0];
@@ -243,7 +247,8 @@ $('connect').onclick = () => operation(async () => {
     await scan();
   }
 });
-connection.addEventListener('disconnect', event => {
+for (const link of [usb, ble]) link.addEventListener('disconnect', event => {
+  if (link !== connection) return;
   $('key-control').checked = false;
   void keys.disable();
   $('aux-output').checked = false;
@@ -253,6 +258,11 @@ connection.addEventListener('disconnect', event => {
   void operation(() => connection.disconnect(), {resume: false});
   state();
 });
+$('transport').onchange = () => {
+  connection = $('transport').value === 'ble' ? ble : usb;
+  message('');
+  state();
+};
 $('scan').onclick = () => operation(scan);
 $('address').onchange = () => operation(async () => {
   if (!connection.connected) return;
@@ -337,7 +347,8 @@ $('aux-slider').onchange = () => setAuxPulse(Number($('aux-slider').value));
 $('pause').onclick = async () => {
   if (busy) return;
   paused = !paused;
-  if (paused) await telemetry?.stop(); else startTelemetry();
+  if (paused) await telemetry?.stop();
+  else { await telemetry?.stop(); startTelemetry(); }
   state();
 };
 $('clear-live').onclick = () => { live.clear(); dirty = true; };
@@ -560,7 +571,7 @@ function render(now) {
 async function initialize() {
   setMode('duty');
   state(); drawLive(); drawCalibration(); updateSession();
-  if (!('serial' in navigator)) message('Web Serial is unavailable', true);
+  if (!('serial' in navigator) && !('bluetooth' in navigator)) message('USB and BLE are unavailable', true);
   try {
     const response = await fetch('firmware/manifest.json');
     if (!response.ok) throw new Error('Firmware manifest unavailable');

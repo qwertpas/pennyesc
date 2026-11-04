@@ -21,6 +21,7 @@ export class SerialConnection extends EventTarget {
     this._frames = new FrameReader();
     this._prefix = null;
     this._lastWrite = 0;
+    this.guardMs = 26;
   }
 
   async connect(port) {
@@ -181,7 +182,7 @@ export class SerialConnection extends EventTarget {
 
   async _sync() {
     for (const prefix of ['!#', '']) {
-      await pause(Math.max(0, 26 - (performance.now() - this._lastWrite)));
+      await pause(Math.max(0, this.guardMs - (performance.now() - this._lastWrite)));
       this._clear();
       await this._write(encoder.encode(`${prefix}ping\n`));
       const deadline = performance.now() + 350;
@@ -196,7 +197,7 @@ export class SerialConnection extends EventTarget {
   async _shell(command, { expected, timeout = 2000 } = {}) {
     if (/\r|\n/.test(command)) throw new Error('Enter one command at a time');
     if (this._prefix === null) await this._sync();
-    await pause(Math.max(0, 26 - (performance.now() - this._lastWrite)));
+    await pause(Math.max(0, this.guardMs - (performance.now() - this._lastWrite)));
     this._clear();
     await this._write(encoder.encode(`${this._prefix}${command}\n`));
     const lines = [];

@@ -74,11 +74,14 @@ export class Telemetry {
     let next = performance.now();
     let measuredAt = next;
     let samples = 0;
+    const connection = this.client.connection;
+    const stream = typeof connection?.startTelemetry === 'function';
     try {
+      if (stream) await connection.startTelemetry(this.client.address, Math.round(1000 / this.interval));
       while (this.running && session === this.session) {
-        const status = await this.client.status(150);
+        const sample = stream ? await connection.nextTelemetry() : {status: await this.client.status(150), now: performance.now()};
         const now = performance.now();
-        this.onSample(status, now);
+        this.onSample(sample.status, sample.now);
         samples++;
         if (now - measuredAt >= 1000) {
           this.onRate(samples * 1000 / (now - measuredAt));
@@ -87,13 +90,18 @@ export class Telemetry {
         }
         next = Math.max(next + this.interval, now);
         const wait = next - performance.now();
-        if (wait > 0 && this.running && session === this.session) await new Promise(resolve => setTimeout(resolve, wait));
+        if (!stream && wait > 0 && this.running && session === this.session) await new Promise(resolve => setTimeout(resolve, wait));
       }
     } catch (error) {
       if (session === this.session) {
         this.running = false;
         this.onRate(0);
         this.onError(error);
+      }
+    } finally {
+      if (stream && connection.connected) {
+        try { await connection.stopTelemetry(); }
+        catch (error) { this.running = false; this.onError(error); }
       }
     }
   }

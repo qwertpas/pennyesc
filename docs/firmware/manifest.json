@@ -70,8 +70,8 @@
         {
           "path": "xiao-esp32s3/firmware.bin",
           "address": 65536,
-          "bytes": 370608,
-          "sha256": "ff55b15d63980036c895cebba9904f363e971e733949edb889efb32914834c2b"
+          "bytes": 697408,
+          "sha256": "2361711b109c21afc240e8adccb2098c4658c5988d43d2a5c02bb89bbed63ef2"
         }
       ]
     },
@@ -209,8 +209,8 @@
         {
           "path": "qtpy-esp32s3/firmware.bin",
           "address": 65536,
-          "bytes": 401472,
-          "sha256": "7b8c1925525d2319cf5b6e1403488f5d8f1383f50bc7a1040cd5a322137751db"
+          "bytes": 722224,
+          "sha256": "7814b9fcba84e0ac552d307ca6aee795df906429b3a97f763e2d57f4ef178d08"
         }
       ]
     },
@@ -289,8 +289,8 @@
         {
           "path": "esp32-h2/firmware.bin",
           "address": 65536,
-          "bytes": 383040,
-          "sha256": "adedac578b5eff55ba1dad8fa2a77e3535f8781867f85a2b6f80e8eac6a74d23"
+          "bytes": 853744,
+          "sha256": "c68d8fc622d64c76ba73cf02b840a08d16d59ab7fbfeb715ef5c25db97e347db"
         }
       ]
     }

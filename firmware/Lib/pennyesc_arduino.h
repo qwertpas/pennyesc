@@ -127,6 +127,13 @@ public:
     void setAddress(uint8_t address) { address_ = (uint8_t)(address & 0x0Fu); }
     HardwareSerial &serial() const { return *serial_; }
 
+    bool exchange(uint8_t cmd, const uint8_t *payload, uint8_t length,
+                  uint8_t *frame, uint8_t &frame_len, uint32_t timeout_ms = 20u)
+    {
+        return sendFrame(cmd, payload, length)
+            && readFrame(cmd, frame, PNY_FRAME_MAX_PAYLOAD + 4u, frame_len, timeout_ms);
+    }
+
     bool getStatus(PennyEscStatus &status, uint32_t timeout_ms = 20u)
     {
         uint8_t frame[PNY_FRAME_MAX_PAYLOAD + 4u];
