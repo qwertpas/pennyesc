@@ -58,8 +58,8 @@ public:
         }
         if (usb_owner_) {
             if (!Serial.isPlugged()) {
-                stopOutputs();
-                resetBridge();
+                if (bridge_mode_ == ModeUpload || bridge_mode_ == ModeRom) stopAux();
+                else stopOutputs();
                 usb_owner_ = false;
             } else {
                 PennyEscDebugBridge::poll();
@@ -68,6 +68,9 @@ public:
                 return true;
             }
         }
+        // USB suspend can clear isPlugged without closing the host's port.
+        // Keep forwarding its pending reply until another owner takes over.
+        if (!ble_owner_ && bridge_mode_ != ModeShell) PennyEscDebugBridge::poll();
         if (lost_) {
             lost_ = false;
             if (ble_owner_) stopBle();
@@ -75,6 +78,7 @@ public:
         if (!connected_) return true;
         Command command;
         if (xQueueReceive(commands_, &command, 0) == pdTRUE) {
+            if (!ble_owner_) resetBridge();
             ble_owner_ = true;
             process(command);
         }

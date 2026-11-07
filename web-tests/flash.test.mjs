@@ -11,6 +11,7 @@ function image(length = 1100) {
   const bytes = Uint8Array.from({ length }, (_, i) => i & 255);
   const view = new DataView(bytes.buffer);
   view.setUint32(0, 0x20000800, true); view.setUint32(4, FLASH_BASE + 0x101, true);
+  bytes.set(new TextEncoder().encode('PNYADDR\x01'), 100);
   return bytes;
 }
 
@@ -30,7 +31,8 @@ function bridgePort(rom, { recover = false } = {}) {
     }
     if (mode === 'upload') return rom.write(data);
     const frame = decodeFrame(data);
-    if (frame.address > 2 || (!rom.running && recover && frame.address === 1)) return null;
+    const address = rom.running ? rom.memory[0x580 + 107] : 1;
+    if (![0, address, 2].includes(frame.address) || (!rom.running && recover && frame.address === 1)) return null;
     if (frame.command === 1) return encodeFrame(frame.address, 1, statusPayload());
     if (frame.command === 13) { quiet.push(frame.address); return encodeFrame(frame.address, 13, new Uint8Array([0])); }
     if (frame.command === 11) return encodeFrame(frame.address, 11, new Uint8Array([0]));
@@ -62,9 +64,51 @@ test('normal flashing erases only app pages, verifies every byte, preserves boot
     assert.deepEqual(rom.erased, Array.from({ length: 9 }, (_, i) => i));
     assert.deepEqual(rom.written, rom.reads);
     assert.deepEqual(setup.quiet, [0, 2]);
-    assert.deepEqual(setup.modes, ['handoff', 'upload', 'handoff']);
+    assert.deepEqual(setup.modes, ['handoff', 'upload', 'handoff', 'app']);
     assert.ok(rom.running);
     assert.deepEqual(stages.at(-1), ['done', 100]);
+  } finally { await connection.disconnect(); }
+});
+
+test('the bundled image supports all addresses without changing any other firmware bytes', async () => {
+  const original = new Uint8Array(await readFile(new URL('../docs/firmware/pennyesc.bin', import.meta.url)));
+  const offset = Buffer.from(original).indexOf('PNYADDR') + 7;
+  const padded = loadEscImage(original);
+  for (let address = 0; address < 16; address++) {
+    const result = loadEscImage(original, address);
+    assert.equal(result[offset], address);
+    result[offset] = padded[offset];
+    assert.deepEqual(result, padded);
+  }
+  assert.equal(original[offset], 1);
+  assert.throws(() => loadEscImage(original, 16), /Address must/);
+  const missing = image(); missing[100] = 0;
+  assert.throws(() => loadEscImage(missing, 4), /does not support address/);
+  const duplicate = image(); duplicate.set(new TextEncoder().encode('PNYADDR\x01'), 200);
+  assert.throws(() => loadEscImage(duplicate, 4), /does not support address/);
+});
+
+test('flashing changes address 1 to 4 and verifies the patched image and new address', async () => {
+  const rom = new RomDevice(), setup = bridgePort(rom);
+  const connection = new SerialConnection(); await connection.connect(setup.port);
+  try {
+    await flashEsc(new PennyClient(connection, 1), image(), {newAddress: 4});
+    assert.equal(rom.memory[0x580 + 107], 4);
+    assert.ok(rom.running);
+    assert.equal((await new PennyClient(connection, 4).status()).calibrated, true);
+    await assert.rejects(new PennyClient(connection, 1).status(5));
+    assert.ok(rom.memory.slice(0x3d80).every(byte => byte === 0x5a));
+    assert.equal(setup.modes.at(-1), 'app');
+  } finally { await connection.disconnect(); }
+});
+
+test('an occupied new address prevents erase and programming', async () => {
+  const rom = new RomDevice(), setup = bridgePort(rom);
+  const connection = new SerialConnection(); await connection.connect(setup.port);
+  try {
+    await assert.rejects(flashEsc(new PennyClient(connection, 1), image(), {newAddress: 2}), /already in use/);
+    assert.deepEqual(rom.erased, []);
+    assert.deepEqual(rom.written, []);
   } finally { await connection.disconnect(); }
 });
 
@@ -104,8 +148,12 @@ test('ESP flasher releases live reader before esptool, verifies files and closes
   for (const method of ['main', 'writeFlash', 'readFlash', 'after']) saved[method] = ESPLoader.prototype[method];
   const originalFetch = globalThis.fetch;
   t.after(() => { for (const method of Object.keys(saved)) ESPLoader.prototype[method] = saved[method]; globalThis.fetch = originalFetch; });
-  globalThis.fetch = async () => new Response(bytes);
+  globalThis.fetch = async (url, options) => {
+    assert.equal(options.cache, 'no-store');
+    return new Response(bytes);
+  };
   ESPLoader.prototype.main = async function () {
+    assert.equal(this.serialOptions.bufferSize, 65536);
     assert.equal(port.closeCount, 1);
     assert.equal(connection.connected, false);
     assert.equal(port.readable, null);

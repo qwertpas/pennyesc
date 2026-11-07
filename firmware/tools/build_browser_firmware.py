@@ -77,6 +77,8 @@ def main():
         raise ValueError("Application ROM region was not found")
     address, capacity = int(region[1], 16), int(region[2])
     app = copy_image(project / ".pio/build/pennyesc_uart/firmware.bin", "pennyesc.bin", address)
+    if (OUTPUT / "pennyesc.bin").read_bytes().count(b"PNYADDR") != 1:
+        raise ValueError("PennyESC firmware is missing its address setting")
     if app["bytes"] > capacity:
         raise ValueError("pennyesc firmware exceeds the application ROM region")
     default_address = re.search(r"#define PNY_ESC_ADDRESS (\d+)", (project / "src/main.c").read_text())

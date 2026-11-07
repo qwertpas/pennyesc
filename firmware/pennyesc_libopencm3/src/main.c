@@ -29,9 +29,11 @@
 #define PNY_DRIVE_BRUSHED 0
 #endif
 
-#define ESC_ADDRESS PNY_ESC_ADDRESS
+/* The web flasher sets the last byte before writing the application image. */
+static const volatile uint8_t firmware_address[] = {'P', 'N', 'Y', 'A', 'D', 'D', 'R', PNY_ESC_ADDRESS};
+#define ESC_ADDRESS firmware_address[7]
 
-#if ESC_ADDRESS > 0xF
+#if PNY_ESC_ADDRESS > 0xF
 #error "ESC_ADDRESS must fit in 4 bits"
 #endif
 
@@ -53,7 +55,7 @@
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
 /* Residual lead relative to the sensor read-start timestamp. */
-#if ESC_ADDRESS == 3
+#if PNY_ESC_ADDRESS == 3
 #define OBSERVER_LEAD_US 100
 #else
 #define OBSERVER_LEAD_US 120

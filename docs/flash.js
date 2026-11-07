@@ -9,7 +9,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const xor = bytes => bytes.reduce((value, byte) => value ^ byte, 0);
 const same = (left, right) => left.length === right.length && left.every((value, i) => value === right[i]);
 
-export function loadEscImage(image) {
+export function loadEscImage(image, address) {
   if (!(image instanceof Uint8Array) || image.length < 8) throw new Error('Select a PennyESC application binary');
   const length = Math.ceil(image.length / FLASH_PAGE_BYTES) * FLASH_PAGE_BYTES;
   if (length > FLASH_APP_BYTES) throw new Error(`Application exceeds ${FLASH_APP_BYTES} bytes`);
@@ -17,6 +17,16 @@ export function loadEscImage(image) {
   const stack = view.getUint32(0, true), entry = view.getUint32(4, true);
   if ((stack & 0x2ff80000) !== 0x20000000 || !(entry & 1) || entry < FLASH_BASE || entry >= FLASH_BASE + FLASH_APP_BYTES) throw new Error('Binary is not a PennyESC application at 0x08000580');
   const padded = new Uint8Array(length).fill(255); padded.set(image);
+  if (address !== undefined) {
+    if (!Number.isInteger(address) || address < 0 || address > 15) throw new Error('Address must be 0–15');
+    const marker = new TextEncoder().encode('PNYADDR');
+    const matches = [];
+    for (let i = 0; i + marker.length < image.length; i++) {
+      if (marker.every((byte, j) => image[i + j] === byte)) matches.push(i + marker.length);
+    }
+    if (matches.length !== 1 || image[matches[0]] > 15) throw new Error('Firmware does not support address selection');
+    padded[matches[0]] = address;
+  }
   return padded;
 }
 
@@ -88,8 +98,8 @@ export async function programEsc(boot, padded, progress = () => {}) {
   }
 }
 
-export async function flashEsc(client, image, { recover = false, verifyAddress = client.address, progress = () => {}, onLog = () => {}, onResetNeeded = () => {} } = {}) {
-  const padded = loadEscImage(image);
+export async function flashEsc(client, image, { recover = false, newAddress = client.address, progress = () => {}, onLog = () => {}, onResetNeeded = () => {} } = {}) {
+  const padded = loadEscImage(image, newAddress);
   return client.connection.transaction(async io => {
     progress('connect', 0);
     await io.mode('handoff');
@@ -99,6 +109,7 @@ export async function flashEsc(client, image, { recover = false, verifyAddress =
       try { await io.exchange(address, CMD.GET_STATUS, new Uint8Array(), 35); found.push(address); }
       catch (error) { if (!(error instanceof TimeoutError)) throw error; }
     }
+    if (newAddress !== client.address && found.includes(newAddress)) throw new Error(`Address ${newAddress} is already in use`);
     const quiet = found.filter(address => recover || address !== client.address);
     for (const address of quiet) {
       const result = await io.exchange(address, CMD.SET_QUIET, pack('H', 60000));
@@ -122,20 +133,21 @@ export async function flashEsc(client, image, { recover = false, verifyAddress =
     const deadline = performance.now() + 8000;
     while (performance.now() < deadline) {
       try {
-        const status = unpackStatus(await io.exchange(verifyAddress, CMD.GET_STATUS, new Uint8Array(), 250));
+        const status = unpackStatus(await io.exchange(newAddress, CMD.GET_STATUS, new Uint8Array(), 250));
         checkResult(status.result);
+        await io.mode('app');
         progress('done', 100); onLog(`Verified ${image.length} bytes`); return status;
       } catch (error) {
         if (!(error instanceof TimeoutError)) throw error;
         await pause(100);
       }
     }
-    throw new Error(`Firmware verified; address ${verifyAddress} did not resume`);
+    throw new Error(`Firmware verified; address ${newAddress} did not resume`);
   });
 }
 
 export async function fetchBinary(path, base = new URL('./firmware/', import.meta.url)) {
-  const response = await fetch(new URL(path, base));
+  const response = await fetch(new URL(path, base), {cache: 'no-store'});
   if (!response.ok) throw new Error(`Firmware download failed (${response.status})`);
   return new Uint8Array(await response.arrayBuffer());
 }
@@ -153,7 +165,8 @@ export async function flashBridge(connection, board, { progress = () => {}, onLo
   try {
     const { ESPLoader, Transport } = await import('./vendor/esptool-js-0.7.0.js');
     transport = new Transport(port, false);
-    const loader = new ESPLoader({ transport, baudrate: 460800, terminal: { clean() {}, write: onLog, writeLine: onLog }, debugLogging: false });
+    const loader = new ESPLoader({ transport, baudrate: 460800, serialOptions: {bufferSize: 65536},
+      terminal: { clean() {}, write: onLog, writeLine: onLog }, debugLogging: false });
     progress('connect', 0);
     const detected = await loader.main();
     const normalize = name => name.toLowerCase().replace(/[^a-z0-9]/g, '');

@@ -18,12 +18,17 @@ ARDUINO = r'''
 #include <map>
 #include <sstream>
 #include <string>
+#include <algorithm>
+#include <vector>
+#include <cstring>
+using std::min;
 #define SERIAL_8N1 1
 #define SERIAL_8E1 2
 #define INPUT 0
 #define OUTPUT 1
 #define LOW 0
 static uint32_t now_ms = 100;
+static bool usb_plugged = true;
 static std::map<int, int> modes;
 inline uint32_t millis() { return now_ms; }
 inline uint32_t micros() { return ++now_ms * 1000; }
@@ -34,10 +39,12 @@ class Stream {
 public:
     std::deque<uint8_t> input;
     std::string output;
-    int available() { return input.size(); }
-    int peek() { return input.empty() ? -1 : input.front(); }
-    int read() { if (input.empty()) return -1; int n = input.front(); input.pop_front(); return n; }
-    size_t write(const uint8_t *data, size_t n) { output.append((const char *)data, n); return n; }
+    virtual int available() { return input.size(); }
+    virtual int peek() { return input.empty() ? -1 : input.front(); }
+    virtual int read() { if (input.empty()) return -1; int n = input.front(); input.pop_front(); return n; }
+    virtual void flush() {}
+    virtual size_t write(uint8_t byte) { output += (char)byte; return 1; }
+    virtual size_t write(const uint8_t *data, size_t n) { output.append((const char *)data, n); return n; }
     template<class T> void print(T value) { std::ostringstream s; s << value; output += s.str(); }
     void print(uint8_t value) { print((unsigned)value); }
     void print(float value, int) { print(value); }
@@ -50,11 +57,144 @@ class HardwareSerial : public Stream {
 public:
     uint32_t baud = 0, config = 0;
     int rx = -1, tx = -1;
+    bool isPlugged() { return usb_plugged; }
     void end() {}
     void flush() {}
     void begin(uint32_t b, uint32_t c, int r, int t) { baud=b; config=c; rx=r; tx=t; }
 };
 static HardwareSerial Serial, Serial1;
+struct Queue { size_t size; std::deque<std::vector<uint8_t>> items; };
+using QueueHandle_t = Queue *;
+static const int pdTRUE = 1;
+inline QueueHandle_t xQueueCreate(int, size_t size) { return new Queue{size, {}}; }
+inline void xQueueReset(QueueHandle_t queue) { queue->items.clear(); }
+inline int xQueueSend(QueueHandle_t queue, const void *data, int) {
+    const auto *bytes = (const uint8_t *)data;
+    queue->items.emplace_back(bytes, bytes + queue->size); return pdTRUE;
+}
+inline int xQueueReceive(QueueHandle_t queue, void *data, int) {
+    if (queue->items.empty()) return 0;
+    memcpy(data, queue->items.front().data(), queue->size); queue->items.pop_front(); return pdTRUE;
+}
+'''
+
+BLE = r'''
+#pragma once
+#include <Arduino.h>
+#define BLE_GAP_LE_PHY_2M_MASK 2
+#define BLE_HS_ADV_F_DISC_GEN 2
+#define BLE_HS_ADV_F_BREDR_UNSUP 4
+struct ble_gap_conn_desc { int conn_handle; };
+struct ble_uuid_any_t { int u128; };
+struct ble_hs_adv_fields {
+    int flags, name_len, name_is_complete, num_uuids128, uuids128_is_complete;
+    const uint8_t *name; const int *uuids128;
+};
+inline void ble_gap_set_prefered_default_le_phy(int, int) {}
+inline void ble_gap_set_data_len(int, int, int) {}
+inline void ble_gap_adv_set_fields(ble_hs_adv_fields *) {}
+class BLEUUID {
+    ble_uuid_any_t uuid{};
+public: BLEUUID(const char *) {} const ble_uuid_any_t *getNative() const { return &uuid; }
+};
+class BLEServer;
+class BLECharacteristic;
+class BLEServerCallbacks {
+public:
+    virtual void onConnect(BLEServer *, ble_gap_conn_desc *) {}
+    virtual void onDisconnect(BLEServer *) {}
+    virtual void onMtuChanged(BLEServer *, ble_gap_conn_desc *, uint16_t) {}
+};
+class BLECharacteristicCallbacks {
+public: virtual void onWrite(BLECharacteristic *) {}
+};
+class BLECharacteristic {
+public:
+    enum { PROPERTY_NOTIFY=1, PROPERTY_WRITE=2, PROPERTY_WRITE_NR=4 };
+    BLECharacteristicCallbacks *callbacks{};
+    std::string data;
+    size_t getLength() { return data.size(); }
+    uint8_t *getData() { return (uint8_t *)data.data(); }
+    void setCallbacks(BLECharacteristicCallbacks *value) { callbacks=value; }
+    void setValue(const uint8_t *, size_t) {}
+    void notify() {}
+};
+static BLECharacteristic input;
+class BLEService {
+public:
+    BLECharacteristic *createCharacteristic(const char *, int) { return &input; }
+    void start() {}
+};
+class BLEAdvertisementData {
+public: void setFlags(int) {} void setCompleteServices(const BLEUUID &) {} void setName(const char *) {}
+};
+class BLEAdvertising {
+public: void setAdvertisementData(BLEAdvertisementData &) {}
+};
+class BLEServer {
+public:
+    BLEServerCallbacks *callbacks{};
+    void setCallbacks(BLEServerCallbacks *value) { callbacks=value; }
+    BLEService *createService(const char *) { static BLEService service; return &service; }
+    void disconnect(int) {} int getConnId() { return 0; }
+    void startAdvertising() {} void updateConnParams(int, int, int, int, int) {}
+};
+static BLEServer server;
+class BLEDevice {
+public:
+    static void init(const char *) {} static void setMTU(int) {} static void startAdvertising() {}
+    static BLEServer *createServer() { return &server; }
+    static BLEAdvertising *getAdvertising() { static BLEAdvertising advertising; return &advertising; }
+};
+'''
+
+USB_CHECK = r'''
+#include <cassert>
+#define ARDUINO_BOARD "test"
+#include "pennyesc_ble.h"
+static void send(PennyEscBleBridge &bridge, const std::string &bytes) {
+    now_ms += 30; Serial.feed(bytes); bridge.poll();
+}
+int main() {
+    PennyEscBleBridge bridge;
+    bridge.begin(Serial, Serial1, 12, 13);
+    bridge.beginBle();
+    send(bridge, "bridge app\n");
+    assert(Serial.output.find("# bridge=app") != std::string::npos);
+    Serial.output.clear(); Serial1.output.clear();
+
+    // A command is in flight when the USB link monitor briefly reports suspend.
+    const std::string command("\xaa\x24\x01\x02\x90", 5);
+    send(bridge, command);
+    assert(Serial1.output == command);
+    usb_plugged = false;
+    bridge.poll();
+    // The UART reply arrives later, with no further host writes to wake the bridge.
+    const std::string reply("\xaa\x24\x04\x00\x01\x04\x24\x02", 8);
+    Serial1.feed(reply); bridge.poll();
+    assert(Serial.output == reply);
+    assert(Serial1.baud == 921600 && pennyesc_bridge_active);
+
+    usb_plugged = true;
+    Serial1.output.clear();
+    send(bridge, command);
+    assert(Serial1.output == command);
+    // Firmware upload retains its baud and receives no application stop frame.
+    send(bridge, "!#bridge upload\n");
+    Serial1.output.clear(); usb_plugged = false;
+    bridge.poll();
+    assert(Serial1.baud == 115200 && Serial1.output.empty());
+    Serial.output.clear(); Serial1.feed(std::string(1, '\x79')); bridge.poll();
+    assert(Serial.output == std::string(1, '\x79'));
+
+    // A real BLE takeover resets UART mode explicitly, before its first command.
+    input.data = std::string("\xaa\x2f\x02\x00\x00", 5);
+    input.data += (char)PennyEsc::crc8((const uint8_t *)input.data.data(), input.data.size());
+    server.callbacks->onConnect(&server, nullptr);
+    input.callbacks->onWrite(&input); bridge.poll();
+    assert(Serial1.baud == 921600 && !pennyesc_bridge_active);
+    assert(Serial1.output == input.data);
+}
 '''
 
 PREFERENCES = r'''
@@ -194,6 +334,28 @@ int main() {
 
 
 class BridgeTests(unittest.TestCase):
+    def test_usb_suspend_preserves_uart_session_until_ble_takeover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "driver").mkdir()
+            (folder / "host").mkdir()
+            files = {"Arduino.h": ARDUINO, "Preferences.h": PREFERENCES,
+                     "driver/gpio.h": GPIO, "driver/ledc.h": LEDC,
+                     "BLEDevice.h": BLE, "BLEServer.h": '#include "BLEDevice.h"',
+                     "host/ble_hs_adv.h": '#include "BLEDevice.h"', "check.cpp": USB_CHECK}
+            for name, source in files.items():
+                (folder / name).write_text(source)
+            includes = []
+            if sys.platform == "darwin":
+                sdk = subprocess.check_output(["xcrun", "--show-sdk-path"], text=True).strip()
+                includes = ["-isystem", f"{sdk}/usr/include/c++/v1"]
+            binary = folder / "check"
+            subprocess.run(["c++", "-std=c++11", "-O1", "-fsanitize=undefined",
+                            "-fno-sanitize-recover=all", *includes, "-I", str(folder),
+                            "-I", str(ROOT / "firmware/Lib"), str(folder / "check.cpp"),
+                            "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_shell_pins_and_binary_upload(self):
         boards = [
             ("ARDUINO_XIAO_ESP32S3", "CONFIG_IDF_TARGET_ESP32S3", "xiao-esp32s3", 7, 44, -1, 3),

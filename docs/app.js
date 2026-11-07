@@ -36,7 +36,7 @@ const plots = {
   residual: new Plot($('residual'), 'Residual vs step', 'Step', 'Error (°)', true),
 };
 
-for (const id of ['address', 'verify-address']) {
+for (const id of ['address', 'new-address']) {
   $(id).replaceChildren(...Array.from({length: 16}, (_, i) => new Option(String(i), i)));
   $(id).value = '1';
 }
@@ -65,7 +65,7 @@ function state() {
   $('address').disabled = busy;
   $('board').disabled = busy;
   $('send').disabled = busy;
-  for (const id of ['mode','kp','kd','kv','kf','clip','target','target-unit','rx','tx','gnd','default-pins','esc-image','verify-address','firmware-file']) $(id).disabled = busy;
+  for (const id of ['mode','kp','kd','kv','kf','clip','target','target-unit','rx','tx','gnd','default-pins','esc-image','new-address','firmware-file']) $(id).disabled = busy;
   const unused = $('mode').value === 'duty' ? ['kp','kd','kv','kf'] : $('mode').value === 'pos' ? ['kv'] : ['kp'];
   for (const id of ['kp','kd','kv','kf']) {
     $(id).disabled = busy || unused.includes(id);
@@ -204,6 +204,7 @@ async function readPins() {
 }
 
 async function scan() {
+  await connection.mode('app');
   const found = [];
   for (let address = 0; address < 16; address++) {
     $('motor').textContent = `Scanning ${address}…`;
@@ -218,6 +219,7 @@ async function scan() {
     paused = true; $('motor').textContent = 'No ESC'; throw new Error('No ESC found');
   }
   $('address').value = address;
+  $('new-address').value = address;
   client = new PennyClient(connection, address);
   paused = false;
   showStatus(checkResult(await client.status()));
@@ -266,6 +268,7 @@ $('scan').onclick = () => operation(scan);
 $('address').onchange = () => operation(async () => {
   if (!connection.connected) return;
   client = new PennyClient(connection, Number($('address').value));
+  $('new-address').value = $('address').value;
   showStatus(checkResult(await client.status()));
 });
 $('brake').onclick = () => operation(() => command('brake'));
@@ -496,24 +499,28 @@ $('flash-bridge').onclick = () => operation(async () => {
 $('esc-image').onchange = () => { $('firmware-file').hidden = $('esc-image').value !== 'file'; };
 async function flashPenny(recover) {
   let image;
-  let verifyAddress = Number($('verify-address').value);
+  const newAddress = Number($('new-address').value);
   if ($('esc-image').value === 'file') {
     const file = $('firmware-file').files[0];
     if (!file) throw new Error('Choose a firmware file');
     image = new Uint8Array(await file.arrayBuffer());
   } else {
-    const response = await fetch(new URL(manifest.pennyesc.path, new URL('firmware/manifest.json', location.href)));
+    const response = await fetch(new URL(manifest.pennyesc.path, new URL('firmware/manifest.json', location.href)), {cache: 'no-store'});
     if (!response.ok) throw new Error('Firmware download failed');
     image = new Uint8Array(await response.arrayBuffer());
   }
   $('flash-log').textContent = '';
   try {
-    await flashEsc(client, image, {recover, verifyAddress, progress: flashProgress, onLog: flashLog,
+    await flashEsc(client, image, {recover, newAddress, progress: flashProgress, onLog: flashLog,
       onResetNeeded() { $('flash-state').value = 'Reset PennyESC now'; }});
-    await connection.mode('app');
-  } catch (error) { paused = true; throw error; }
-  $('address').value = verifyAddress;
-  client = new PennyClient(connection, verifyAddress);
+  } catch (error) {
+    paused = true;
+    await connection.disconnect();
+    client = null; connectedBoard = null;
+    throw error;
+  }
+  $('address').value = newAddress;
+  client = new PennyClient(connection, newAddress);
   $('flash-state').value = 'PennyESC flashed and verified';
   showStatus(checkResult(await client.status()));
 }
@@ -571,13 +578,13 @@ async function initialize() {
   state(); drawLive(); drawCalibration(); updateSession();
   if (!('serial' in navigator) && !('bluetooth' in navigator)) message('USB and BLE are unavailable', true);
   try {
-    const response = await fetch('firmware/manifest.json');
+    const response = await fetch('firmware/manifest.json', {cache: 'no-store'});
     if (!response.ok) throw new Error('Firmware manifest unavailable');
     manifest = await response.json();
     $('board').replaceChildren(...manifest.bridges.map(item => new Option(item.name, item.id)));
     const saved = localStorage.getItem('penny-board');
     $('board').value = manifest.bridges.some(item => item.id === saved) ? saved : manifest.defaultBridge;
-    $('verify-address').value = manifest.pennyesc.escAddress;
+    $('new-address').value = manifest.pennyesc.escAddress;
     selectPins(); state();
   } catch (error) { message(error.message, true); }
   requestAnimationFrame(render);

@@ -64,6 +64,41 @@ test('shell waits for escape guard and recognizes mode acknowledgement', async (
   } finally { await connection.disconnect(); }
 });
 
+test('mode selection resynchronizes after the bridge returns to its plain shell', async () => {
+  const encoder = new TextEncoder(), decoder = new TextDecoder();
+  let mode = 'app';
+  const port = new FakePort(data => {
+    if (data[0] === 0xaa) return mode === 'app' ? appResponse(data) : encoder.encode('err\n');
+    const text = decoder.decode(data).trim();
+    const prefix = mode === 'app' ? '!#' : '';
+    if (text === `${prefix}ping`) return encoder.encode('pong\n');
+    if (text === `${prefix}bridge app`) { mode = 'app'; return encoder.encode('# bridge=app\n'); }
+    return encoder.encode('err\n');
+  });
+  const connection = new SerialConnection(); await connection.connect(port);
+  try {
+    await connection.mode('app');
+    mode = 'shell';
+    await connection.mode('app');
+    assert.equal((await new PennyClient(connection, 1).status()).x, 123);
+  } finally { await connection.disconnect(); }
+});
+
+test('a new USB connection waits for bridge startup before shell negotiation', async () => {
+  const encoder = new TextEncoder(), decoder = new TextDecoder();
+  const ready = performance.now() + 700;
+  const port = new FakePort(data => {
+    if (performance.now() < ready) return null;
+    const text = decoder.decode(data).trim();
+    if (text === 'ping') return encoder.encode('pong\n');
+    if (text === 'bridge app') return encoder.encode('# bridge=app\n');
+    return encoder.encode('err\n');
+  });
+  const connection = new SerialConnection(); await connection.connect(port);
+  try { await connection.mode('app'); }
+  finally { await connection.disconnect(); }
+});
+
 test('continuous full-status acquisition exceeds 100 samples/s with fragmented USB replies', async () => {
   const port = new FakePort(data => {
     const { address, command } = decodeFrame(data);

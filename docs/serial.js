@@ -31,6 +31,7 @@ export class SerialConnection extends EventTarget {
     try {
       this.port = port || await navigator.serial.requestPort();
       await this.port.open({ baudRate: 115200, bufferSize: 65536 });
+      this._readyAt = performance.now() + 1000;
       await this.port.setSignals({ dataTerminalReady: false, requestToSend: false });
       this._reader = this.port.readable.getReader();
       this._writer = this.port.writable.getWriter();
@@ -181,6 +182,8 @@ export class SerialConnection extends EventTarget {
   send(address, command, payload = new Uint8Array()) { return this.transaction(io => io.write(encodeFrame(address, command, payload))); }
 
   async _sync() {
+    // Opening native USB can reset the bridge before its shell is ready.
+    await pause(Math.max(0, this._readyAt - performance.now()));
     for (const prefix of ['!#', '']) {
       await pause(Math.max(0, this.guardMs - (performance.now() - this._lastWrite)));
       this._clear();
@@ -221,6 +224,7 @@ export class SerialConnection extends EventTarget {
   shell(command, options) { return this.transaction(() => this._shell(command, options)); }
   async _mode(mode) {
     if (!['app', 'rom', 'off', 'handoff', 'upload'].includes(mode)) throw new Error('Invalid bridge mode');
+    await this._sync();
     await this._shell(`bridge ${mode}`, { expected: `# bridge=${mode}` });
     this._prefix = mode === 'off' ? null : '!#';
     this._clear();

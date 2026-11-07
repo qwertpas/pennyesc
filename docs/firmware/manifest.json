@@ -70,8 +70,8 @@
         {
           "path": "xiao-esp32s3/firmware.bin",
           "address": 65536,
-          "bytes": 697408,
-          "sha256": "2361711b109c21afc240e8adccb2098c4658c5988d43d2a5c02bb89bbed63ef2"
+          "bytes": 697456,
+          "sha256": "2e70adaafa729a76d15ba1e112847a143c1e1a129b5029a08496b4242626f9b7"
         }
       ]
     },
@@ -209,8 +209,8 @@
         {
           "path": "qtpy-esp32s3/firmware.bin",
           "address": 65536,
-          "bytes": 722224,
-          "sha256": "7814b9fcba84e0ac552d307ca6aee795df906429b3a97f763e2d57f4ef178d08"
+          "bytes": 722272,
+          "sha256": "2f93ede7565979f1c52a29c7526d1f1584093070a825c3791d886b8833fe45c7"
         }
       ]
     },
@@ -289,8 +289,8 @@
         {
           "path": "esp32-h2/firmware.bin",
           "address": 65536,
-          "bytes": 853744,
-          "sha256": "c68d8fc622d64c76ba73cf02b840a08d16d59ab7fbfeb715ef5c25db97e347db"
+          "bytes": 853792,
+          "sha256": "b2cb79866d93cf5826b5a1a711368218569f48644e20c494718f65054e20b65a"
         }
       ]
     }
@@ -298,8 +298,8 @@
   "pennyesc": {
     "path": "pennyesc.bin",
     "address": 134219136,
-    "bytes": 13428,
-    "sha256": "e4fa58258c1a7bb1180ffd7a0cece17e7d03a2237b7d36edfe090207dbaf9224",
+    "bytes": 13452,
+    "sha256": "e6dda13ecf192f541fa17d48a69b349c5fc4a8b6260625c16e1441999c756c5b",
     "name": "pennyesc",
     "escAddress": 1,
     "maxBytes": 14336,
