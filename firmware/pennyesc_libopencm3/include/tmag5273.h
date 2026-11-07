@@ -6,8 +6,13 @@
 
 /* I2C Address (7-bit) - TMAG5273A variant */
 #define TMAG5273_I2C_ADDR    0x35
-/* 32 MHz I2C kernel clock, below the sensor's 1 MHz limit. */
-#define TMAG5273_I2C_TIMING 0x00600B13u
+/* 32 MHz I2C kernel clock. SCLL 0.5 us, SCLH 0.25 us plus rise and filter
+ * delay: about 1 MHz, the TMAG5273 FM+ limit (tLOW 0.5 us, tHIGH 0.26 us).
+ * The old 0x00600B13 ran near 0.6 MHz, too slow for a trigger-and-read
+ * transaction to finish before the conversion it started. */
+#ifndef TMAG5273_I2C_TIMING
+#define TMAG5273_I2C_TIMING 0x0020070Fu
+#endif
 /* Sensor data structure */
 typedef struct {
     float temp_degc;
@@ -18,8 +23,10 @@ typedef struct {
 
 typedef enum {
     TMAG5273_MODE_FULL_XYZ = 0,
-    TMAG5273_MODE_FAST_XY = 1,
+    /* Brushed: free-running XYZ, read with the 1-byte command. */
     TMAG5273_MODE_FAST_XYZ = 2,
+    /* BLDC: standby; each async transaction triggers the next XY conversion. */
+    TMAG5273_MODE_TRIGGER_XY = 3,
 } tmag5273_mode_t;
 
 typedef struct {
@@ -36,6 +43,8 @@ typedef struct {
     int16_t z;
     uint16_t start_phase_us;
     uint16_t end_phase_us;
+    /* Start of the transaction that triggered this conversion (BLDC) or that
+     * read it (brushed). The caller adds the sensor delay. */
     uint16_t sample_tick;
 } tmag5273_xy_sample_t;
 
@@ -65,10 +74,15 @@ bool tmag5273_read_xyz_fast(int16_t *x, int16_t *y, int16_t *z);
 
 bool tmag5273_read_all(tmag_data_t *out);
 void tmag5273_get_stats(tmag5273_stats_t *out);
+/* Route the DMA request used by async reads; call once after clocks are on. */
+void tmag5273_async_setup(void);
 void tmag5273_async_cancel(void);
+/* BLDC: write the trigger bit, then read the previous conversion with a
+ * repeated start. Brushed: read the free-running result. */
 bool tmag5273_async_start_xy(uint16_t start_phase_us);
 bool tmag5273_async_take_xy(tmag5273_xy_sample_t *out);
-void tmag5273_i2c1_isr(void);
+/* Returns true when a transaction finished, successfully or not. */
+bool tmag5273_i2c1_isr(void);
 
 
 /**

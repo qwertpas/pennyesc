@@ -188,6 +188,16 @@ uint8_t pennyesc_calibration_pseudo_index(int32_t x, int32_t y)
     return pseudo_lookup(x, y, 0);
 }
 
+/* (x * a[0] + y * a[1] + a[2]) >> 20, exactly, without a 64-bit multiply:
+ * a 16-bit by 32-bit product splits into two 32-bit products. This runs
+ * for every sensor sample. */
+static int32_t affine_row(int16_t x, int16_t y, const int32_t *a)
+{
+    int64_t high = (int64_t)(x * (a[0] >> 16)) + (y * (a[1] >> 16));
+    int64_t low = (int64_t)(x * (int32_t)(a[0] & 0xFFFF)) + (y * (int32_t)(a[1] & 0xFFFF));
+    return (int32_t)((high * 65536 + low + a[2]) >> PENNYESC_AFFINE_SHIFT);
+}
+
 uint16_t pennyesc_calibration_angle_turn16(int16_t x, int16_t y)
 {
     if (!active_valid) {
@@ -195,8 +205,8 @@ uint16_t pennyesc_calibration_angle_turn16(int16_t x, int16_t y)
     }
 
     const int32_t *a = active_blob->affine_q20;
-    int32_t u = (int32_t)(((int64_t)x * a[0] + (int64_t)y * a[1] + a[2]) >> PENNYESC_AFFINE_SHIFT);
-    int32_t v = (int32_t)(((int64_t)x * a[3] + (int64_t)y * a[4] + a[5]) >> PENNYESC_AFFINE_SHIFT);
+    int32_t u = affine_row(x, y, a);
+    int32_t v = affine_row(x, y, a + 3);
     uint16_t frac;
     uint8_t idx = pseudo_lookup(u, v, &frac);
     uint8_t next_idx = (uint8_t)((idx + 1u) & (PNY_LUT_SIZE - 1u));

@@ -52,22 +52,54 @@ static const volatile uint8_t firmware_address[] = {'P', 'N', 'Y', 'A', 'D', 'D'
 #define REVERSE_HALL_PHASE_TURN16 32768
 #define ADVANCE_MIN_DEG -180
 #define ADVANCE_MAX_DEG 180
-/* Residual lead relative to the sensor read-start timestamp. */
-#if PNY_ESC_ADDRESS == 3
-#define OBSERVER_LEAD_US 100
-#else
-#define OBSERVER_LEAD_US 120
-#endif
+/* Lead past the estimated magnetic sample instant. Bench, 1104 motor with a
+ * drag load, 12k-35k rpm: supply current at a held speed is lowest from
+ * -10 to -20 us (most torque per amp); +20 us costs 1-3%, -60 us 6-9%. */
+#define OBSERVER_LEAD_US -15
 #define OBSERVER_LEAD_MIN_US -1000
 #define OBSERVER_LEAD_MAX_US 1000
 #ifndef SENSOR_TICK_US
-#define SENSOR_TICK_US 100u
+/* Each ~90 us transaction triggers a 75 us XY conversion ~20 us in and reads
+ * the previous one. A conversion that completes while the bus talks to the
+ * TMAG is lost, so it must land between this read's end and the next start. */
+#define SENSOR_TICK_US 125u
 #endif
-#define VEL_UPDATE_SAMPLES (1000u / SENSOR_TICK_US)
+/* Triggered conversion: register byte acked ~20 us after START, X and Y
+ * sampled 25 us apart. Stamp at the midpoint. Bench-tune with lead_us. */
+#define TRIGGER_SAMPLE_OFFSET_US 45
+/* Field weakening trades torque per amp for top speed (unloaded at 35k rpm,
+ * +30 us drew 1.15 A against 0.30 A), so it is off unless asked for. */
+#define FW_DEFAULT_US 0
+#define FW_MAX_DEFAULT_DEG 30
+#define OBS_ALPHA_SHIFT 3u
+#define OBS_BETA_SHIFT 6u
+#define OBS_GAMMA_SHIFT 12u
+/* A sample this far from the prediction (about 22 degrees mechanical) is
+ * treated as a glitch, unless the previous one was also rejected. */
+#define OBS_GATE_TURN32 (4096 << 16)
+/* Slip guard: deceleration against the drive above this, while faster than
+ * GUARD_MIN_RPM, removes field-weakening advance for GUARD_MS (no effect
+ * while fw_us is 0). */
+#define GUARD_ACCEL_RPM_S 600000.0
+#define GUARD_MIN_RPM 5000.0
+#define GUARD_MS 20u
+#define TICK_S ((double)SENSOR_TICK_US * 1e-6)
+#define RPM_TO_TURN32_PER_TICK(rpm) ((rpm) / 60.0 * TICK_S * 4294967296.0)
+#define GUARD_ACCEL_TURN32 ((int32_t)(GUARD_ACCEL_RPM_S / 60.0 * TICK_S * TICK_S * 4294967296.0))
+#define GUARD_MIN_TURN32 ((uint32_t)RPM_TO_TURN32_PER_TICK(GUARD_MIN_RPM))
+#define GUARD_TICKS ((uint16_t)(GUARD_MS * 1000u / SENSOR_TICK_US))
+/* Observer turn32/tick -> turn16/s and turn32/tick^2 -> krpm/s (>> 22). */
+#define VEL_TURN16_PER_S_MUL (1000000u / SENSOR_TICK_US)
+#define ACCEL_KRPM_MUL ((int32_t)(60e9 / 1024.0 / ((double)SENSOR_TICK_US * SENSOR_TICK_US) + 0.5))
+/* Microseconds -> Q8 sensor ticks (after >> 16), and observer velocity ->
+ * electrical turn16 per microsecond in Q8 (velocity >> 14 times
+ * RATE_Q8_MUL >> 6, then >> 12). */
+#define TICK_Q24_PER_US ((int32_t)((16777216u + SENSOR_TICK_US / 2u) / SENSOR_TICK_US))
+#define RATE_Q8_MUL ((int64_t)((6.0 * 16777216.0) / SENSOR_TICK_US + 0.5))
+#define SECTOR_TURN16_Q16 715827883u
 #define SCHED_TIMER_PERIOD 0xffffu
 #define SENSOR_STALE_US 10000u
 #define SENSOR_START_RETRIES 4u
-#define COMM_VELOCITY_SAMPLES 5u
 
 #if PNY_DRIVE_BRUSHED
 #define BRUSHED_FORWARD_STEP 2u
@@ -104,6 +136,10 @@ typedef struct {
     uint8_t reg;
     uint8_t value;
 } mct_reg_value_t;
+
+/* Main-context updates of state the PendSV estimator reads. */
+#define irq_lock() __asm__ volatile("cpsid i" ::: "memory")
+#define irq_unlock() __asm__ volatile("cpsie i" ::: "memory")
 
 #define HALLA_PORT GPIOC
 #define HALLA_PIN GPIO14
@@ -145,21 +181,32 @@ typedef struct {
     pny_cal_point_payload_t points[PNY_CAL_POINTS_PER_SWEEP];
 } calibration_state_t;
 
+/* Ring buffer of per-sensor-tick records. It freezes a quarter buffer after a
+ * slip-guard or commutation fault, or when duration_ms ends. */
 typedef struct {
     volatile bool active;
     volatile bool done;
+    volatile bool owns_motor;
+    volatile uint8_t decimation;
+    volatile uint8_t decim_count;
     volatile uint16_t duration_ms;
-    volatile uint16_t elapsed_ms;
-    volatile uint16_t sample_hz;
-    volatile uint16_t sample_period_ms;
-    volatile uint16_t sample_ticks;
+    volatile uint16_t post_trigger;
+    volatile uint16_t trigger_index;
+    volatile uint32_t start_ms;
     volatile uint16_t sample_count;
-    volatile uint16_t missed_count;
+    volatile uint8_t write_index;
     volatile pny_capture_sample_t samples[PNY_CAPTURE_MAX_SAMPLES];
 } capture_state_t;
 
+/* Type-3 tracking loop in mechanical turn32 units (2^-32 turn), per sensor
+ * tick. Holding acceleration as a state removes the lag a type-2 loop has
+ * while speed changes: that lag over-advanced commutation while braking and
+ * made braking self-sustaining. */
 typedef struct {
-    volatile int32_t position_turn32;
+    uint32_t pos;
+    int32_t vel;
+    int32_t acc;
+    uint8_t init;
 } observer_state_t;
 
 typedef struct {
@@ -188,8 +235,9 @@ static volatile int16_t sensor_y;
 static volatile int16_t sensor_z;
 static volatile uint16_t current_angle_turn16;
 static volatile int32_t absolute_position_turn32;
+#if PNY_DRIVE_BRUSHED
 static volatile int32_t velocity_turn32_per_s;
-static volatile int32_t comm_velocity_turn32_per_s;
+#endif
 static volatile int32_t position_zero_turn32;
 
 static volatile bool position_initialized;
@@ -216,12 +264,16 @@ static volatile int16_t control_clip = DEFAULT_CONTROL_CLIP;
 static volatile uint16_t control_deadband_turn32;
 static volatile bool report_speed;
 static volatile int32_t current_lead_turn16 = LEAD_DEFAULT_TURN16;
-static volatile int16_t observer_lead_us = OBSERVER_LEAD_US;
-#if PNY_DRIVE_BRUSHED
-static volatile uint8_t observer_mode = PNY_OBSERVER_AB_MID;
-#else
-static volatile uint8_t observer_mode = PNY_OBSERVER_AB_FAST;
-#endif
+static pny_comm_settings_t comm_settings = {
+    OBSERVER_LEAD_US,
+    PNY_COMM_FLAG_GUARD | PNY_COMM_FLAG_I2C_FIRST,
+    OBS_ALPHA_SHIFT, OBS_BETA_SHIFT, OBS_GAMMA_SHIFT,
+    FW_DEFAULT_US, FW_MAX_DEFAULT_DEG,
+};
+#define observer_lead_us comm_settings.lead_us
+static int32_t fw_max_turn16 = (FW_MAX_DEFAULT_DEG * 65536 + 180) / 360;
+static uint16_t guard_ticks;
+static pny_comm_diag_t comm_diag;
 static uint32_t pending_reset_ms;
 
 static volatile uint16_t isr_duration_us;
@@ -237,12 +289,6 @@ static uint32_t uart_overrun_errors;
 static work_state_t work_state;
 static observer_state_t observer_state;
 static comm_scheduler_t comm_scheduler;
-static int32_t comm_position;
-static int32_t comm_velocity_positions[COMM_VELOCITY_SAMPLES];
-static uint16_t comm_velocity_ticks[COMM_VELOCITY_SAMPLES];
-static uint8_t comm_velocity_index;
-static uint8_t comm_velocity_count;
-static int32_t observer_velocity_remainder;
 #if PNY_DRIVE_BRUSHED
 static int32_t brushed_velocity_position;
 static uint16_t brushed_velocity_tick;
@@ -319,9 +365,12 @@ static void clock_setup(void)
 
 static void systick_setup(void)
 {
+    /* SysTick only keeps milliseconds. Sensor ticks come from TIM21 CC1 and
+     * the estimator runs in PendSV, below I2C and commutation. */
     systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
-    systick_set_reload(32u * SENSOR_TICK_US - 1u);
-    nvic_set_priority(NVIC_SYSTICK_IRQ, 0x80);
+    systick_set_reload(31999u);
+    nvic_set_priority(NVIC_SYSTICK_IRQ, 0xC0);
+    nvic_set_priority(NVIC_PENDSV_IRQ, 0x80);
     systick_interrupt_enable();
     systick_counter_enable();
 }
@@ -352,18 +401,6 @@ static int32_t position_add_turn16_delta(int32_t position, int16_t delta)
         return INT32_MIN;
     }
     return position + delta;
-}
-
-static int16_t turn32_per_s_to_rpm(int32_t turn32_per_s)
-{
-    int32_t rpm = (turn32_per_s * 15) / 16384;
-    if (rpm > INT16_MAX) {
-        return INT16_MAX;
-    }
-    if (rpm < INT16_MIN) {
-        return INT16_MIN;
-    }
-    return (int16_t)rpm;
 }
 
 static uint16_t approx_hypot_u16(uint32_t x, uint32_t y)
@@ -432,8 +469,13 @@ static void i2c1_setup(void)
     rcc_set_peripheral_clk_sel(I2C1, RCC_CCIPR_I2CxSEL_PCLK);
     I2C_TIMINGR(I2C1) = TMAG5273_I2C_TIMING;
     i2c_peripheral_enable(I2C1);
+    tmag5273_async_setup();
     nvic_enable_irq(NVIC_I2C1_IRQ);
-    nvic_set_priority(NVIC_I2C1_IRQ, 0x40);
+    /* Above TIM21 (PNY_COMM_FLAG_I2C_FIRST): with DMA receiving the data,
+     * I2C needs two ~1 us interrupts per tick. A trigger-to-read restart
+     * delayed behind a sector edge ends the read after the conversion it
+     * started, and the TMAG discards that result. */
+    nvic_set_priority(NVIC_I2C1_IRQ, 0x00);
 }
 
 static void tim2_pwm_setup(void)
@@ -456,7 +498,7 @@ static void tim21_setup(void)
     timer_set_period(TIM21, SCHED_TIMER_PERIOD);
     TIM_DIER(TIM21) &= ~(TIM_DIER_UIE | TIM_DIER_CC1IE | TIM_DIER_CC2IE);
     nvic_enable_irq(NVIC_TIM21_IRQ);
-    nvic_set_priority(NVIC_TIM21_IRQ, 0);
+    nvic_set_priority(NVIC_TIM21_IRQ, 0x40);
     timer_enable_counter(TIM21);
 
 
@@ -540,24 +582,17 @@ static void apply_brake(void)
 static void stop_motor_outputs(void)
 {
     clear_motor_outputs();
-    velocity_turn32_per_s = 0;
-    comm_velocity_turn32_per_s = 0;
-    observer_velocity_remainder = 0;
+    observer_state.init = 0u;
 }
 
 static void velocity_reset(int32_t position)
 {
-    comm_position = position;
-    for (uint8_t i = 0; i < COMM_VELOCITY_SAMPLES; i++) {
-        comm_velocity_positions[i] = position;
-        comm_velocity_ticks[i] = sched_now_us();
-    }
-    comm_velocity_index = 0;
-    comm_velocity_count = 0;
-    velocity_turn32_per_s = 0;
-    comm_velocity_turn32_per_s = 0;
-    observer_velocity_remainder = 0;
+    (void)position;
+    observer_state.init = 0u;
+    /* No field weakening or slip detection while the observer settles. */
+    guard_ticks = GUARD_TICKS;
 #if PNY_DRIVE_BRUSHED
+    velocity_turn32_per_s = 0;
     brushed_velocity_position = position;
     brushed_velocity_tick = sched_now_us();
     brushed_velocity_sample_count = 0u;
@@ -582,8 +617,7 @@ static void brushed_velocity_update(int32_t position, uint16_t tick)
 
     int32_t delta = position - brushed_velocity_position;
     int32_t velocity = (delta * 100000) / (int32_t)(dt_us / 10u);
-    comm_velocity_turn32_per_s += (velocity - comm_velocity_turn32_per_s) / 4;
-    velocity_turn32_per_s = comm_velocity_turn32_per_s;
+    velocity_turn32_per_s += (velocity - velocity_turn32_per_s) / 4;
     brushed_velocity_position = position;
     brushed_velocity_tick = tick;
 }
@@ -591,25 +625,83 @@ static void brushed_velocity_update(int32_t position, uint16_t tick)
 
 /* Position and sensor sampling */
 #if !PNY_DRIVE_BRUSHED
-static int32_t comm_velocity_update(int32_t position, uint16_t tick)
+/* Advance the observer to a sample stamped at `stamp` and correct it.
+ * Returns the innovation (measured minus predicted) in turn16. */
+static int16_t observer_update(uint16_t angle_turn16, uint16_t stamp)
 {
-    uint8_t i = comm_velocity_index;
-    int32_t delta = (int32_t)((uint32_t)position - (uint32_t)comm_velocity_positions[i]);
-    uint16_t dt = (uint16_t)(tick - comm_velocity_ticks[i]);
-    comm_velocity_positions[i] = position;
-    comm_velocity_ticks[i] = tick;
-    comm_velocity_index = (i + 1u == COMM_VELOCITY_SAMPLES) ? 0u : (uint8_t)(i + 1u);
-    if (comm_velocity_count < COMM_VELOCITY_SAMPLES) {
-        comm_velocity_count++;
-        return comm_velocity_turn32_per_s;
+    observer_state_t *o = &observer_state;
+    uint16_t dt = (uint16_t)(stamp - comm_scheduler.position_tick);
+    uint32_t measured = (uint32_t)angle_turn16 << 16;
+    comm_scheduler.position_tick = stamp;
+
+    int32_t k = 1;
+    while (k < 8 && dt > (uint16_t)(k * SENSOR_TICK_US + SENSOR_TICK_US / 2u)) {
+        k++;
     }
-    if (dt == 0u || dt >= SENSOR_STALE_US) {
-        return comm_velocity_turn32_per_s;
+    if (o->init == 0u || dt >= SENSOR_STALE_US) {
+        o->pos = measured;
+        o->vel = 0;
+        o->acc = 0;
+        o->init = 1u;
+        return 0;
     }
-    return (delta * 1000 / (int32_t)dt) * 1000;
+    if (o->init == 1u) {
+        /* Second sample: start at the measured speed, so starting while the
+         * rotor already spins does not begin with a large tracking error.
+         * Division-free, so it waits for two consecutive samples. */
+        if (k == 1) {
+            o->vel = (int32_t)(measured - o->pos);
+            o->init = 2u;
+        }
+        o->pos = measured;
+        return 0;
+    }
+    int32_t vel = o->vel;
+    int32_t acc = o->acc;
+    uint32_t predicted = o->pos + (uint32_t)vel * (uint32_t)k +
+                         (uint32_t)((acc >> 1) * k * k);
+    int32_t error = (int32_t)(measured - predicted);
+    if ((error > OBS_GATE_TURN32 || error < -OBS_GATE_TURN32) && o->init == 2u) {
+        o->init = 3u;   /* coast on the prediction once */
+        comm_diag.rejected++;
+        o->pos = predicted;
+        o->vel = vel + acc * k;
+        return (int16_t)(error >> 16);
+    }
+    o->init = 2u;
+    /* After missed samples the prediction spans k ticks: scale the rate
+     * corrections by about 1/k and 1/k^2 (shifts; exact for k = 1, 2, 4). */
+    uint8_t ks = (uint8_t)(k >= 4 ? 2 : k - 1);
+    int32_t dv = error >> (comm_settings.beta_shift + ks);
+    int32_t da = error >> (comm_settings.gamma_shift + 2u * ks);
+    o->pos = predicted + (uint32_t)(error >> comm_settings.alpha_shift);
+    o->vel = vel + acc * k + dv;
+    o->acc = acc + da;
+    return (int16_t)(error >> 16);
 }
 
 #endif
+
+/* Unit conversions for readers (status, control), not the per-tick path. */
+static int32_t velocity_now(void)
+{
+#if PNY_DRIVE_BRUSHED
+    return velocity_turn32_per_s;
+#else
+    if (current_mode != PNY_MODE_RUN || observer_state.init < 2u) {
+        return 0;
+    }
+    return (int32_t)(((int64_t)observer_state.vel * VEL_TURN16_PER_S_MUL) >> 16);
+#endif
+}
+
+static int16_t accel_krpm_s(void)
+{
+    int32_t accel = (int32_t)(((int64_t)observer_state.acc * ACCEL_KRPM_MUL) >> 22);
+    if (accel > INT16_MAX) accel = INT16_MAX;
+    if (accel < -INT16_MAX) accel = -INT16_MAX;
+    return (int16_t)accel;
+}
 
 static void update_position_from_angle(uint16_t angle_turn16)
 {
@@ -648,8 +740,8 @@ static bool position_target_reached(void)
         return false;
     }
 #if PNY_DRIVE_BRUSHED
-    return velocity_turn32_per_s > -VELOCITY_DEADBAND_TURN32_PER_S &&
-           velocity_turn32_per_s < VELOCITY_DEADBAND_TURN32_PER_S;
+    return velocity_now() > -VELOCITY_DEADBAND_TURN32_PER_S &&
+           velocity_now() < VELOCITY_DEADBAND_TURN32_PER_S;
 #else
     return true;
 #endif
@@ -712,7 +804,7 @@ static bool sensor_set_run_mode(void)
 #if PNY_DRIVE_BRUSHED
     if (!tmag5273_set_mode(TMAG5273_MODE_FAST_XYZ)) {
 #else
-    if (!tmag5273_set_mode(TMAG5273_MODE_FAST_XY)) {
+    if (!tmag5273_set_mode(TMAG5273_MODE_TRIGGER_XY)) {
 #endif
         return false;
     }
@@ -792,60 +884,26 @@ static void apply_sensor_xy_sample(const tmag5273_xy_sample_t *sample, bool upda
 
 static int32_t lead_deg_to_turn16(int16_t lead_deg)
 {
-    int32_t scaled = (int32_t)lead_deg * 65536;
-    if (scaled >= 0) {
-        return (scaled + 180) / 360;
-    }
-    return -((-scaled + 180) / 360);
+    /* 65536 / 360 = 46603.4 / 256, without a signed divide. */
+    return ((int32_t)lead_deg * 46603 + 128) >> 8;
 }
 
 /* Commutation scheduler */
 static void comm_fault(void);
 #if !PNY_DRIVE_BRUSHED
-static int32_t observer_position_at_tick(uint16_t tick)
+/* Electrical commutation phase for a mechanical angle in turn32. fw is
+ * extra advance in the drive direction. */
+static uint16_t commutation_phase(uint32_t mech_turn32, int direction, int32_t fw)
 {
-    int32_t dt_us = (int16_t)(tick - comm_scheduler.position_tick);
-    dt_us += observer_lead_us;
-    return observer_state.position_turn32 +
-           position_delta(comm_velocity_turn32_per_s, dt_us);
-}
-#endif
-
-#if !PNY_DRIVE_BRUSHED
-static void observer_ab_update(int32_t measured_position, uint16_t sample_tick, uint8_t alpha_div, uint16_t beta_div)
-{
-    uint16_t dt_us = (uint16_t)(sample_tick - comm_scheduler.position_tick);
-    if (dt_us == 0u || dt_us >= SENSOR_STALE_US) {
-        observer_state.position_turn32 = measured_position;
-        return;
-    }
-
-    int32_t predicted = observer_state.position_turn32 +
-                        position_delta(comm_velocity_turn32_per_s, dt_us);
-    int32_t error = (int16_t)((uint16_t)measured_position - (uint16_t)predicted);
-    observer_state.position_turn32 = (uint16_t)(predicted + (error / alpha_div));
-    int32_t correction_num = error * (int32_t)(1000000u / beta_div) + observer_velocity_remainder;
-    int32_t correction = correction_num / (int32_t)dt_us;
-    observer_velocity_remainder = correction_num - correction * (int32_t)dt_us;
-    comm_velocity_turn32_per_s += correction;
-}
-
-static int32_t commutation_phase_at_tick(uint16_t tick, int direction)
-{
-    int32_t rotor_electrical = (uint16_t)observer_position_at_tick(tick) * POLE_PAIRS;
-    int32_t phase = rotor_electrical +
+    int32_t phase = (int32_t)((mech_turn32 * POLE_PAIRS) >> 16) +
                     pennyesc_calibration_commutation_alignment_turn16() +
                     current_lead_turn16;
     if (direction < 0) {
-        phase -= REVERSE_HALL_PHASE_TURN16;
+        phase -= REVERSE_HALL_PHASE_TURN16 + fw;
+    } else {
+        phase += fw;
     }
-    return phase;
-}
-
-static uint8_t comm_sector_at_tick(uint16_t tick, int direction)
-{
-    uint16_t phase = (uint16_t)commutation_phase_at_tick(tick, direction);
-    return (uint8_t)(((uint32_t)phase * 6u) >> 16);
+    return (uint16_t)phase;
 }
 
 static uint16_t comm_sector_start_phase(uint8_t sector)
@@ -892,12 +950,30 @@ static void comm_schedule_absolute(uint16_t now)
 
 static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
 {
-    int32_t velocity = comm_velocity_turn32_per_s;
-    uint32_t speed_k = (abs_u32(velocity) / 1000u) * POLE_PAIRS;
-    uint32_t period = sector_period_q8(speed_k);
-    uint16_t phase = (uint16_t)commutation_phase_at_tick(now, direction);
-    int32_t rate = (int32_t)(speed_k * 256u / 1000u);
-    if (velocity < 0) rate = -rate;
+    /* Extrapolate the observer to now + lead with its acceleration. */
+    /* 32-bit products of pre-shifted terms: the horizon resolves to 0.5 us
+     * and the rate to 5e-5, both well inside the sensor's resolution. */
+    int32_t h = (int16_t)(now - comm_scheduler.position_tick) + observer_lead_us;
+    int32_t hq = (h * TICK_Q24_PER_US) >> 16;   /* Q8 sensor ticks */
+    int32_t vel = observer_state.vel;
+    int32_t velocity = vel + ((observer_state.acc >> 8) * hq);
+    uint32_t mech = observer_state.pos + (uint32_t)(((vel >> 1) + (velocity >> 1)) >> 8) * (uint32_t)hq;
+    int32_t rate = ((velocity >> 14) * (int32_t)(RATE_Q8_MUL >> 6)) >> 12;
+    uint32_t rate_abs = abs_u32(rate);
+    uint32_t period = rate_abs != 0u ? SECTOR_TURN16_Q16 / rate_abs : 0u;
+    if (period > (COMM_MAX_PERIOD_US << 8)) {
+        period = 0u;
+    }
+    /* Field-weakening advance grows with speed but stays below the torque
+     * peak; past it, more advance lowers torque and the loop can run away. */
+    int32_t fw = 0;
+    if (guard_ticks == 0u && (velocity > 0) == (direction > 0)) {
+        fw = ((int32_t)rate_abs * comm_settings.fw_us) >> 8;
+        if (fw > fw_max_turn16) fw = fw_max_turn16;
+        if (fw < -fw_max_turn16) fw = -fw_max_turn16;
+    }
+    comm_diag.fw_deg = (int16_t)((fw * 45) >> 13);
+    uint16_t phase = commutation_phase(mech, direction, fw);
 
     nvic_disable_irq(NVIC_TIM21_IRQ);
     if (current_mode != PNY_MODE_RUN || direction == 0 || current_duty == 0) {
@@ -930,7 +1006,7 @@ static void comm_scheduler_schedule_sector_event(uint16_t now, int direction)
 
 static void comm_scheduler_stop(void)
 {
-    TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
+    TIM_DIER(TIM21) &= ~(TIM_DIER_CC1IE | TIM_DIER_CC2IE);
     comm_scheduler.active = false;
     comm_scheduler.sector = 0xffu;
     comm_scheduler.last_duty = INT16_MIN;
@@ -945,10 +1021,12 @@ static void comm_scheduler_start(void)
     comm_scheduler.sample_limit_us = SENSOR_STALE_US;
     comm_scheduler.last_duty = INT16_MIN;
     comm_scheduler.next_comm_tick = now;
-    tmag5273_async_start_xy(now);
     TIM_DIER(TIM21) &= ~TIM_DIER_CC2IE;
-    timer_clear_flag(TIM21, TIM_SR_CC2IF);
+    timer_clear_flag(TIM21, TIM_SR_CC1IF | TIM_SR_CC2IF);
+    /* TIM21 CC1 starts every sensor transaction at a fixed period. */
+    TIM_CCR1(TIM21) = (uint16_t)(now + 10u);
     comm_scheduler.active = true;
+    TIM_DIER(TIM21) |= TIM_DIER_CC1IE;
 }
 
 static bool sensor_start_read(void)
@@ -1127,7 +1205,7 @@ static int16_t control_duty(void)
     }
 #endif
     int32_t position_error = target_position_turn32 - position_from_zero(absolute_position_turn32);
-    int32_t velocity_error = target_velocity_turn32_per_s - velocity_turn32_per_s;
+    int32_t velocity_error = target_velocity_turn32_per_s - velocity_now();
 #if PNY_DRIVE_BRUSHED
     if (target_position_set && target_velocity_turn32_per_s == 0 &&
         position_error >= -BRUSHED_POSITION_HOLD_TURN32 &&
@@ -1186,7 +1264,6 @@ static void run_begin(void)
     }
     update_position_from_angle(current_angle_turn16);
     velocity_reset(absolute_position_turn32);
-    observer_state.position_turn32 = current_angle_turn16;
 
     int16_t duty;
     int8_t direction;
@@ -1214,14 +1291,14 @@ static void run_begin(void)
     next_mct_check_ms = system_millis + MCT_IDLE_CHECK_MS;
     current_duty = duty;
     current_direction = direction;
-    comm_scheduler.position_tick = sched_now_us();
-    uint8_t sector = comm_sector_at_tick(comm_scheduler.position_tick, direction);
+    uint8_t sector = (uint8_t)(((uint32_t)commutation_phase(
+        (uint32_t)current_angle_turn16 << 16, direction, 0) * 6u) >> 16);
     set_hall_outputs_raw(sector);
     current_mode = PNY_MODE_RUN;
     apply_pwm_duty(duty);
     comm_scheduler_start();
     comm_scheduler.sector = sector;
-    /* Velocity is zero until fresh samples arrive; SysTick arms the first edge. */
+    /* The observer initializes from the first two samples; PendSV arms edges. */
 #endif
 }
 
@@ -1331,10 +1408,11 @@ static void fill_status_payload(pny_status_payload_t *payload, uint8_t result)
     payload->flags = current_flags(payload->faults);
     payload->x = sensor_x;
     payload->y = sensor_y;
-    payload->z = sensor_z;
+    /* While running, z carries the observer's acceleration in krpm/s. */
+    payload->z = current_mode == PNY_MODE_RUN ? accel_krpm_s() : sensor_z;
     payload->angle_turn16 = current_angle_turn16;
     payload->position_turn32 = position_from_zero(absolute_position_turn32);
-    payload->velocity_turn32_per_s = velocity_turn32_per_s;
+    payload->velocity_turn32_per_s = velocity_now();
     payload->duty = current_duty;
     payload->mct_fault_count = mct_fault_count;
     payload->isr_us = (uint16_t)isr_duration_us;
@@ -1558,32 +1636,48 @@ static __attribute__((noinline)) void calibration_poll(void)
 }
 
 /* Capture and commutation ISR */
-static void capture_tick_1ms(void)
+static void capture_finish(void)
+{
+    capture_state.active = false;
+    capture_state.done = true;
+    if (capture_state.owns_motor) {
+        control_disable();
+    }
+}
+
+/* One record per sensor tick: measured angle and innovation (INT16_MIN when
+ * no fresh sample arrived). */
+static void capture_record(uint16_t angle, int16_t innovation)
 {
     if (!capture_state.active) {
         return;
     }
-
-    int16_t rpm = turn32_per_s_to_rpm(velocity_turn32_per_s);
-    capture_state.elapsed_ms++;
-
-    capture_state.sample_ticks++;
-    if (capture_state.sample_ticks >= capture_state.sample_period_ms) {
-        capture_state.sample_ticks = 0;
-        uint16_t index = capture_state.sample_count;
-        if (index < PNY_CAPTURE_MAX_SAMPLES) {
-            capture_state.samples[index].angle_turn16 = current_angle_turn16;
-            capture_state.samples[index].rpm = rpm;
-            capture_state.sample_count = (uint16_t)(index + 1u);
-        } else if (capture_state.missed_count != UINT16_MAX) {
-            capture_state.missed_count++;
-        }
+    if (++capture_state.decim_count < capture_state.decimation) {
+        return;
     }
+    capture_state.decim_count = 0u;
+    uint8_t slot = capture_state.write_index;
+    capture_state.samples[slot].angle_turn16 = angle;
+    capture_state.samples[slot].rpm = innovation;
+    capture_state.write_index = (uint8_t)(slot + 1u == PNY_CAPTURE_MAX_SAMPLES ? 0u : slot + 1u);
+    if (capture_state.sample_count < PNY_CAPTURE_MAX_SAMPLES) {
+        capture_state.sample_count++;
+    }
+    if (capture_state.trigger_index < PNY_CAPTURE_MAX_SAMPLES) {
+        capture_state.trigger_index++;   /* records since the trigger */
+    }
+    if ((capture_state.post_trigger != 0u && --capture_state.post_trigger == 0u) ||
+        (capture_state.duration_ms != 0u &&
+         (uint32_t)(system_millis - capture_state.start_ms) >= capture_state.duration_ms)) {
+        capture_finish();
+    }
+}
 
-    if (capture_state.elapsed_ms >= capture_state.duration_ms) {
-        capture_state.active = false;
-        capture_state.done = true;
-        control_disable();
+static void capture_trigger(void)
+{
+    if (capture_state.active && capture_state.trigger_index == UINT16_MAX) {
+        capture_state.trigger_index = 0u;
+        capture_state.post_trigger = PNY_CAPTURE_MAX_SAMPLES / 4u;
     }
 }
 
@@ -1598,7 +1692,11 @@ static void comm_stop_from_isr(void)
 static void comm_fault(void)
 {
     sensor_ready = false;
-    capture_state.active = false;
+    comm_diag.comm_faults++;
+    if (capture_state.active) {
+        capture_trigger();
+        capture_finish();
+    }
     control_disable();
     comm_stop_from_isr();
 }
@@ -1668,65 +1766,64 @@ static void comm_control_tick(uint16_t now)
 #endif
 }
 
+#if !PNY_DRIVE_BRUSHED
+static int16_t comm_observe(const tmag5273_xy_sample_t *sample)
+{
+    int16_t e = observer_update(current_angle_turn16,
+                                (uint16_t)(sample->sample_tick + TRIGGER_SAMPLE_OFFSET_US));
+    uint16_t mag = (uint16_t)(e < 0 ? -e : e);
+    comm_diag.innov_mean_x16 = (uint16_t)(comm_diag.innov_mean_x16 +
+        (((int32_t)mag * 16 - comm_diag.innov_mean_x16) >> 5));
+    if (mag > comm_diag.innov_max) {
+        comm_diag.innov_max = mag;
+    }
+
+    /* Hard deceleration against the drive means commutation slipped past
+     * the torque peak. Drop field-weakening advance until it recovers. */
+    int32_t a = current_direction < 0 ? -observer_state.acc : observer_state.acc;
+    if ((comm_settings.flags & PNY_COMM_FLAG_GUARD) != 0u && current_duty != 0 &&
+        a < -GUARD_ACCEL_TURN32 && abs_u32(observer_state.vel) > GUARD_MIN_TURN32) {
+        if (guard_ticks == 0u) {
+            comm_diag.guard_events++;
+            capture_trigger();
+        }
+        guard_ticks = GUARD_TICKS;
+    } else if (guard_ticks != 0u) {
+        guard_ticks--;
+    }
+    return e;
+}
+#endif
+
 static void comm_sensor_tick(void)
 {
-    static uint8_t vel_counter;
-#if !PNY_DRIVE_BRUSHED
-    uint16_t last_angle = current_angle_turn16;
-    uint16_t last_tick = comm_scheduler.position_tick;
-#endif
     tmag5273_xy_sample_t sample;
     bool have_sample = tmag5273_async_take_xy(&sample);
+    int16_t innovation = INT16_MIN;
 
     if (have_sample) {
+        comm_diag.samples++;
         apply_sensor_xy_sample(&sample, true);
-        uint16_t sample_tick = sample.sample_tick;
 #if PNY_DRIVE_BRUSHED
-        brushed_velocity_update(absolute_position_turn32, sample_tick);
+        brushed_velocity_update(absolute_position_turn32, sample.sample_tick);
+        comm_scheduler.position_tick = sample.sample_tick;
 #else
-        uint16_t sample_dt = (uint16_t)(sample_tick - last_tick);
-        int16_t delta = (int16_t)(current_angle_turn16 - last_angle);
-        comm_position = (int32_t)((uint32_t)comm_position + (uint32_t)(int32_t)delta);
-        if (observer_mode >= PNY_OBSERVER_AB_FAST) {
-            uint8_t gain = (uint8_t)(observer_mode - PNY_OBSERVER_AB_FAST);
-            observer_ab_update(current_angle_turn16, sample_tick,
-                               (uint8_t)(8u + 4u * gain),
-                               (uint16_t)(128u + 64u * gain));
-        } else {
-            observer_state.position_turn32 = current_angle_turn16;
-            int32_t velocity = comm_velocity_turn32_per_s;
-            if (sample_dt > 0u && sample_dt < SENSOR_STALE_US) {
-                velocity = (delta * 1000 / (int32_t)sample_dt) * 1000;
-            }
-            int32_t secant = comm_velocity_update(comm_position, sample_tick);
-            uint8_t divisor = 2u;
-            if (observer_mode >= PNY_OBSERVER_SECANT && comm_velocity_count >= COMM_VELOCITY_SAMPLES) {
-                velocity = secant;
-                divisor = (uint8_t)(1u << (observer_mode - PNY_OBSERVER_SECANT));
-            }
-            comm_velocity_turn32_per_s += (velocity - comm_velocity_turn32_per_s) / divisor;
-        }
-        velocity_turn32_per_s = comm_velocity_turn32_per_s;
+        innovation = comm_observe(&sample);
 #endif
-        comm_scheduler.position_tick = sample_tick;
+    } else {
+        comm_diag.missed_ticks++;
     }
 
     if (current_mode != PNY_MODE_RUN) {
         return;
     }
     uint16_t control_tick = sched_now_us();
-    (void)tmag5273_async_start_xy(control_tick);
     if ((uint16_t)(control_tick - comm_scheduler.position_tick) > comm_scheduler.sample_limit_us) {
         comm_fault();
         return;
     }
 
-    vel_counter++;
-    if (vel_counter >= VEL_UPDATE_SAMPLES) {
-        vel_counter = 0;
-        capture_tick_1ms();
-    }
-
+    capture_record(current_angle_turn16, innovation);
     comm_control_tick(control_tick);
 #if !PNY_DRIVE_BRUSHED
     if (have_sample || (TIM_DIER(TIM21) & TIM_DIER_CC2IE) == 0u) {
@@ -1735,10 +1832,36 @@ static void comm_sensor_tick(void)
 #endif
 }
 
+static void pend_estimator(void)
+{
+    SCB_ICSR = SCB_ICSR_PENDSVSET;
+}
+
+/* Sensor tick: start the TMAG transaction at a fixed period from the
+ * highest-priority interrupt, so the trigger instant has ~1 us jitter. */
+static void sensor_tick_isr(void)
+{
+    uint16_t now = sched_now_us();
+    uint16_t next = (uint16_t)(TIM_CCR1(TIM21) + SENSOR_TICK_US);
+    if (tick_due(now, next)) {
+        next = (uint16_t)(now + SENSOR_TICK_US);
+    }
+    TIM_CCR1(TIM21) = next;
+    if (!tmag5273_async_start_xy(now)) {
+        isr_overrun_count++;
+        pend_estimator();
+    }
+}
+
 void tim21_isr(void)
 {
+    uint32_t flags = TIM_SR(TIM21) & TIM_DIER(TIM21);
+    if ((flags & TIM_SR_CC1IF) != 0u) {
+        timer_clear_flag(TIM21, TIM_SR_CC1IF);
+        sensor_tick_isr();
+    }
 #if !PNY_DRIVE_BRUSHED
-    if ((TIM_SR(TIM21) & TIM_DIER(TIM21) & TIM_SR_CC2IF) == 0u) {
+    if ((flags & TIM_SR_CC2IF) == 0u) {
         return;
     }
     uint16_t now = sched_now_us();
@@ -1758,15 +1881,16 @@ void tim21_isr(void)
 #endif
 }
 
-/* STM32L011 has TIM2 and TIM21, but no TIM22. SysTick supplies the
- * 100 us control service while TIM21 remains dedicated to sector edges. */
+/* STM32L011 has TIM2 and TIM21, but no TIM22. TIM21 CC1 paces sensor reads,
+ * CC2 places sector edges; SysTick only counts milliseconds. */
 void sys_tick_handler(void)
 {
-    static uint8_t millisecond_ticks;
-    if (++millisecond_ticks == 1000u / SENSOR_TICK_US) {
-        millisecond_ticks = 0u;
-        system_millis++;
-    }
+    system_millis++;
+}
+
+/* Estimator and control, once per sensor transaction, below I2C and TIM21. */
+void pend_sv_handler(void)
+{
     if (current_mode != PNY_MODE_RUN || !comm_scheduler.active) {
         return;
     }
@@ -1776,6 +1900,9 @@ void sys_tick_handler(void)
     if (isr_duration_us > isr_max_us) {
         isr_max_us = isr_duration_us;
     }
+    if (isr_duration_us > comm_diag.proc_max_us) {
+        comm_diag.proc_max_us = isr_duration_us;
+    }
     if (isr_duration_us >= SENSOR_TICK_US) {
         isr_overrun_count++;
     }
@@ -1783,7 +1910,9 @@ void sys_tick_handler(void)
 
 void i2c1_isr(void)
 {
-    tmag5273_i2c1_isr();
+    if (tmag5273_i2c1_isr()) {
+        pend_estimator();
+    }
 }
 
 /* UART protocol */
@@ -1875,14 +2004,14 @@ static void handle_send_position(const uint8_t *payload, uint8_t len)
     int32_t position_turn32;
     memcpy(&position_turn32, payload, sizeof(position_turn32));
 
-    systick_interrupt_disable();
+    irq_lock();
     target_position_turn32 = position_turn32;
     if (len == 10u) {
         memcpy((void *)&target_velocity_turn32_per_s, payload + 4u, 4u);
         memcpy((void *)&control_kf, payload + 8u, 2u);
     }
     target_position_set = true;
-    systick_interrupt_enable();
+    irq_unlock();
     if (current_mode != PNY_MODE_RUN) {
         control_apply();
     }
@@ -1943,13 +2072,13 @@ static void handle_set_control(const uint8_t *payload, uint8_t len)
         return;
     }
 
-    systick_interrupt_disable();
+    irq_lock();
     control_kp_q8 = kp_q8;
     control_kd_q8 = kd_q8;
     control_kv_q8 = kv_q8;
     control_kf = kf;
     control_clip = clip;
-    systick_interrupt_enable();
+    irq_unlock();
 #else
     if (len != sizeof(pny_control_payload_t) && len != sizeof(pny_control_payload_t) + 2u) {
         send_status_response(PNY_CMD_SET_CONTROL, PNY_RESULT_BAD_ARG);
@@ -1964,7 +2093,7 @@ static void handle_set_control(const uint8_t *payload, uint8_t len)
         return;
     }
 
-    systick_interrupt_disable();
+    irq_lock();
     control_kp_q8 = control.kp_q8;
     control_kd_q8 = control.kd_q8;
     control_kv_q8 = control.kv_q8;
@@ -1972,7 +2101,7 @@ static void handle_set_control(const uint8_t *payload, uint8_t len)
     control_clip = control.clip;
     control_deadband_turn32 = len == sizeof(control) + 2u ?
         (uint16_t)(payload[sizeof(control)] | ((uint16_t)payload[sizeof(control) + 1u] << 8)) : 0u;
-    systick_interrupt_enable();
+    irq_unlock();
 #endif
     send_status_response(PNY_CMD_SET_CONTROL, control_apply());
 }
@@ -2109,17 +2238,22 @@ static void handle_cal_info(void)
     send_frame(PNY_CMD_CAL, &out, sizeof(out));
 }
 
+/* sample_hz reports the decimation (records every Nth sensor tick).
+ * missed_count reports the first record after the trigger, in read order,
+ * or 0xffff when nothing triggered. */
 static void fill_capture_status(pny_capture_status_payload_t *out, uint8_t result)
 {
+    uint16_t stored = capture_state.sample_count;
     out->subcmd = PNY_DEBUG_CAPTURE_STATUS;
     out->result = result;
     out->active = capture_state.active ? 1u : 0u;
     out->done = capture_state.done ? 1u : 0u;
-    out->sample_hz = capture_state.sample_hz;
+    out->sample_hz = capture_state.decimation;
     out->duration_ms = capture_state.duration_ms;
-    out->elapsed_ms = capture_state.elapsed_ms;
-    out->sample_count = capture_state.sample_count;
-    out->missed_count = capture_state.missed_count;
+    out->elapsed_ms = (uint16_t)(system_millis - capture_state.start_ms);
+    out->sample_count = stored;
+    out->missed_count = capture_state.trigger_index > stored ? UINT16_MAX :
+        (uint16_t)(stored - capture_state.trigger_index);
     out->mct_fault_count = mct_fault_count;
 }
 
@@ -2130,6 +2264,10 @@ static void send_capture_status(uint8_t result)
     send_frame(PNY_CMD_DEBUG, &out, sizeof(out));
 }
 
+/* duty 0 arms a recorder for whatever is running. A nonzero duty also runs
+ * the motor at that duty and advance, and stops it when the capture ends.
+ * sample_hz is the decimation (1 = every sensor tick). duration_ms 0 records
+ * until a slip-guard event or fault. */
 static __attribute__((noinline)) uint8_t capture_start(const uint8_t *payload, uint8_t len)
 {
     if (len != sizeof(pny_capture_start_payload_t)) {
@@ -2138,8 +2276,8 @@ static __attribute__((noinline)) uint8_t capture_start(const uint8_t *payload, u
 
     pny_capture_start_payload_t in;
     memcpy(&in, payload, sizeof(in));
-    if (in.duration_ms == 0u || in.duration_ms > CAPTURE_MAX_DURATION_MS ||
-        (in.sample_hz != 250u && in.sample_hz != 500u && in.sample_hz != 1000u) ||
+    if (in.duration_ms > CAPTURE_MAX_DURATION_MS || in.sample_hz > 255u ||
+        (in.duration_ms == 0u && in.duty != 0) ||
         in.advance_deg < ADVANCE_MIN_DEG || in.advance_deg > ADVANCE_MAX_DEG ||
         in.duty > DUTY_LIMIT || in.duty < -DUTY_LIMIT) {
         return PNY_RESULT_RANGE;
@@ -2153,19 +2291,21 @@ static __attribute__((noinline)) uint8_t capture_start(const uint8_t *payload, u
         return result;
     }
 
-    systick_interrupt_disable();
+    irq_lock();
     memset(&capture_state, 0, sizeof(capture_state));
-    capture_state.sample_hz = in.sample_hz;
+    capture_state.decimation = in.sample_hz != 0u ? (uint8_t)in.sample_hz : 1u;
     capture_state.duration_ms = in.duration_ms;
-    capture_state.sample_period_ms = (uint16_t)(1000u / in.sample_hz);
+    capture_state.trigger_index = UINT16_MAX;
+    capture_state.start_ms = system_millis;
+    capture_state.owns_motor = in.duty != 0;
     capture_state.active = true;
-
-    current_lead_turn16 = lead_deg_to_turn16(in.advance_deg);
-    control_set_duty(in.duty, DUTY_LIMIT);
-    release_brake();
-
-    systick_interrupt_enable();
-    if (current_mode != PNY_MODE_RUN) {
+    if (in.duty != 0) {
+        current_lead_turn16 = lead_deg_to_turn16(in.advance_deg);
+        control_set_duty(in.duty, DUTY_LIMIT);
+        release_brake();
+    }
+    irq_unlock();
+    if (in.duty != 0 && current_mode != PNY_MODE_RUN) {
         run_begin();
         if (current_mode != PNY_MODE_RUN) {
             capture_state.active = false;
@@ -2199,48 +2339,77 @@ static __attribute__((noinline)) void handle_capture_read(const uint8_t *payload
         return;
     }
 
-    if (offset > capture_state.sample_count) {
+    uint16_t stored = capture_state.sample_count;
+    if (offset > stored) {
         out->result = PNY_RESULT_RANGE;
         send_frame(PNY_CMD_DEBUG, out, 5u);
         return;
     }
 
-    uint16_t available = (uint16_t)(capture_state.sample_count - offset);
+    uint16_t available = (uint16_t)(stored - offset);
     if (want > available) {
         want = (uint8_t)available;
     }
 
+    /* Oldest first: the oldest record sits at write_index once full. */
+    uint16_t index = (uint16_t)((stored < PNY_CAPTURE_MAX_SAMPLES ? 0u : capture_state.write_index) + offset);
+    if (index >= PNY_CAPTURE_MAX_SAMPLES) {
+        index = (uint16_t)(index - PNY_CAPTURE_MAX_SAMPLES);
+    }
     out->result = PNY_RESULT_OK;
     out->offset = offset;
     out->count = want;
     for (uint8_t i = 0; i < want; i++) {
-        out->samples[i].angle_turn16 = capture_state.samples[offset + i].angle_turn16;
-        out->samples[i].rpm = capture_state.samples[offset + i].rpm;
+        out->samples[i].angle_turn16 = capture_state.samples[index].angle_turn16;
+        out->samples[i].rpm = capture_state.samples[index].rpm;
+        if (++index == PNY_CAPTURE_MAX_SAMPLES) {
+            index = 0u;
+        }
     }
     send_frame(PNY_CMD_DEBUG, out, (uint8_t)(5u + (want * sizeof(pny_capture_sample_t))));
 }
 
+static void send_comm_stats(uint8_t result)
+{
+    pny_comm_stats_payload_t out;
+    out.subcmd = PNY_DEBUG_COMM_STATS;
+    out.result = result;
+    /* No interrupt lock: a torn counter is harmless, a late edge is not. */
+    out.settings = comm_settings;
+    comm_diag.accel_krpm_s = accel_krpm_s();
+    out.diag = comm_diag;
+    comm_diag.innov_max = 0u;
+    comm_diag.proc_max_us = 0u;
+    send_frame(PNY_CMD_DEBUG, &out, sizeof(out));
+}
+
+/* 4-byte form (legacy tools) sets lead only; 11-byte form sets everything. */
 static void handle_set_observer(const uint8_t *payload, uint8_t len)
 {
-    if (len != sizeof(pny_observer_payload_t)) {
-        send_capture_status(PNY_RESULT_BAD_ARG);
-        return;
+    pny_comm_settings_t in = comm_settings;
+    uint8_t result = PNY_RESULT_OK;
+    if (len == sizeof(pny_observer_payload_t)) {
+        memcpy(&in.lead_us, payload + 1, sizeof(in.lead_us));
+    } else if (len == sizeof(pny_comm_settings_payload_t)) {
+        memcpy(&in, payload + 1, sizeof(in));
+    } else {
+        result = PNY_RESULT_BAD_ARG;
     }
-
-    pny_observer_payload_t in;
-    memcpy(&in, payload, sizeof(in));
-    if (in.lead_us < OBSERVER_LEAD_MIN_US || in.lead_us > OBSERVER_LEAD_MAX_US || in.mode > PNY_OBSERVER_MAX) {
-        send_capture_status(PNY_RESULT_RANGE);
-        return;
+    if (result == PNY_RESULT_OK &&
+        (in.lead_us < OBSERVER_LEAD_MIN_US || in.lead_us > OBSERVER_LEAD_MAX_US ||
+         in.alpha_shift > 8u || in.beta_shift > 16u || in.gamma_shift > 24u ||
+         in.fw_us < -500 || in.fw_us > 500 || in.fw_max_deg < 0 || in.fw_max_deg > 90)) {
+        result = PNY_RESULT_RANGE;
     }
-
-    systick_interrupt_disable();
-    observer_lead_us = in.lead_us;
-    observer_mode = in.mode;
-    observer_state.position_turn32 = current_angle_turn16;
-    observer_velocity_remainder = 0;
-    systick_interrupt_enable();
-    send_capture_status(PNY_RESULT_OK);
+    if (result == PNY_RESULT_OK) {
+        irq_lock();
+        comm_settings = in;
+        fw_max_turn16 = lead_deg_to_turn16(in.fw_max_deg);
+        nvic_set_priority(NVIC_I2C1_IRQ, (in.flags & PNY_COMM_FLAG_I2C_FIRST) != 0u ? 0x00 : 0x40);
+        nvic_set_priority(NVIC_TIM21_IRQ, (in.flags & PNY_COMM_FLAG_I2C_FIRST) != 0u ? 0x40 : 0x00);
+        irq_unlock();
+    }
+    send_comm_stats(result);
 }
 
 static void handle_cal_read_blob(const uint8_t *payload, uint8_t len)
@@ -2315,7 +2484,15 @@ static __attribute__((noinline)) void handle_debug(const uint8_t *payload, uint8
         send_capture_status(capture_start(payload, len));
         break;
     case PNY_DEBUG_CAPTURE_STATUS:
+        if (len == 2u && payload[1] == 1u && capture_state.active) {
+            irq_lock();
+            capture_finish();
+            irq_unlock();
+        }
         send_capture_status(PNY_RESULT_OK);
+        break;
+    case PNY_DEBUG_COMM_STATS:
+        send_comm_stats(PNY_RESULT_OK);
         break;
     case PNY_DEBUG_CAPTURE_READ:
         handle_capture_read(payload, len);
@@ -2348,7 +2525,7 @@ static __attribute__((noinline)) void process_frame(uint8_t header, const uint8_
     {
         pny_pos_vel_payload_t out;
         out.position_turn32 = position_from_zero(absolute_position_turn32);
-        out.velocity_turn32_per_s = velocity_turn32_per_s;
+        out.velocity_turn32_per_s = velocity_now();
         send_frame(PNY_CMD_GET_POS_VEL, &out, sizeof(out));
         break;
     }
@@ -2417,6 +2594,10 @@ static void uart_poll(void)
 
 int main(void)
 {
+    /* Record why we reset: brownout from regenerative spikes shows as POR/PIN. */
+    comm_diag.reset_flags = (uint8_t)(RCC_CSR >> 24);
+    RCC_CSR |= RCC_CSR_RMVF;
+    comm_diag.tick_us = SENSOR_TICK_US;
     clock_setup();
     systick_setup();
     __asm__("cpsie i");

@@ -298,8 +298,8 @@
   "pennyesc": {
     "path": "pennyesc.bin",
     "address": 134219136,
-    "bytes": 13048,
-    "sha256": "a70973c2d889f4c8004516ff10acef50ecd0efa4f7d732753168d9ac6f61598c",
+    "bytes": 13588,
+    "sha256": "e432bc88e54ee99ce7952c03c6fa9f9537a00e0ba9c66320d37a0003e0781329",
     "name": "pennyesc",
     "escAddress": 1,
     "maxBytes": 14336,

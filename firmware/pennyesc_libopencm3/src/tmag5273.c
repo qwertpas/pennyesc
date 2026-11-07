@@ -1,5 +1,6 @@
 #include "tmag5273.h"
 #include <libopencm3/cm3/nvic.h>
+#include <libopencm3/stm32/dma.h>
 #include <libopencm3/stm32/i2c.h>
 #include <libopencm3/stm32/timer.h>
 
@@ -25,11 +26,13 @@
 #define CONV_AVG_2X             0x1
 #define I2C_RD_STANDARD         0x0
 #define I2C_RD_16BIT            0x1
-#define I2C_RD_8BIT             0x2
 #if PNY_DRIVE_BRUSHED
+/* Free-running XYZ, 1-byte read command: 16-bit X, Y, Z and CONV_STATUS. */
 #define ASYNC_READ_LEN          7u
 #else
-#define ASYNC_READ_LEN          3u
+/* Triggered XY: the read after the trigger write is a standard register
+ * read of X and Y as 16-bit values, without CONV_STATUS. */
+#define ASYNC_READ_LEN          4u
 #endif
 #define SLEEPTIME_SHIFT         0
 #define MAG_CH_EN_SHIFT         4
@@ -39,31 +42,54 @@
 #define ANGLE_OFF               0x0
 #define X_Y_RANGE_SHIFT         1
 #define OPERATING_MODE_SHIFT    0
+#define OP_STANDBY              0x0
 #define OP_CONTINUOUS           0x2
+#define TRIGGER_REG             0x92u   /* conversion trigger bit | X_MSB */
 
 #define I2C_WAIT_LIMIT          40000u
-#define ASYNC_IRQS              (I2C_CR1_ERRIE | I2C_CR1_NACKIE | I2C_CR1_STOPIE | I2C_CR1_TCIE | I2C_CR1_RXIE | I2C_CR1_TXIE)
+/* No TXIE: the only written byte is preloaded before START. DMA receives
+ * the data, so no interrupt per byte can stall the bus behind a sector edge. */
+#define ASYNC_IRQS              (I2C_CR1_ERRIE | I2C_CR1_NACKIE | I2C_CR1_STOPIE | I2C_CR1_TCIE | I2C_CR1_RXDMAEN)
+#define ASYNC_DMA_CHANNEL       DMA_CHANNEL3
+#define ASYNC_DMA_REQUEST       6u  /* RM0377: I2C1_RX is request 6 on channel 3 */
 
 typedef enum {
     ASYNC_IDLE = 0,
+    ASYNC_TRIGGER,
     ASYNC_READ_DATA,
 } async_state_t;
 
 static volatile tmag5273_stats_t tmag_stats;
 static volatile async_state_t async_state;
 static volatile uint8_t async_rx[ASYNC_READ_LEN];
-static volatile uint8_t async_rx_index;
 static volatile tmag5273_xy_sample_t async_sample;
 static volatile bool async_sample_ready;
 static volatile uint16_t async_start_phase_us;
 static volatile uint16_t last_sample_start_us;
+#if PNY_DRIVE_BRUSHED
 static uint8_t last_set_count = 0xffu;
+#else
+/* Each read returns the conversion the previous transaction triggered at
+ * trigger_phase_us. After a failed or stale transaction that is unknown. */
+static volatile uint16_t trigger_phase_us;
+static volatile bool trigger_pending;
+#endif
 
 static void i2c1_recover(void);
 
 static void async_disable(void)
 {
     I2C_CR1(I2C1) &= ~ASYNC_IRQS;
+    DMA_CCR(DMA1, ASYNC_DMA_CHANNEL) = 0u;
+}
+
+static void async_dma_arm(void)
+{
+    DMA_CCR(DMA1, ASYNC_DMA_CHANNEL) = 0u;
+    DMA_CPAR(DMA1, ASYNC_DMA_CHANNEL) = (uint32_t)&I2C_RXDR(I2C1);
+    DMA_CMAR(DMA1, ASYNC_DMA_CHANNEL) = (uint32_t)async_rx;
+    DMA_CNDTR(DMA1, ASYNC_DMA_CHANNEL) = ASYNC_READ_LEN;
+    DMA_CCR(DMA1, ASYNC_DMA_CHANNEL) = DMA_CCR_MINC | DMA_CCR_EN;
 }
 
 static void async_clear_flags(void)
@@ -91,6 +117,9 @@ static void async_fail(uint32_t isr)
     }
     async_disable();
     async_state = ASYNC_IDLE;
+#if !PNY_DRIVE_BRUSHED
+    trigger_pending = false;
+#endif
     i2c1_recover();
 }
 
@@ -183,6 +212,7 @@ static bool write_reg_checked(uint8_t reg, uint8_t value)
     return true;
 }
 
+#if PNY_DRIVE_BRUSHED
 static bool direct_read(uint8_t *data, uint8_t len)
 {
     tmag5273_async_cancel();
@@ -203,6 +233,7 @@ static bool direct_read(uint8_t *data, uint8_t len)
     i2c_clear_stop(I2C1);
     return true;
 }
+#endif
 
 static bool write_mode_regs(uint8_t avg, uint8_t read_mode, uint8_t channels, uint8_t op_mode)
 {
@@ -227,6 +258,11 @@ uint8_t tmag5273_read_reg(uint8_t reg)
     return value;
 }
 
+void tmag5273_async_setup(void)
+{
+    dma_set_channel_request(DMA1, ASYNC_DMA_CHANNEL, ASYNC_DMA_REQUEST);
+}
+
 bool tmag5273_init(void)
 {
     /* The sensor can retain fast-read mode across an MCU reset. */
@@ -247,8 +283,8 @@ bool tmag5273_init(void)
 
 bool tmag5273_set_mode(tmag5273_mode_t mode)
 {
-    if (mode == TMAG5273_MODE_FAST_XY) {
-        return write_mode_regs(CONV_AVG_1X, I2C_RD_8BIT, MAG_CH_XY, OP_CONTINUOUS);
+    if (mode == TMAG5273_MODE_TRIGGER_XY) {
+        return write_mode_regs(CONV_AVG_1X, I2C_RD_STANDARD, MAG_CH_XY, OP_STANDBY);
     }
 #if PNY_DRIVE_BRUSHED
     if (mode == TMAG5273_MODE_FAST_XYZ) {
@@ -312,12 +348,19 @@ void tmag5273_get_stats(tmag5273_stats_t *out)
 
 void tmag5273_async_cancel(void)
 {
+    /* Let a transaction in flight finish (about 100 us): aborting mid-read
+     * can leave the sensor holding SDA, and the next blocking access stalls. */
+    for (uint16_t i = 0; i < 4000u && async_state != ASYNC_IDLE; i++) {
+    }
     nvic_disable_irq(NVIC_I2C1_IRQ);
     async_disable();
     async_state = ASYNC_IDLE;
-    async_rx_index = 0;
     async_sample_ready = false;
+#if PNY_DRIVE_BRUSHED
     last_set_count = 0xffu;
+#else
+    trigger_pending = false;
+#endif
     if ((I2C_ISR(I2C1) & I2C_ISR_BUSY) != 0u) {
         i2c1_recover();
     } else {
@@ -333,11 +376,20 @@ bool tmag5273_async_start_xy(uint16_t start_phase_us)
     }
 
     async_start_phase_us = start_phase_us;
-    async_rx_index = 0;
-    async_state = ASYNC_READ_DATA;
     async_clear_flags();
     I2C_CR1(I2C1) |= ASYNC_IRQS;
+#if PNY_DRIVE_BRUSHED
+    async_state = ASYNC_READ_DATA;
+    async_dma_arm();
     i2c_start_transfer(true, ASYNC_READ_LEN, true);
+#else
+    /* Preloading the register byte makes the trigger instant a fixed bus
+     * time after START, independent of interrupt latency. */
+    async_state = ASYNC_TRIGGER;
+    I2C_ISR(I2C1) = I2C_ISR_TXE;
+    I2C_TXDR(I2C1) = TRIGGER_REG;
+    i2c_start_transfer(false, 1u, false);
+#endif
     return true;
 }
 
@@ -359,57 +411,84 @@ bool tmag5273_async_take_xy(tmag5273_xy_sample_t *out)
     return true;
 }
 
-void tmag5273_i2c1_isr(void)
+/* Returns the sample's conversion phase, or false if it is not a fresh,
+ * correctly timed result. */
+static bool async_parse(int16_t *x, int16_t *y, uint16_t *phase)
+{
+    *x = (int16_t)(((uint16_t)async_rx[0] << 8) | async_rx[1]);
+    *y = (int16_t)(((uint16_t)async_rx[2] << 8) | async_rx[3]);
+#if PNY_DRIVE_BRUSHED
+    uint8_t status = async_rx[ASYNC_READ_LEN - 1u];
+    uint8_t count = status >> 5;
+    bool fresh = (status & 0x13u) == 1u && count != last_set_count;
+    last_set_count = count;
+    async_sample.z = (int16_t)(((uint16_t)async_rx[4] << 8) | async_rx[5]);
+    *phase = async_start_phase_us;
+    return fresh;
+#else
+    /* No status byte: a repeat of the last result is stale, and this
+     * transaction's trigger was ignored by the still-running conversion. */
+    bool valid = trigger_pending;
+    *phase = trigger_phase_us;
+    trigger_phase_us = async_start_phase_us;
+    trigger_pending = true;
+    if (*x == async_sample.x && *y == async_sample.y) {
+        trigger_pending = false;
+        return false;
+    }
+    return valid;
+#endif
+}
+
+bool tmag5273_i2c1_isr(void)
 {
     uint32_t isr = I2C_ISR(I2C1);
 
     if ((isr & (I2C_ISR_NACKF | I2C_ISR_BERR | I2C_ISR_ARLO | I2C_ISR_OVR | I2C_ISR_TIMEOUT)) != 0u) {
         async_fail(isr);
-        return;
+        return true;
     }
 
-    if (async_state == ASYNC_READ_DATA && (isr & I2C_ISR_RXNE) != 0u) {
-        uint8_t index = async_rx_index;
-        if (index < sizeof(async_rx)) {
-            async_rx[index] = (uint8_t)I2C_RXDR(I2C1);
-            async_rx_index = (uint8_t)(index + 1u);
-        } else {
-            (void)I2C_RXDR(I2C1);
-        }
-        isr = I2C_ISR(I2C1);
+    if (async_state == ASYNC_TRIGGER && (isr & I2C_ISR_TC) != 0u) {
+        /* Register byte acknowledged: the conversion has started. Read the
+         * previous one with a repeated start. */
+        async_state = ASYNC_READ_DATA;
+        async_dma_arm();
+        i2c_start_transfer(true, ASYNC_READ_LEN, true);
+        return false;
     }
 
-    if ((isr & I2C_ISR_STOPF) != 0u) {
-        async_clear_flags();
-        if (async_state == ASYNC_READ_DATA && async_rx_index == sizeof(async_rx)) {
-            uint8_t status = async_rx[ASYNC_READ_LEN - 1u];
-            uint8_t count = status >> 5;
-            if ((status & 0x13u) == 1u && count != last_set_count) {
-                last_set_count = count;
-#if PNY_DRIVE_BRUSHED
-                async_sample.x = (int16_t)(((uint16_t)async_rx[0] << 8) | async_rx[1]);
-                async_sample.y = (int16_t)(((uint16_t)async_rx[2] << 8) | async_rx[3]);
-                async_sample.z = (int16_t)(((uint16_t)async_rx[4] << 8) | async_rx[5]);
-#else
-                async_sample.x = (int16_t)((uint16_t)async_rx[0] << 8);
-                async_sample.y = (int16_t)((uint16_t)async_rx[1] << 8);
-                async_sample.z = 0;
+    if ((isr & I2C_ISR_STOPF) == 0u) {
+        return false;
+    }
+    async_clear_flags();
+    int16_t x;
+    int16_t y;
+    uint16_t phase;
+    bool complete = async_state == ASYNC_READ_DATA &&
+                    DMA_CNDTR(DMA1, ASYNC_DMA_CHANNEL) == 0u;
+#if !PNY_DRIVE_BRUSHED
+    if (!complete) {
+        trigger_pending = false;
+    }
 #endif
-                /* Preserve the committed tuning reference: I2C read start. */
-                async_sample.sample_tick = async_start_phase_us;
-                async_sample.start_phase_us = async_start_phase_us;
-                async_sample.end_phase_us = (uint16_t)timer_get_counter(TIM21);
-                async_sample_ready = true;
-                tmag_stats.sample_dt_us = (uint16_t)(async_sample.sample_tick - last_sample_start_us);
-                last_sample_start_us = async_sample.sample_tick;
-                tmag_stats.sample_count++;
-            }
-        }
-        async_disable();
-        async_state = ASYNC_IDLE;
+    if (complete && async_parse(&x, &y, &phase)) {
+        async_sample.x = x;
+        async_sample.y = y;
+        async_sample.sample_tick = phase;
+        async_sample.start_phase_us = async_start_phase_us;
+        async_sample.end_phase_us = (uint16_t)timer_get_counter(TIM21);
+        async_sample_ready = true;
+        tmag_stats.sample_dt_us = (uint16_t)(phase - last_sample_start_us);
+        last_sample_start_us = phase;
+        tmag_stats.sample_count++;
     }
+    async_disable();
+    async_state = ASYNC_IDLE;
+    return true;
 }
 
+#if PNY_DRIVE_BRUSHED
 bool tmag5273_read_fast(int16_t *x, int16_t *y, int16_t *z)
 {
     uint8_t raw[ASYNC_READ_LEN];
@@ -418,17 +497,12 @@ bool tmag5273_read_fast(int16_t *x, int16_t *y, int16_t *z)
         return false;
     }
 
-#if PNY_DRIVE_BRUSHED
     *x = (int16_t)(((uint16_t)raw[0] << 8) | raw[1]);
     *y = (int16_t)(((uint16_t)raw[2] << 8) | raw[3]);
     *z = (int16_t)(((uint16_t)raw[4] << 8) | raw[5]);
-#else
-    *x = (int16_t)((uint16_t)raw[0] << 8);
-    *y = (int16_t)((uint16_t)raw[1] << 8);
-    *z = 0;
-#endif
     return true;
 }
+#endif
 
 bool tmag5273_read_z_fast(int16_t *z)
 {

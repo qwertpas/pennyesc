@@ -22,6 +22,12 @@ def function(source, name):
     return source[match.start():end] + "\n"
 
 
+def struct(source, name):
+    end = source.index("} " + name + ";") + len(name) + 3
+    start = source.rindex("typedef struct {", 0, end)
+    return source[start:end] + "\n"
+
+
 class FirmwareTests(unittest.TestCase):
     def run_c(self, source):
         with tempfile.TemporaryDirectory() as folder:
@@ -73,23 +79,24 @@ int main(void) {
 
     def test_capture(self):
         main = (STM32 / "src/main.c").read_text()
-        state = main[main.index("typedef struct {\n    volatile bool active;\n    volatile bool done;"):]
-        state = state[:state.index("} capture_state_t;") + len("} capture_state_t;")]
         source = (STM32 / "test/capture.c").read_text()
-        self.run_c(source.replace("/* STATE */", state).replace(
+        self.run_c(source.replace("/* STATE */", struct(main, "capture_state_t")).replace(
             "/* FUNCTIONS */", "\n".join(function(main, name) for name in
-                                         ["capture_start", "capture_tick_1ms"])))
+                                         ["capture_finish", "capture_record", "capture_trigger", "capture_start"])))
 
     def test_timing(self):
         main = (STM32 / "src/main.c").read_text()
-        names = ["comm_fault", "position_target_direction", "abs_u32", "observer_ab_update", "observer_position_at_tick", "commutation_phase_at_tick", "comm_sector_start_phase",
-                 "comm_arm", "comm_schedule_absolute", "comm_scheduler_schedule_sector_event", "comm_control_tick", "tim21_isr"]
+        names = ["comm_fault", "position_target_direction", "abs_u32", "observer_update",
+                 "commutation_phase", "comm_sector_start_phase", "comm_arm", "comm_schedule_absolute",
+                 "comm_scheduler_schedule_sector_event", "comm_control_tick", "tim21_isr"]
         functions = "\n".join(function(main, name) for name in names)
-        # Use the actual shared ISR state layout as well as the actual functions.
-        state = main[main.index("typedef struct {\n    volatile bool active;\n    volatile uint8_t sector;"):]
-        state = state[:state.index("} comm_scheduler_t;") + len("} comm_scheduler_t;")]
+        # Use the actual shared state layouts and fixed-point constants too.
+        state = "\n".join(struct(main, name) for name in ("comm_scheduler_t", "observer_state_t"))
+        defines = "\n".join(re.findall(
+            r"^#define (?:TICK_Q24_PER_US|RATE_Q8_MUL|SECTOR_TURN16_Q16|OBS_GATE_TURN32)\s+[^\n]+", main, re.M))
         source = (STM32 / "test/timing.c").read_text()
-        self.run_c(source.replace("/* STATE */", state).replace("/* FUNCTIONS */", functions))
+        self.run_c(source.replace("/* DEFINES */", defines).replace("/* STATE */", state)
+                   .replace("/* FUNCTIONS */", functions))
 
     def test_l011_timers(self):
         # ST's device-specific CMSIS header lists TIM2 and TIM21, not TIM22:
@@ -104,14 +111,10 @@ int main(void) {
 
     def test_startup_control_tick(self):
         main = (STM32 / "src/main.c").read_text()
-        state = main[main.index("typedef struct {\n    volatile bool active;\n    volatile uint8_t sector;"):]
-        state = state[:state.index("} comm_scheduler_t;") + len("} comm_scheduler_t;")]
-        names = ["systick_setup", "comm_scheduler_start", "comm_scheduler_stop", "sys_tick_handler"]
+        names = ["systick_setup", "comm_scheduler_start", "comm_scheduler_stop", "sys_tick_handler", "pend_sv_handler"]
         source = (STM32 / "test/startup.c").read_text()
-        for tick in (100, 200):
-            self.run_c(source.replace("#define SENSOR_TICK_US 100u", f"#define SENSOR_TICK_US {tick}u").replace(
-                "/* STATE */", state).replace(
-                "/* FUNCTIONS */", "\n".join(function(main, name) for name in names)))
+        self.run_c(source.replace("/* STATE */", struct(main, "comm_scheduler_t")).replace(
+            "/* FUNCTIONS */", "\n".join(function(main, name) for name in names)))
 
     def test_sensor_initialization(self):
         driver = (STM32 / "src/tmag5273.c").read_text()
@@ -137,7 +140,7 @@ static bool write_mode_regs(uint8_t avg, uint8_t read, uint8_t channels, uint8_t
 }
 ''' + definitions + '\n' + function(driver, "tmag5273_set_mode") + '''
 int main(void) {
-    assert(tmag5273_set_mode(TMAG5273_MODE_FAST_XY) && config == 0x0232);
+    assert(tmag5273_set_mode(TMAG5273_MODE_TRIGGER_XY) && config == 0x0030);
     assert(tmag5273_set_mode(TMAG5273_MODE_FULL_XYZ) && config == 0x1072);
 #if PNY_DRIVE_BRUSHED
     assert(tmag5273_set_mode(TMAG5273_MODE_FAST_XYZ) && config == 0x0172);
@@ -151,9 +154,9 @@ int main(void) {
     def test_sensor(self):
         driver = (STM32 / "src/tmag5273.c").read_text()
         state = driver[driver.index("#ifndef PNY_DRIVE_BRUSHED"):driver.index("static void i2c1_recover(void);")]
-        names = ["async_disable", "async_clear_flags", "i2c_start_transfer", "async_fail",
+        names = ["async_disable", "async_dma_arm", "async_clear_flags", "i2c_start_transfer", "async_fail",
                  "tmag5273_async_cancel", "tmag5273_async_start_xy", "tmag5273_async_take_xy",
-                 "tmag5273_i2c1_isr"]
+                 "async_parse", "tmag5273_i2c1_isr"]
         source = (STM32 / "test/sensor.c").read_text()
         self.run_c(source.replace("/* STATE */", state).replace(
             "/* FUNCTIONS */", "\n".join(function(driver, name) for name in names)))
@@ -176,6 +179,7 @@ const pennyesc_calibration_blob_t *pennyesc_calibration_active(void) {
 static struct {
     bool active;
     uint16_t sample_count;
+    uint8_t write_index;
     pny_capture_sample_t samples[3];
 } capture_state;
 static uint8_t sent[64], sent_len;

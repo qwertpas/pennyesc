@@ -1,68 +1,71 @@
-/* The real SysTick handler must dispatch control after scheduler startup. */
+/* SysTick keeps time; TIM21 CC1 paces sensor reads; PendSV runs control. */
 #include <assert.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
-#define SENSOR_TICK_US 100u
+#include "pennyesc_protocol.h"
+#define SENSOR_TICK_US 125u
 #define SENSOR_STALE_US 10000u
-#define PNY_MODE_RUN 1
 #define TIM21 21
+#define TIM_DIER_CC1IE 2u
 #define TIM_DIER_CC2IE 4u
+#define TIM_SR_CC1IF 2u
 #define TIM_SR_CC2IF 4u
 #define STK_CSR_CLKSOURCE_AHB 1
 #define NVIC_SYSTICK_IRQ -1
-static uint32_t dier;
+#define NVIC_PENDSV_IRQ -2
+static uint32_t dier, ccr1, cleared;
 #define TIM_DIER(timer) dier
+#define TIM_CCR1(timer) ccr1
 /* STATE */
 static comm_scheduler_t comm_scheduler;
+static pny_comm_diag_t comm_diag;
 static uint32_t system_millis, isr_overrun_count;
 static uint16_t isr_duration_us, isr_max_us, now, work_us = 20;
 static uint8_t current_mode;
-static unsigned reload, control_calls, sensor_starts, sensor_cancels;
+static unsigned reload, control_calls, sensor_cancels, systick_priority, pendsv_priority;
 static bool tick_enabled;
 static void systick_set_clocksource(int clock) { assert(clock == STK_CSR_CLKSOURCE_AHB); }
 static void systick_set_reload(unsigned value) { reload = value; }
 static void nvic_set_priority(int irq, unsigned priority) {
-    assert(irq == NVIC_SYSTICK_IRQ && priority == 0x80);
+    if (irq == NVIC_SYSTICK_IRQ) systick_priority = priority;
+    else if (irq == NVIC_PENDSV_IRQ) pendsv_priority = priority;
+    else assert(0);
 }
 static void systick_interrupt_enable(void) { tick_enabled = true; }
 static void systick_counter_enable(void) {}
 static uint16_t sched_now_us(void) { return now; }
-static void timer_clear_flag(int timer, unsigned flag) {
-    assert(timer == TIM21 && flag == TIM_SR_CC2IF);
-}
-static bool tmag5273_async_start_xy(uint16_t tick) {
-    assert(tick == now); sensor_starts++; return true;
-}
+static void timer_clear_flag(int timer, unsigned flag) { assert(timer == TIM21); cleared |= flag; }
 static void tmag5273_async_cancel(void) { sensor_cancels++; }
 static void comm_sensor_tick(void) { control_calls++; now += work_us; }
 /* FUNCTIONS */
 int main(void) {
     systick_setup();
-    assert(tick_enabled && reload == 32u * SENSOR_TICK_US - 1u);
-    unsigned ticks = 1000u / SENSOR_TICK_US;
-    for (unsigned i = 0; i < ticks; ++i) sys_tick_handler();
-    assert(system_millis == 1 && control_calls == 0);
+    assert(tick_enabled && reload == 31999u);   // 1 ms
+    assert(pendsv_priority == 0x80 && systick_priority == 0xC0);
+    for (unsigned i = 0; i < 5; ++i) sys_tick_handler();
+    assert(system_millis == 5);
+
     current_mode = PNY_MODE_RUN;
-    sys_tick_handler(); // RUN can be set before scheduler initialization finishes.
+    pend_sv_handler();   // RUN can be set before the scheduler starts.
     assert(control_calls == 0);
-    now = 65500;
+    now = 65530;
     comm_scheduler_start();
-    assert(comm_scheduler.active && sensor_starts == 1);
+    assert(comm_scheduler.active && (dier & TIM_DIER_CC1IE) && !(dier & TIM_DIER_CC2IE));
+    assert(ccr1 == (uint16_t)(65530 + 10) && (cleared & (TIM_SR_CC1IF | TIM_SR_CC2IF)));
     assert(comm_scheduler.position_tick == now && comm_scheduler.sample_limit_us == SENSOR_STALE_US);
-    sys_tick_handler();
+    pend_sv_handler();
     assert(control_calls == 1 && isr_duration_us == 20 && isr_max_us == 20);
-    for (unsigned i = 0; i < ticks - 2; ++i) sys_tick_handler();
-    assert(system_millis == 2 && control_calls == ticks - 1);
+    assert(comm_diag.proc_max_us == 20 && isr_overrun_count == 0);
     work_us = SENSOR_TICK_US;
-    sys_tick_handler();
-    assert(isr_overrun_count == 1);
+    pend_sv_handler();
+    assert(isr_overrun_count == 1 && comm_diag.proc_max_us == SENSOR_TICK_US);
     comm_scheduler_stop();
-    assert(!comm_scheduler.active && sensor_cancels == 1 && tick_enabled);
-    for (unsigned i = 0; i < ticks - 1; ++i) sys_tick_handler();
-    assert(system_millis == 3 && control_calls == ticks);
+    assert(!comm_scheduler.active && sensor_cancels == 1 && !(dier & (TIM_DIER_CC1IE | TIM_DIER_CC2IE)));
+    pend_sv_handler();
+    assert(control_calls == 2);
     system_millis = UINT32_MAX;
-    for (unsigned i = 0; i < ticks; ++i) sys_tick_handler();
-    assert(system_millis == 0); // Stopping the motor must never stop application time.
+    sys_tick_handler();
+    assert(system_millis == 0); // Stopping the motor never stops application time.
     return 0;
 }

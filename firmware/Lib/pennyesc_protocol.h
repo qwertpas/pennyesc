@@ -51,6 +51,13 @@ enum {
     PNY_DEBUG_SET_OBSERVER = 0x4,
     PNY_DEBUG_STEP_SET = 0x5,
     PNY_DEBUG_STEP_TRANSITION = 0x6,
+    PNY_DEBUG_COMM_STATS = 0x7,
+};
+
+/* Commutation settings flags (PNY_DEBUG_SET_OBSERVER, 11-byte form). */
+enum {
+    PNY_COMM_FLAG_GUARD = 0x2,   /* drop field-weakening advance on slip */
+    PNY_COMM_FLAG_I2C_FIRST = 0x4, /* sensor I2C interrupt above sector edges */
 };
 
 enum {
@@ -230,5 +237,49 @@ typedef struct __attribute__((packed)) {
     int16_t lead_us;
     uint8_t mode;
 } pny_observer_payload_t;
+
+/* Commutation tuning. lead_us extrapolates the observer past the sample
+ * instant to cover drive delay. fw_us adds field-weakening advance that grows
+ * with speed (electrical speed * fw_us), capped at fw_max_deg. Observer gains
+ * are shifts: alpha = 2^-alpha_shift, beta and gamma per sensor tick. */
+typedef struct __attribute__((packed)) {
+    int16_t lead_us;
+    uint8_t flags;
+    uint8_t alpha_shift;
+    uint8_t beta_shift;
+    uint8_t gamma_shift;
+    int16_t fw_us;
+    int16_t fw_max_deg;
+} pny_comm_settings_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t subcmd;
+    pny_comm_settings_t settings;
+} pny_comm_settings_payload_t;
+
+/* Counters since boot unless noted. Innovation is measured minus predicted
+ * mechanical angle in turn16 units; innov_mean is an average of |innovation|
+ * scaled by 16. Max values reset when read. */
+typedef struct __attribute__((packed)) {
+    uint32_t samples;
+    uint32_t missed_ticks;
+    uint16_t guard_events;
+    uint16_t comm_faults;
+    uint16_t innov_mean_x16;
+    uint16_t innov_max;
+    int16_t accel_krpm_s;
+    int16_t fw_deg;
+    uint16_t proc_max_us;
+    uint8_t reset_flags;
+    uint8_t tick_us;
+    uint16_t rejected;
+} pny_comm_diag_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t subcmd;
+    uint8_t result;
+    pny_comm_settings_t settings;
+    pny_comm_diag_t diag;
+} pny_comm_stats_payload_t;
 
 #endif
