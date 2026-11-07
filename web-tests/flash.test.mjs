@@ -90,6 +90,37 @@ test('flashing changes address 1 to 4 and verifies the patched image and new add
   } finally { await connection.disconnect(); }
 });
 
+test('an old bootloader that truncates or drops its GO ACK still finishes once the app answers', async () => {
+  for (const goAck of [[0xf9], []]) {
+    const rom = new RomDevice(); rom.goAck = goAck;
+    const setup = bridgePort(rom);
+    const connection = new SerialConnection(); await connection.connect(setup.port);
+    try {
+      const status = await flashEsc(new PennyClient(connection, 1), image(200), {newAddress: 4});
+      assert.equal(status.x, 123); assert.ok(rom.running);
+    } finally { await connection.disconnect(); }
+  }
+});
+
+test('a GO NACK reports failure instead of waiting for the app', async () => {
+  const rom = new RomDevice(); rom.goAck = [0x1f];
+  const { port } = bridgePort(rom);
+  const connection = new SerialConnection(); await connection.connect(port);
+  try {
+    await assert.rejects(() => flashEsc(new PennyClient(connection, 1), image(200)), /refused to start/);
+  } finally { await connection.disconnect(); }
+});
+
+test('recovery ignores stray bytes from a powering-up ESC before the sync ACK', async () => {
+  const rom = new RomDevice(); rom.syncNoise = [0x63, 0x00, 0xf9];
+  const setup = bridgePort(rom, { recover: true });
+  const connection = new SerialConnection(); await connection.connect(setup.port);
+  try {
+    await flashEsc(new PennyClient(connection, 1), image(200), { recover: true });
+    assert.equal(rom.running, true);
+  } finally { await connection.disconnect(); }
+});
+
 test('an occupied new address prevents erase and programming', async () => {
   const rom = new RomDevice(), setup = bridgePort(rom);
   const connection = new SerialConnection(); await connection.connect(setup.port);

@@ -58,11 +58,16 @@ export class RomDevice {
     this.reads = [];
     this.running = false;
     this.corruptRead = false;
+    this.goAck = [0x79];   // Older bootloaders truncate this ACK ([0xf9]) or drop it ([]).
+    this.syncNoise = [];   // Stray bytes sent before the first sync ACK.
   }
   write(data) {
     const ack = new Uint8Array([0x79]);
     if (this.state === 'command') {
-      if (data.length === 1 && data[0] === 0x7f) return ack;
+      if (data.length === 1 && data[0] === 0x7f) {
+        const noise = this.syncNoise; this.syncNoise = [];
+        return Uint8Array.from([...noise, 0x79]);
+      }
       if (data.length !== 2 || (data[0] ^ data[1]) !== 255) throw new Error('Bad command checksum');
       this.command = data[0];
       this.state = this.command === 0x44 ? 'erase' : 'address';
@@ -72,7 +77,7 @@ export class RomDevice {
       if (data.length !== 5 || data.reduce((a, b) => a ^ b, 0)) throw new Error('Bad address checksum');
       this.address = new DataView(data.buffer, data.byteOffset).getUint32(0, false);
       this.state = this.command === 0x21 ? 'command' : this.command === 0x31 ? 'write' : 'read';
-      if (this.command === 0x21) this.running = true;
+      if (this.command === 0x21) { this.running = true; return Uint8Array.from(this.goAck); }
       return ack;
     }
     if (this.state === 'erase') {

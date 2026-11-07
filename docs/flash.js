@@ -47,10 +47,15 @@ export class Stm32Bootloader {
     const deadline = performance.now() + timeout;
     while (performance.now() < deadline) {
       await this.io.write(new Uint8Array([0x7f]));
-      try { await this.ack(Math.min(180, deadline - performance.now())); return; }
-      catch (error) {
-        if (!(error instanceof TimeoutError) && error.message !== 'Bootloader returned NACK') throw error;
-      }
+      // A powering-up ESC can put stray bytes on the line; skip to the ACK.
+      // Another sync byte after the ACK would derail the bootloader, so each
+      // attempt reads until its own window ends.
+      const attempt = Math.min(performance.now() + 180, deadline);
+      try {
+        while (true) {
+          if ((await this.io.read(1, attempt - performance.now()))[0] === ACK) return;
+        }
+      } catch (error) { if (!(error instanceof TimeoutError)) throw error; }
     }
     throw new Error('Bootloader did not respond. Use Recover and power-cycle the ESC when asked.');
   }
@@ -77,7 +82,19 @@ export class Stm32Bootloader {
     await this.io.write(new Uint8Array([length - 1, (length - 1) ^ 255])); await this.ack();
     return this.io.read(length, 1500);
   }
-  async go() { await this.command(0x21); await this.address(FLASH_BASE); }
+  // Bootloaders seeded before May 2026 jump to the app while their final ACK
+  // is still shifting out, so it arrives truncated (0xf9) or not at all. Only a
+  // NACK means the jump was refused; the app's status reply confirms the start.
+  async go() {
+    await this.command(0x21);
+    const data = new Uint8Array(5);
+    new DataView(data.buffer).setUint32(0, FLASH_BASE, false); data[4] = xor(data.subarray(0, 4));
+    await this.io.write(data);
+    let value;
+    try { value = (await this.io.read(1, 300))[0]; }
+    catch (error) { if (!(error instanceof TimeoutError)) throw error; }
+    if (value === 0x1f) throw new Error('Bootloader refused to start the application');
+  }
 }
 
 export async function programEsc(boot, padded, progress = () => {}) {
