@@ -1,19 +1,13 @@
 // Test-only hardware model. The browser harness loads the unchanged production app.
 import {decodeFrame, encodeFrame, pack, unpack} from '../docs/protocol.js';
 import {parseBlob} from '../docs/calibration.js';
-import {FakePort} from './serial-device.mjs';
-
-const encoder = new TextEncoder(), decoder = new TextDecoder();
+import {FakeBridge} from './serial-device.mjs';
 
 export class BrowserDevice {
   constructor(fixture) {
     const entry = fixture.cases[0];
     this.raw = entry.raw.map(row => Object.fromEntries(fixture.fields.map((key, i) => [key, row[i]])));
     this.blob = Uint8Array.from(entry.solved.blob.match(/../g), pair => parseInt(pair, 16));
-    this.board = 'xiao-esp32s3';
-    this.pins = [7, 44, -1];
-    this.aux = {pin: 11, pulse: 1500, enabled: 0};
-    this.mode = 'off';
     this.address = 1;
     this.sample = 0;
     this.started = performance.now();
@@ -26,7 +20,7 @@ export class BrowserDevice {
     this.active = false;
     this.upload = new Uint8Array(640);
     this.offset = 0;
-    this.stats = {statusReplies: 0, sweeps: 0, pointsRead: 0, bytesUploaded: 0, commits: 0, pinsSaved: 0};
+    this.stats = {statusReplies: 0, sweeps: 0, pointsRead: 0, bytesUploaded: 0, commits: 0};
   }
 
   status(result = 0) {
@@ -44,35 +38,6 @@ export class BrowserDevice {
       16 | (this.blob ? 1 : 0), 0, point.x, point.y, point.z,
       ((position % 65536) + 65536) % 65536, position, this.velocity || 25000,
       this.duty, 0, 38, 45, 12, 3, 9, 0, 0, 0, 0, 0, this.sample, 1000);
-  }
-
-  pinsText() { return `# pins board=${this.board} rx=${this.pins[0]} tx=${this.pins[1]} gnd=${this.pins[2]}\n`; }
-
-  shell(bytes) {
-    const command = decoder.decode(bytes).trim().replace(/^!#/, '');
-    if (command === 'ping') return encoder.encode('pong\n');
-    if (command === 'pins') return encoder.encode(this.pinsText());
-    if (command === 'aux' || command === 'aux off' || command.startsWith('aux ')) {
-      if (command === 'aux off') this.aux.enabled = 0;
-      else if (command !== 'aux') {
-        const [pin, pulse] = command.slice(4).split(/\s+/).map(Number);
-        if (this.pins.includes(pin) || pulse < 1000 || pulse > 2000) return encoder.encode('# aux error=invalid\n');
-        this.aux = {pin, pulse, enabled: 1};
-      }
-      return encoder.encode(`# aux pin=${this.aux.pin} pulse=${this.aux.pulse} hz=200 enabled=${this.aux.enabled}\n`);
-    }
-    if (command.startsWith('pins ')) {
-      const pins = command.slice(5).split(/\s+/).map(Number);
-      if (pins.length !== 3 || pins.some(pin => !Number.isInteger(pin))) return encoder.encode('err pins\n');
-      this.pins = pins;
-      this.stats.pinsSaved++;
-      return encoder.encode(this.pinsText());
-    }
-    if (command.startsWith('bridge ')) {
-      this.mode = command.slice(7);
-      return encoder.encode(`# bridge=${this.mode}\n`);
-    }
-    return encoder.encode('err command\n');
   }
 
   calibration(payload) {
@@ -126,10 +91,10 @@ export class BrowserDevice {
     }
   }
 
-  write(bytes) {
-    if (bytes[0] !== 0xaa) return this.shell(bytes);
+  // The ESC side of the bridge UART. Bootloader traffic is not modelled.
+  uart(bytes, baud = 0) {
+    if (baud !== 0) return null;
     const {address, command, payload} = decodeFrame(bytes);
-    if (this.mode !== 'app') throw new Error('Binary request outside bridge app mode');
     if (address !== this.address) return null;
     let response;
     switch (command) {
@@ -155,12 +120,13 @@ export async function installDevice() {
   const response = await fetch(new URL('./calibration-fixture.json', import.meta.url));
   if (!response.ok) throw new Error('Could not load calibration fixture');
   const device = new BrowserDevice(await response.json());
-  const port = new FakePort(bytes => device.write(bytes), {fragment: 13, delay: 1});
+  const bridge = new FakeBridge(bytes => device.uart(bytes), {fragment: 13, delay: 1, board: 'xiao-esp32s3', pins: [7, 44, -1]});
+  const port = bridge.port;
   const serial = new EventTarget();
   serial.requestPort = async () => port;
   serial.getPorts = async () => [port];
   Object.defineProperty(navigator, 'serial', {value: serial, configurable: true});
-  window.pennyTest = {device, port, errors: []};
+  window.pennyTest = {device, bridge, port, errors: []};
   window.addEventListener('error', event => window.pennyTest.errors.push(event.message));
   window.addEventListener('unhandledrejection', event => window.pennyTest.errors.push(String(event.reason)));
   return device;

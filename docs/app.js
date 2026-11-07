@@ -14,7 +14,7 @@ const usb = new SerialConnection(), ble = new BleConnection();
 let connection = usb;
 const live = new LiveData();
 let client, telemetry, manifest, session, raw = [], reduced = [], solved;
-let control = defaultControl(), busy = false, paused = false, dirty = true;
+let control = defaultControl(), busy = false, paused = false, dirty = true, stale = false;
 let currentMode = 'duty';
 let connectedBoard;
 const keys = new DutyKeys({
@@ -96,7 +96,8 @@ function showStatus(status) {
 function startTelemetry() {
   if (!client || !connection.connected || paused || busy) return;
   telemetry = new Telemetry(client, {
-    onSample(status, now) { live.add(status, now); dirty = true; }, onRate: setRate,
+    onSample(status, now) { live.add(status, now); stale = false; dirty = true; }, onRate: setRate,
+    onStale() { stale = true; dirty = true; },
     onError(error) { paused = true; message(error.message, true); log(error.message); state(); },
   });
   telemetry.start();
@@ -160,19 +161,18 @@ function selectAuxPins(info) {
   $('aux-pin').value = String(pins.includes(previous) ? previous : pins.includes(11) ? 11 : pins[0]);
 }
 
-function showAux(response) {
-  const fields = Object.fromEntries([...response.matchAll(/(\w+)=([^\s]+)/g)].map(m => [m[1], Number(m[2])]));
-  $('aux-output').checked = fields.enabled === 1;
-  if (fields.enabled) {
-    $('aux-pin').value = String(fields.pin);
-    $('aux-pulse').value = $('aux-slider').value = fields.pulse;
+function showAux(aux) {
+  $('aux-output').checked = aux.enabled;
+  if (aux.enabled) {
+    $('aux-pin').value = String(aux.pin);
+    $('aux-pulse').value = $('aux-slider').value = aux.pulse;
   }
-  $('aux-state').value = fields.enabled ? `${fields.pulse} µs · GPIO ${fields.pin}` : 'Off';
+  $('aux-state').value = aux.enabled ? `${aux.pulse} µs · GPIO ${aux.pin}` : 'Off';
 }
 
-async function auxCommand(command) {
+async function auxCommand(action) {
   try {
-    showAux(await connection.shell(command, {expected: line => line.startsWith('# aux ')}));
+    showAux((await action()).aux);
   } catch (error) {
     message(error.message, true); log(error.message);
   }
@@ -182,29 +182,21 @@ function setAuxPulse(pulse, enable = false) {
   if (!Number.isInteger(pulse) || pulse < 1000 || pulse > 2000) return;
   $('aux-pulse').value = $('aux-slider').value = pulse;
   if (!busy && connection.connected && (enable || $('aux-output').checked)) {
-    void auxCommand(`aux ${$('aux-pin').value} ${pulse}`);
+    void auxCommand(() => connection.setAux(Number($('aux-pin').value), pulse));
   }
 }
 
-async function readPins() {
-  let response;
-  try {
-    response = await connection.shell('pins', {expected: line => line.startsWith('# pins ')});
-  } catch (error) {
-    if (error.message === 'err') throw new Error('Update bridge firmware: Firmware → select board → Flash bridge.');
-    throw error;
-  }
-  const fields = Object.fromEntries([...response.matchAll(/(\w+)=([^\s]+)/g)].map(m => [m[1], m[2]]));
-  connectedBoard = manifest.bridges.find(item => item.id === fields.board);
-  if (!connectedBoard) throw new Error(`Unknown bridge board: ${fields.board}`);
+function showBridge(bridge) {
+  connectedBoard = manifest.bridges.find(item => item.id === bridge.board);
+  if (!connectedBoard) throw new Error(`Unknown bridge board: ${bridge.board}`);
   $('board').value = connectedBoard.id;
-  const info = {...connectedBoard, rx: Number(fields.rx), tx: Number(fields.tx), gnd: Number(fields.gnd)};
+  const info = {...connectedBoard, rx: bridge.rx, tx: bridge.tx, gnd: bridge.gnd};
   selectPins(info);
   selectAuxPins(info);
+  showAux(bridge.aux);
 }
 
 async function scan() {
-  await connection.mode('app');
   const found = [];
   for (let address = 0; address < 16; address++) {
     $('motor').textContent = `Scanning ${address}…`;
@@ -228,18 +220,13 @@ async function scan() {
 
 $('connect').onclick = () => operation(async () => {
   if (connection.connected) {
-    try {
-      showAux(await connection.shell('aux off', {expected: line => line.startsWith('# aux ')}));
-      await connection.mode('off');
-    }
+    try { showAux((await connection.auxOff()).aux); }
     finally { await connection.disconnect(); client = null; connectedBoard = null; }
     $('motor').textContent = '—'; setRate(0);
   } else {
     try {
       await connection.connect();
-      await readPins();
-      showAux(await connection.shell('aux', {expected: line => line.startsWith('# aux ')}));
-      await connection.mode('app');
+      showBridge(connection.state);
       paused = false;
     } catch (error) {
       await connection.disconnect();
@@ -337,7 +324,7 @@ $('aux-output').onchange = () => {
   if ($('aux-output').checked) {
     if ($('aux-pulse').reportValidity()) setAuxPulse(Number($('aux-pulse').value), true);
     else $('aux-output').checked = false;
-  } else void auxCommand('aux off');
+  } else void auxCommand(() => connection.auxOff());
 };
 $('aux-pin').onchange = () => setAuxPulse(Number($('aux-pulse').value));
 $('aux-pulse').onchange = () => {
@@ -390,8 +377,9 @@ function drawLive() {
   if (s) {
     const field = $('show-magnetic').checked ? `X ${s.x} · Y ${s.y} · Z ${s.z} · ` : '';
     $('values').value = `${field}${s.position_rad.toFixed(3)} rad · ${s.velocity_rpm.toFixed(1)} rpm · duty ${s.duty}`;
-    showStatus(s);
+    if (!stale) showStatus(s);
   } else $('values').value = 'Position — · Velocity —';
+  if (stale && client) $('motor').textContent = `ESC ${client.address} not responding`;
 }
 
 function drawCalibration() {
@@ -475,10 +463,9 @@ $('apply-pins').onclick = () => operation(async () => {
   if (connectedBoard?.id !== board().id) throw new Error('Select the connected board');
   const pins = ['rx','tx','gnd'].map(id => Number($(id).value));
   if (pins[0] === pins[1] || (pins[2] >= 0 && pins.slice(0,2).includes(pins[2]))) throw new Error('Choose a different GPIO for each pin');
-  const response = await connection.shell(`pins ${pins.join(' ')}`, {expected: line => line.startsWith('# pins ')});
-  if (response.includes('error=')) throw new Error(response);
-  log(response);
-  await readPins();
+  const bridge = await connection.setPins(...pins);
+  log(`Bridge pins RX ${bridge.rx} · TX ${bridge.tx} · GND ${bridge.gnd < 0 ? 'board' : bridge.gnd}`);
+  showBridge(bridge);
   message('Pins saved');
 });
 
@@ -510,15 +497,8 @@ async function flashPenny(recover) {
     image = new Uint8Array(await response.arrayBuffer());
   }
   $('flash-log').textContent = '';
-  try {
-    await flashEsc(client, image, {recover, newAddress, progress: flashProgress, onLog: flashLog,
-      onResetNeeded() { $('flash-state').value = 'Reset PennyESC now'; }});
-  } catch (error) {
-    paused = true;
-    await connection.disconnect();
-    client = null; connectedBoard = null;
-    throw error;
-  }
+  await flashEsc(client, image, {recover, newAddress, progress: flashProgress, onLog: flashLog,
+    onResetNeeded() { $('flash-state').value = 'Power-cycle PennyESC now'; }});
   $('address').value = newAddress;
   client = new PennyClient(connection, newAddress);
   $('flash-state').value = 'PennyESC flashed and verified';

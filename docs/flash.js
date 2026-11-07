@@ -1,5 +1,5 @@
-import { BOOT_MAGIC, CMD, checkResult, encodeFrame, pack, unpackStatus } from './protocol.js';
-import { SerialConnection, TimeoutError } from './serial.js';
+import { BOOT_MAGIC, CMD, checkResult, pack, unpackStatus } from './protocol.js';
+import { BAUD, SerialConnection, TimeoutError } from './serial.js';
 
 export const FLASH_BASE = 0x08000580;
 export const FLASH_APP_BYTES = 14336;
@@ -52,7 +52,7 @@ export class Stm32Bootloader {
         if (!(error instanceof TimeoutError) && error.message !== 'Bootloader returned NACK') throw error;
       }
     }
-    throw new Error('Bootloader did not respond; reset the target and use Recover');
+    throw new Error('Bootloader did not respond. Use Recover and power-cycle the ESC when asked.');
   }
   async erase(pages) {
     if (!pages.length || pages.some(page => !Number.isInteger(page) || page < 0 || page >= FLASH_APP_BYTES / FLASH_PAGE_BYTES)) throw new Error('Erase exceeds application region');
@@ -98,51 +98,48 @@ export async function programEsc(boot, padded, progress = () => {}) {
   }
 }
 
+// Flashing needs no bridge mode: app frames go at 921600 and bootloader bytes
+// at 115200, each packet naming its own baud. The ESC bootloader stops taking
+// commands after any error, so failures ask for a power cycle and Recover.
 export async function flashEsc(client, image, { recover = false, newAddress = client.address, progress = () => {}, onLog = () => {}, onResetNeeded = () => {} } = {}) {
   const padded = loadEscImage(image, newAddress);
   return client.connection.transaction(async io => {
     progress('connect', 0);
-    await io.mode('handoff');
-    const found = [];
-    for (let address = 0; address < 16; address++) {
-      io.clear();
-      try { await io.exchange(address, CMD.GET_STATUS, new Uint8Array(), 35); found.push(address); }
+    if (newAddress !== client.address) {
+      try { await io.exchange(newAddress, CMD.GET_STATUS, new Uint8Array(), 100); throw new Error(`Address ${newAddress} is already in use`); }
       catch (error) { if (!(error instanceof TimeoutError)) throw error; }
     }
-    if (newAddress !== client.address && found.includes(newAddress)) throw new Error(`Address ${newAddress} is already in use`);
-    const quiet = found.filter(address => recover || address !== client.address);
-    for (const address of quiet) {
-      const result = await io.exchange(address, CMD.SET_QUIET, pack('H', 60000));
-      if (result.length !== 1) throw new Error(`Invalid quiet response from ${address}`);
-      checkResult(result[0]);
-    }
-    if (quiet.length) onLog(`Other addresses quiet for 60 s: ${quiet.join(', ')}`);
     if (!recover) {
-      if (!found.includes(client.address)) throw new Error(`Address ${client.address} did not respond; use Recover after resetting it`);
-      const result = await io.exchange(client.address, CMD.ENTER_BOOT, pack('I', BOOT_MAGIC), 500);
+      let result;
+      try { result = await io.exchange(client.address, CMD.ENTER_BOOT, pack('I', BOOT_MAGIC), 500); }
+      catch (error) {
+        if (error instanceof TimeoutError) throw new Error(`ESC ${client.address} did not respond. Use Recover and power-cycle the ESC when asked.`);
+        throw error;
+      }
       if (result.length !== 1) throw new Error('Invalid boot response');
       checkResult(result[0]);
     }
-    await io.mode('upload');
-    const boot = new Stm32Bootloader(io);
+    const boot = new Stm32Bootloader({ write: data => io.write(data, BAUD.BOOT), read: io.read, clear: io.clear });
     if (recover) onResetNeeded();
-    await boot.sync(recover ? 8000 : 1500);
-    await programEsc(boot, padded, progress);
-    await boot.go();
-    await io.mode('handoff');
+    await boot.sync(recover ? 15000 : 2000);
+    try {
+      await programEsc(boot, padded, progress);
+      await boot.go();
+    } catch (error) {
+      throw new Error(`${error.message}. Power-cycle the ESC, then use Recover.`);
+    }
     const deadline = performance.now() + 8000;
     while (performance.now() < deadline) {
       try {
         const status = unpackStatus(await io.exchange(newAddress, CMD.GET_STATUS, new Uint8Array(), 250));
         checkResult(status.result);
-        await io.mode('app');
         progress('done', 100); onLog(`Verified ${image.length} bytes`); return status;
       } catch (error) {
         if (!(error instanceof TimeoutError)) throw error;
         await pause(100);
       }
     }
-    throw new Error(`Firmware verified; address ${newAddress} did not resume`);
+    throw new Error(`Firmware verified, but address ${newAddress} did not start. Power-cycle the ESC.`);
   });
 }
 

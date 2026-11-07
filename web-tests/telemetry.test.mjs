@@ -2,39 +2,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {LiveData, Telemetry} from '../docs/telemetry.js';
 import {PennyClient, decodeFrame, encodeFrame, pack} from '../docs/protocol.js';
-import {SerialConnection, TimeoutError} from '../docs/serial.js';
+import {SerialConnection} from '../docs/serial.js';
+import {FakeBridge} from './serial-device.mjs';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const statusPayload = sample => pack('BBBBhhhHiihHHHHHHIIIIIIH',
   0, 1, 17, 0, sample, -sample, 300, 1234, sample * 100, 65536, 0, 0,
   10, 11, 12, 13, 14, 0, 0, 0, 0, 0, sample, 1000);
 
-class Port {
-  constructor() {
-    this.replies = 0;
-    this.pending = 0;
-    this.maxPending = 0;
-    this.readable = new ReadableStream({start: controller => { this.input = controller; }});
-    this.writable = new WritableStream({write: async bytes => {
-      const request = decodeFrame(bytes);
-      assert.equal(request.command, 1);
-      this.pending++;
-      this.maxPending = Math.max(this.maxPending, this.pending);
-      await pause(1);
-      const frame = encodeFrame(request.address, request.command, statusPayload(++this.replies));
-      this.input.enqueue(frame.subarray(0, 5));
-      this.input.enqueue(frame.subarray(5));
-      this.pending--;
-    }});
-  }
-  async open(options) { assert.equal(options.baudRate, 115200); }
-  async setSignals() {}
-  async close() {}
+function streamingBridge({silentUntil = 0} = {}) {
+  let replies = 0;
+  const bridge = new FakeBridge(bytes => {
+    if (performance.now() < silentUntil) return null;
+    const request = decodeFrame(bytes);
+    return encodeFrame(request.address, request.command, statusPayload(++replies));
+  });
+  return {bridge, replies: () => replies};
 }
 
-test('200 Hz acquisition stores distinct decoded serial responses and stops without overlap', async () => {
-  const port = new Port(), connection = new SerialConnection();
-  await connection.connect(port);
+async function connected(bridge) {
+  const connection = new SerialConnection();
+  await connection.connect(bridge.port);
+  return connection;
+}
+
+test('200 Hz streaming delivers distinct status samples and stops cleanly', async () => {
+  const {bridge} = streamingBridge(), connection = await connected(bridge);
   const client = new PennyClient(connection, 2), samples = [], rates = [], errors = [];
   const telemetry = new Telemetry(client, {rate: 200,
     onSample: status => samples.push(status), onRate: rate => rates.push(rate), onError: error => errors.push(error)});
@@ -45,91 +38,117 @@ test('200 Hz acquisition stores distinct decoded serial responses and stops with
     await pause(1100);
     await telemetry.stop();
     const elapsed = performance.now() - start;
-    assert.ok(samples.length * 1000 / elapsed >= 100, `${samples.length} replies in ${elapsed.toFixed(0)} ms`);
+    assert.ok(samples.length * 1000 / elapsed >= 100, `${samples.length} samples in ${elapsed.toFixed(0)} ms`);
     assert.ok(samples.length * 1000 / elapsed <= 225);
-    assert.equal(samples.length, port.replies);
     assert.deepEqual(samples.map(status => status.x), Array.from({length: samples.length}, (_, i) => i + 1));
     assert.ok(samples.every(status => status.y === -status.x && status.velocity_rpm === 60));
-    assert.equal(port.maxPending, 1);
     assert.ok(rates.some(rate => rate >= 100 && rate <= 225));
     assert.equal(rates.at(-1), 0);
     assert.deepEqual(errors, []);
+    assert.equal(bridge.stream, null);
     const count = samples.length;
-    await pause(20);
+    await pause(30);
     assert.equal(samples.length, count);
     telemetry.start();
-    await pause(30);
+    await pause(50);
     await telemetry.stop();
     assert.ok(samples.length > count);
-    assert.equal(port.maxPending, 1);
+    // Controls still work while telemetry streams.
+    telemetry.start();
+    await pause(20);
+    assert.equal((await client.setDuty(40)).result, 0);
+    await telemetry.stop();
   } finally {
     await telemetry.stop();
     await connection.disconnect();
   }
 });
 
-test('a status timeout ends acquisition and reports the error once', async () => {
-  const failure = new TimeoutError(), errors = [], rates = [], samples = [];
-  let calls = 0;
-  const client = {async status(timeout) {
-    assert.equal(timeout, 150);
-    calls++;
-    throw failure;
-  }};
-  const telemetry = new Telemetry(client, {onSample: s => samples.push(s), onRate: r => rates.push(r), onError: e => errors.push(e)});
+test('a silent ESC is reported as stale and streaming resumes when it answers', async () => {
+  const {bridge} = streamingBridge({silentUntil: performance.now() + 700}), connection = await connected(bridge);
+  const samples = [], errors = [];
+  let stale = 0;
+  const telemetry = new Telemetry(new PennyClient(connection, 1), {onSample: s => samples.push(s), onRate() {},
+    onStale: () => stale++, onError: error => errors.push(error)});
+  try {
+    telemetry.start();
+    await pause(1100);
+    assert.ok(stale >= 1);
+    assert.ok(samples.length > 20);
+    assert.equal(telemetry.running, true);
+    assert.deepEqual(errors, []);
+  } finally {
+    await telemetry.stop();
+    await connection.disconnect();
+  }
+});
+
+test('telemetry re-arms the stream after the bridge restarts', async () => {
+  const {bridge} = streamingBridge(), connection = await connected(bridge);
+  const samples = [], errors = [];
+  let stale = 0;
+  const telemetry = new Telemetry(new PennyClient(connection, 1), {onSample: s => samples.push(s), onRate() {},
+    onStale: () => stale++, onError: error => errors.push(error)});
+  try {
+    telemetry.start();
+    await pause(200);
+    bridge.stopStream();
+    const before = samples.length;
+    await pause(600);
+    assert.ok(stale >= 1);
+    assert.ok(samples.length > before + 40, `${samples.length - before} samples after restart`);
+    assert.deepEqual(errors, []);
+  } finally {
+    await telemetry.stop();
+    await connection.disconnect();
+  }
+});
+
+test('stop returns promptly while waiting for a silent ESC', async () => {
+  const {bridge} = streamingBridge({silentUntil: Infinity}), connection = await connected(bridge);
+  const telemetry = new Telemetry(new PennyClient(connection, 1), {onSample() {}, onRate() {}, onError(error) { throw error; }});
+  try {
+    telemetry.start();
+    await pause(50);
+    const start = performance.now();
+    await telemetry.stop();
+    assert.ok(performance.now() - start < 100, `Stop took ${(performance.now() - start).toFixed(0)} ms`);
+    assert.equal(bridge.stream, null);
+  } finally { await connection.disconnect(); }
+});
+
+test('starting while stop is pending leaves exactly one stream running', async () => {
+  const {bridge} = streamingBridge(), connection = await connected(bridge);
+  const errors = [], samples = [];
+  const telemetry = new Telemetry(new PennyClient(connection, 1), {onSample: s => samples.push(s), onRate() {}, onError: e => errors.push(e)});
+  try {
+    telemetry.start();
+    await pause(30);
+    const stopping = telemetry.stop();
+    telemetry.start();
+    await stopping;
+    await pause(100);
+    assert.notEqual(bridge.stream, null);
+    const count = samples.length;
+    await telemetry.stop();
+    await pause(30);
+    assert.equal(bridge.stream, null);
+    assert.equal(samples.length, count);
+    assert.deepEqual(errors, []);
+  } finally { await connection.disconnect(); }
+});
+
+test('losing the connection ends streaming with one error', async () => {
+  const {bridge} = streamingBridge(), connection = await connected(bridge);
+  const errors = [];
+  const telemetry = new Telemetry(new PennyClient(connection, 1), {onSample() {}, onRate() {}, onError: e => errors.push(e)});
   telemetry.start();
+  await pause(50);
+  bridge.port.controller.error(new Error('Unplugged'));
   await telemetry.task;
   assert.equal(telemetry.running, false);
-  assert.equal(calls, 1);
-  assert.deepEqual(samples, []);
-  assert.deepEqual(errors, [failure]);
-  assert.equal(rates.at(-1), 0);
-  await telemetry.stop();
-});
-
-test('stop waits for an in-flight reply before the connection can be reused', async () => {
-  let reply;
-  const status = {x: 1}, samples = [];
-  const client = {status: () => new Promise(resolve => { reply = resolve; })};
-  const telemetry = new Telemetry(client, {onSample: s => samples.push(s), onRate() {}, onError(error) { throw error; }});
-  telemetry.start();
-  await Promise.resolve();
-  let stopped = false;
-  const stop = telemetry.stop().then(() => { stopped = true; });
-  await Promise.resolve();
-  assert.equal(stopped, false);
-  reply(status);
-  await stop;
-  assert.equal(stopped, true);
-  assert.deepEqual(samples, [status]);
-});
-
-test('starting while stop is pending waits for the previous acquisition loop', async () => {
-  let active = 0, maxActive = 0;
-  const replies = [];
-  const client = {status() {
-    active++;
-    maxActive = Math.max(maxActive, active);
-    return new Promise(resolve => replies.push(() => { active--; resolve({}); }));
-  }};
-  const telemetry = new Telemetry(client, {onSample() {}, onRate() {}, onError(error) { throw error; }});
-  telemetry.start();
-  await Promise.resolve();
-  const stopping = telemetry.stop();
-  telemetry.start();
-  await Promise.resolve();
-  assert.equal(active, 1);
-  assert.equal(replies.length, 1);
-  replies.shift()();
-  await stopping;
-  await Promise.resolve();
-  assert.equal(active, 1);
-  assert.equal(maxActive, 1);
-  const stopped = telemetry.stop();
-  replies.shift()();
-  await stopped;
-  assert.equal(active, 0);
-  assert.equal(maxActive, 1);
+  assert.deepEqual(errors.map(error => error.message), ['Unplugged']);
+  bridge.stopStream();
 });
 
 test('live data remains bounded, orders wraparound and exports the visible time window', () => {

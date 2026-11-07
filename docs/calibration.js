@@ -345,9 +345,12 @@ export async function uploadCalibration(client, solved, {onProgress} = {}) {
   response(commit, 2, 'CAL_COMMIT');
   if (commit[1] !== 1) throw new Error('Calibration commit was invalid');
   onProgress?.({stage: 'verify', done: 0, total: 1});
-  // The bootloader and application startup windows take longer than two seconds.
-  await wait(3000);
-  const status = await client.status();
+  // Current firmware applies the calibration in place; older firmware resets first.
+  let status;
+  for (const deadline = Date.now() + 5000; !status;) {
+    try { status = await client.status(250); }
+    catch (error) { if (error.name !== 'TimeoutError' || Date.now() > deadline) throw error; await wait(100); }
+  }
   if (status.result !== 0 || !(status.flags & 1)) throw new Error('ESC came back uncalibrated');
   const stored = await readCalibration(client);
   if (!stored.valid || stored.blob.some((byte, i) => byte !== blob[i])) throw new Error('Calibration readback mismatch');

@@ -1,4 +1,5 @@
-import { decodeFrame, encodeFrame, pack } from '../docs/protocol.js';
+import { crc8, decodeFrame, encodeFrame, pack } from '../docs/protocol.js';
+import { PACKET, cobsDecode, cobsEncode, encodePacket } from '../docs/serial.js';
 
 export function statusPayload(position = 65536) {
   return pack('BBBBhhhHiihHHHHHHIIIIIIH', 0, 1, 17, 0, 123, -456, 789, 321, position, -32768, 50, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 250);
@@ -101,4 +102,85 @@ export class RomDevice {
     }
     throw new Error('Unknown bootloader state');
   }
+}
+
+// Test model of firmware/Lib/pennyesc_bridge.h. `uart(bytes, baud)` is the ESC
+// side: it returns reply bytes (or a promise of them) or null for silence.
+export class FakeBridge {
+  constructor(uart, { fragment = 0, delay = 0, board = 'qtpy-esp32s3', pins = [12, 13, -1], version = 2, ready = 0 } = {}) {
+    Object.assign(this, { uart, board, pins, version });
+    this.aux = { pin: 11, pulse: 1500, enabled: false };
+    this.readyAt = performance.now() + ready;
+    this.uartWrites = [];
+    this.commands = [];
+    this.stream = null;
+    this.pinsSaved = 0;
+    this.buffer = [];
+    this.port = new FakePort(data => this.receive(data), { fragment, delay });
+  }
+
+  async receive(data) {
+    for (const byte of data) {
+      if (byte !== 0) { this.buffer.push(byte); continue; }
+      const packet = this.buffer.length ? cobsDecode(this.buffer) : null;
+      this.buffer = [];
+      if (packet && packet.length >= 2 && crc8(packet.subarray(0, -1)) === packet.at(-1)) await this.handle(packet);
+    }
+    return null;
+  }
+
+  send(type, payload) {
+    if (!this.port.controller) { this.stopStream(); return; }
+    const encoded = cobsEncode(encodePacket(type, payload));
+    const framed = new Uint8Array(encoded.length + 2); framed.set(encoded, 1);
+    this.port.feed(framed);
+  }
+
+  state(status = 0) {
+    const name = new TextEncoder().encode(this.board);
+    this.send(PACKET.STATE, [status, this.version, this.pins[0] & 255, this.pins[1] & 255, this.pins[2] & 255,
+      this.aux.pin & 255, this.aux.pulse & 255, this.aux.pulse >> 8, this.aux.enabled ? 1 : 0, ...name]);
+  }
+
+  async handle(packet) {
+    const type = packet[0], data = packet.subarray(1, -1);
+    const signed = value => (value << 24) >> 24;
+    if (type !== PACKET.UART) this.commands.push(type);
+    if (performance.now() < this.readyAt) return;
+    if (type === PACKET.HELLO) { this.stopStream(); this.state(); }
+    else if (type === PACKET.PINS) {
+      const pins = [...data].map(signed);
+      if (pins[0] === pins[1] || pins.slice(0, 2).includes(pins[2]) && pins[2] >= 0) return this.state(1);
+      this.pins = pins; this.pinsSaved++; this.state();
+    } else if (type === PACKET.AUX) {
+      const pin = signed(data[0]), pulse = data[1] | data[2] << 8;
+      if (pulse === 0) this.aux.enabled = false;
+      else if (this.pins.includes(pin) || pulse < 1000 || pulse > 2000) return this.state(1);
+      else this.aux = { pin, pulse, enabled: true };
+      this.state();
+    } else if (type === PACKET.STREAM) {
+      this.stopStream();
+      if (data[1]) this.stream = setInterval(() => void this.poll(data[0]), 1000 / data[1]);
+      this.state();
+    } else if (type === PACKET.UART) {
+      const baud = data[0], bytes = data.slice(1);
+      this.uartWrites.push({ baud, bytes, time: performance.now() });
+      // Like the real UART, the reply arrives independently of the write.
+      void Promise.resolve(this.uart(bytes, baud)).then(reply => { if (reply?.length) this.rx(reply, baud); });
+    } else this.state(4);
+  }
+
+  rx(bytes, baud) {
+    for (let start = 0; start < bytes.length; start += 100) this.send(PACKET.UART_RX, [baud, ...bytes.subarray(start, start + 100)]);
+  }
+
+  async poll(address) {
+    const reply = await this.uart(encodeFrame(address, 1), 0);
+    if (!reply?.length) return;
+    const stamp = new Uint8Array(4);
+    new DataView(stamp.buffer).setUint32(0, Math.round(performance.now() * 1000) >>> 0, true);
+    this.send(PACKET.TELEMETRY, [...stamp, ...reply]);
+  }
+
+  stopStream() { clearInterval(this.stream); this.stream = null; }
 }

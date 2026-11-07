@@ -1,8 +1,8 @@
 #include <Arduino.h>
-#include "pennyesc_arduino.h"
+#include "pennyesc_bridge.h"
 
 static PennyEsc esc(1);
-static PennyEscBridge bridge;
+static PennyBridge bridge;
 static PennyEscStatus last_status;
 static String input_line;
 static uint32_t pulse_end_ms = 0u;

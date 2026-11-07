@@ -13,12 +13,10 @@
 #include <stdint.h>
 #include <string.h>
 #include "mct8316z.h"
-#include "pennyesc_boot.h"
 #include "pennyesc_calibration.h"
 #include "pennyesc_frame.h"
 #include "pennyesc_timing.h"
 #include "pennyesc_protocol.h"
-#include "pennyesc_uart_update.h"
 #include "tmag5273.h"
 
 #ifndef PNY_ESC_ADDRESS
@@ -299,7 +297,6 @@ static union {
     pny_capture_read_payload_t capture_reply;
 } uart_state;
 #define frame_parser uart_state.parser
-static uint32_t uart_quiet_until_ms;
 static uint32_t uart_last_frame_ms;
 static volatile uint8_t uart_dma_rx[UART_DMA_RX_BUF_SIZE];
 static uint16_t uart_dma_tail;
@@ -1380,21 +1377,31 @@ static void send_status_response(uint8_t cmd, uint8_t result)
     send_frame(cmd, &uart_state.status, sizeof(uart_state.status));
 }
 
-static void send_update_status(void)
+static void handle_get_status(void)
 {
     refresh_status_sensor();
     send_status_response(PNY_CMD_GET_STATUS, PNY_RESULT_OK);
 }
 
-static uint8_t prepare_update_boot(void)
+/* Stop the motor, acknowledge, and reset into the UART bootloader. */
+static void handle_enter_boot(const uint8_t *payload, uint8_t len)
 {
-    if (current_mode == PNY_MODE_CAL) {
-        return PNY_RESULT_BUSY;
-    }
+    uint32_t magic = 0u;
+    uint8_t result = PNY_RESULT_OK;
 
-    control_disable();
-    run_stop();
-    return PNY_RESULT_OK;
+    if (len == 4u) {
+        memcpy(&magic, payload, sizeof(magic));
+    }
+    if (magic != PNY_BOOT_MAGIC) {
+        result = PNY_RESULT_BAD_ARG;
+    } else if (current_mode == PNY_MODE_CAL) {
+        result = PNY_RESULT_BUSY;
+    } else {
+        control_disable();
+        run_stop();
+        pending_reset_ms = system_millis + 20u;
+    }
+    send_frame(PNY_CMD_ENTER_BOOT, &result, 1u);
 }
 
 /* Calibration */
@@ -1780,11 +1787,6 @@ void i2c1_isr(void)
 }
 
 /* UART protocol */
-static bool uart_quiet_active(uint32_t now_ms)
-{
-    return uart_quiet_until_ms != 0u && (int32_t)(now_ms - uart_quiet_until_ms) < 0;
-}
-
 
 static void handle_zero_position(const uint8_t *payload, uint8_t len)
 {
@@ -1993,30 +1995,6 @@ static void handle_set_advance(const uint8_t *payload, uint8_t len)
     send_status_response(PNY_CMD_SET_ADVANCE, PNY_RESULT_OK);
 }
 
-static void handle_set_quiet(const uint8_t *payload, uint8_t len)
-{
-    uint16_t hold_ms;
-    uint8_t result;
-
-    if (len != 2u) {
-        result = PNY_RESULT_BAD_ARG;
-        send_frame(PNY_CMD_SET_QUIET, &result, 1u);
-        return;
-    }
-
-    memcpy(&hold_ms, payload, sizeof(hold_ms));
-    result = PNY_RESULT_OK;
-    send_frame(PNY_CMD_SET_QUIET, &result, 1u);
-    while ((USART_ISR(USART2) & USART_ISR_TC) == 0u) {
-    }
-
-    if (hold_ms == 0u) {
-        uart_quiet_until_ms = 0u;
-        return;
-    }
-    uart_quiet_until_ms = system_millis + hold_ms;
-}
-
 static void handle_cal_start(const uint8_t *payload, uint8_t len)
 {
     pny_cal_start_payload_t out;
@@ -2094,12 +2072,15 @@ static void handle_cal_commit(void)
     pny_cal_commit_payload_t out;
     bool ok = (current_mode == PNY_MODE_IDLE) && pennyesc_calibration_commit();
     flash_fault = !ok;
+    if (ok) {
+        /* The new calibration is live; re-derive position from it. */
+        position_initialized = false;
+        current_angle_turn16 = 0;
+        refresh_status_sensor();
+    }
     out.result = ok ? PNY_RESULT_OK : PNY_RESULT_FLASH;
     out.valid = ok ? 1u : 0u;
     send_frame(PNY_CMD_CAL, &out, sizeof(out));
-    if (ok) {
-        pending_reset_ms = system_millis + 20u;
-    }
 }
 
 static void handle_cal_clear(void)
@@ -2357,6 +2338,12 @@ static __attribute__((noinline)) void process_frame(uint8_t header, const uint8_
         return;
     }
     switch (cmd) {
+    case PNY_CMD_GET_STATUS:
+        handle_get_status();
+        break;
+    case PNY_CMD_ENTER_BOOT:
+        handle_enter_boot(payload, len);
+        break;
     case PNY_CMD_GET_POS_VEL:
     {
         pny_pos_vel_payload_t out;
@@ -2392,9 +2379,6 @@ static __attribute__((noinline)) void process_frame(uint8_t header, const uint8_
     case PNY_CMD_SET_ADVANCE:
         handle_set_advance(payload, len);
         break;
-    case PNY_CMD_SET_QUIET:
-        handle_set_quiet(payload, len);
-        break;
     case PNY_CMD_CAL:
         handle_cal(payload, len);
         break;
@@ -2414,21 +2398,13 @@ static void uart_poll(void)
         uint8_t byte = uart_dma_rx[uart_dma_tail];
         uart_dma_tail = (uint16_t)((uart_dma_tail + 1u) & UART_DMA_RX_BUF_MASK);
 
-        if (uart_quiet_active(system_millis)) {
-            pny_frame_parser_reset(&frame_parser);
-            continue;
-        }
-
         const uint8_t *frame;
         uint8_t frame_len;
         if (pny_frame_parser_push(&frame_parser, byte, system_millis, UART_FRAME_TIMEOUT_MS, &frame, &frame_len)) {
             if ((frame[1] >> 4) == ESC_ADDRESS) {
                 uart_last_frame_ms = system_millis;
             }
-            if (!pennyesc_uart_update_handle_frame(frame, frame_len, ESC_ADDRESS,
-                    system_millis, send_update_status, prepare_update_boot)) {
-                process_frame(frame[1], &frame[3], frame[2]);
-            }
+            process_frame(frame[1], &frame[3], frame[2]);
         }
     }
 
@@ -2444,9 +2420,7 @@ int main(void)
     clock_setup();
     systick_setup();
     __asm__("cpsie i");
-    usart2_setup(PNY_UART_UPDATE_BOOT_BAUD);
-    pennyesc_uart_update_boot_window(&system_millis, ESC_ADDRESS);
-    usart2_setup(pennyesc_uart_update_app_baud(UART_APP_BAUD));
+    usart2_setup(UART_APP_BAUD);
     i2c1_setup();
     tim2_pwm_setup();
     tim21_setup();
@@ -2474,7 +2448,6 @@ int main(void)
 
         mct_idle_check();
         control_restart_poll();
-        pennyesc_uart_update_poll(system_millis);
         if (pending_reset_ms != 0u && (int32_t)(system_millis - pending_reset_ms) >= 0) {
             scb_reset_system();
         }

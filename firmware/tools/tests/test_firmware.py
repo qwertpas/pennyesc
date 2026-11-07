@@ -96,7 +96,7 @@ int main(void) {
         # https://github.com/STMicroelectronics/cmsis-device-l0/blob/master/Include/stm32l011xx.h
         board = json.loads((STM32 / "boards/custom_l011.json").read_text())
         self.assertEqual(board["build"]["mcu"], "stm32l011f4u6")
-        for name in ["main.c", "tmag5273.c", "pennyesc_boot.c"]:
+        for name in ["main.c", "tmag5273.c"]:
             source = (STM32 / "src" / name).read_text()
             source = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
             timers = set(re.findall(r"\b(?:RCC_|NVIC_)?(TIM\d+)(?:_IRQ)?\b", source))
@@ -160,7 +160,7 @@ int main(void) {
 
     def test_reply_buffer_reuse(self):
         main = (STM32 / "src/main.c").read_text()
-        state = main[main.index("static union {"):main.index("static uint32_t uart_quiet_until_ms;")]
+        state = main[main.index("static union {"):main.index("static uint32_t uart_last_frame_ms;")]
         functions = "\n".join(function(main, name) for name in
                               ["send_status_response", "handle_capture_read", "handle_cal_read_blob"])
         self.run_c('''

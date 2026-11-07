@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include "pennyesc_arduino.h"
+#include "pennyesc_bridge.h"
 
 static const int ESC_RX_PIN = 13;
 static const int ESC_TX_PIN = 12;
@@ -12,7 +12,7 @@ static const uint8_t INA_ADDR = 0x40;
 static const float SHUNT_OHMS = 0.1f;
 static const float CURRENT_LSB_A = 0.0001f;
 
-static PennyEscBridge bridge;
+static PennyBridge bridge;
 
 static bool writeReg(uint8_t reg, uint16_t value)
 {
@@ -86,7 +86,7 @@ void setup()
     Wire.begin(INA_SDA_PIN, INA_SCL_PIN);
     Wire.setClock(100000);
 
-    bridge.begin(Serial, Serial1, ESC_RX_PIN, ESC_TX_PIN, 2);
+    bridge.begin(Serial, Serial1, ESC_RX_PIN, ESC_TX_PIN);
     delay(100);
 
     Serial.println("# bridge_ina226");

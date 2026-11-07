@@ -44,14 +44,13 @@ export class LiveData {
   }
 }
 
+// Streams ESC status through the bridge. Silence is reported through onStale
+// and the stream is requested again, so the plot resumes after an ESC or
+// bridge restart.
 export class Telemetry {
-  constructor(client, {onSample, onRate, onError, rate = 200}) {
+  constructor(client, {onSample, onRate, onError, onStale = () => {}, rate = 200}) {
     if (!Number.isFinite(rate) || rate <= 0) throw new Error('Sample rate must be positive');
-    this.client = client;
-    this.onSample = onSample;
-    this.onRate = onRate;
-    this.onError = onError;
-    this.interval = 1000 / rate;
+    Object.assign(this, {client, onSample, onRate, onError, onStale, rate});
     this.running = false;
     this.session = 0;
     this.task = Promise.resolve();
@@ -66,31 +65,33 @@ export class Telemetry {
 
   async stop() {
     this.running = false;
+    this.client.connection.sampleWake?.();
     await this.task;
     if (!this.running) this.onRate(0);
   }
 
   async run(session) {
-    let next = performance.now();
-    let measuredAt = next;
-    let samples = 0;
     const connection = this.client.connection;
-    const stream = typeof connection?.startTelemetry === 'function';
+    const active = () => this.running && session === this.session;
+    let measuredAt = performance.now(), samples = 0;
     try {
-      if (stream) await connection.startTelemetry(this.client.address, Math.round(1000 / this.interval));
-      while (this.running && session === this.session) {
-        const sample = stream ? await connection.nextTelemetry() : {status: await this.client.status(150), now: performance.now()};
+      await connection.startTelemetry(this.client.address, this.rate);
+      while (active()) {
+        const sample = await connection.nextTelemetry(250);
         const now = performance.now();
-        this.onSample(sample.status, sample.now);
-        samples++;
+        if (sample) { this.onSample(sample.status, sample.now); samples++; }
+        else if (active()) {
+          this.onStale(); this.onRate(0); samples = 0; measuredAt = now;
+          // A bridge that restarted has forgotten the stream, so ask again.
+          try { await connection.startTelemetry(this.client.address, this.rate); }
+          catch (error) { if (error.name !== 'TimeoutError') throw error; }
+          continue;
+        }
         if (now - measuredAt >= 1000) {
           this.onRate(samples * 1000 / (now - measuredAt));
           samples = 0;
           measuredAt = now;
         }
-        next = Math.max(next + this.interval, now);
-        const wait = next - performance.now();
-        if (!stream && wait > 0 && this.running && session === this.session) await new Promise(resolve => setTimeout(resolve, wait));
       }
     } catch (error) {
       if (session === this.session) {
@@ -99,9 +100,8 @@ export class Telemetry {
         this.onError(error);
       }
     } finally {
-      if (stream && connection.connected) {
-        try { await connection.stopTelemetry(); }
-        catch (error) { this.running = false; this.onError(error); }
+      if (connection.connected) {
+        try { await connection.stopTelemetry(); } catch { /* The connection reports its own failure. */ }
       }
     }
   }

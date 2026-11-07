@@ -44,6 +44,12 @@ ESC_ADDRESS=1 pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_u
 
 The tools detect the bridge port automatically. To select one, add `BRIDGE_PORT=/dev/cu.usbmodemPORT` before `pio`.
 
+If an update stops partway, power-cycle the ESC and run the recover target. It waits for the ESC's bootloader, which listens for about a second after power-up:
+
+```sh
+ESC_ADDRESS=1 pio run -d firmware/pennyesc_libopencm3 -e pennyesc_uart -t uart_recover
+```
+
 ### 4. Change the ESC address over UART
 
 This reflashes the application with the new address. Use the new address for later commands.
@@ -51,6 +57,10 @@ This reflashes the application with the new address. Use the new address for lat
 ```sh
 CURRENT_ESC_ADDRESS=1 NEW_ESC_ADDRESS=2 pio run -d firmware/pennyesc_libopencm3 -e readdress -t uart_readdress
 ```
+
+## Bridge protocol
+
+The bridge has no modes and no text commands. Each message is a packet of a type byte, a payload and a CRC-8, COBS encoded between `0x00` bytes on USB, or one GATT write or notification on BLE. A UART packet names the baud for its bytes: 921600 for ESC frames, 115200 for the ESC bootloader. Unplugging, resetting or reconnecting either side in any order never leaves the bridge in a state the host has to undo. [pennyesc_bridge.h](Lib/pennyesc_bridge.h) defines the packets, and [pnybridge.py](tools/pnybridge.py) is a Python client.
 
 ## Penny GUI
 

@@ -1,17 +1,17 @@
 #include <Arduino.h>
-#include <BLEDevice.h>
+#include <BLEDevice.h>  // lets PlatformIO find the BLE library
 #include "pennyesc_ble.h"
 
-static PennyEscBleBridge bridge;
-
-static const int RX_PIN = 0;
-static const int TX_PIN = 1;
-static const int GND_PIN = 2;
+static PennyBleBridge bridge;
 
 void setup()
 {
+    // Large buffers let a host send a whole bootloader write in one packet.
+    Serial.setRxBufferSize(1024);
+    Serial.setTxBufferSize(4096);
     Serial.begin(115200);
-    bridge.begin(Serial, Serial1, RX_PIN, TX_PIN, 1, GND_PIN);
+    Serial.setTxTimeoutMs(0);
+    bridge.begin(Serial, Serial1, 0, 1, 2);
     bridge.beginBle();
 }
 

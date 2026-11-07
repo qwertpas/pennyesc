@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {BrowserDevice} from './browser-device.js';
-import {FakePort} from './serial-device.mjs';
+import {FakeBridge} from './serial-device.mjs';
 import {SerialConnection, TimeoutError} from '../docs/serial.js';
 import {PennyClient} from '../docs/protocol.js';
 import {captureCalibration, reduceCapturePoints, solveCapture, uploadCalibration} from '../docs/calibration.js';
@@ -12,9 +12,9 @@ test('Aux presets and duty keys share serial telemetry without interfering with 
   const fixture = JSON.parse(readFileSync(new URL('./calibration-fixture.json', import.meta.url)));
   const device = new BrowserDevice(fixture);
   const connection = new SerialConnection();
-  await connection.connect(new FakePort(bytes => device.write(bytes), {fragment: 7, delay: 1}));
+  const bridge = new FakeBridge(bytes => device.uart(bytes), {fragment: 7, delay: 1});
+  await connection.connect(bridge.port);
   try {
-    await connection.mode('app');
     const client = new PennyClient(connection, 1);
     const keys = new DutyKeys({value: () => 120, send: duty => client.setDuty(duty), onError(error) { throw error; }});
     keys.enabled = true;
@@ -22,35 +22,34 @@ test('Aux presets and duty keys share serial telemetry without interfering with 
     await keys.task;
     for (let key = 1; key <= 9; key++) {
       const pulse = auxPulse({key: String(key)});
-      const [status, response] = await Promise.all([
-        client.status(), connection.shell(`aux 1 ${pulse}`, {expected: line => line.startsWith('# aux ')}),
-      ]);
+      const [status, bridgeState] = await Promise.all([client.status(), connection.setAux(1, pulse)]);
       assert.equal(status.duty, 120);
-      assert.match(response, new RegExp(`pulse=${pulse} hz=200 enabled=1`));
+      assert.deepEqual(bridgeState.aux, {pin: 1, pulse, enabled: true});
     }
     await keys.release();
     assert.equal((await client.status()).duty, 0);
-    assert.deepEqual(device.aux, {pin: 1, pulse: 2000, enabled: 1});
-    await assert.rejects(connection.shell('aux 7 1500', {expected: line => line.startsWith('# aux ')}), /aux error=invalid/);
+    assert.deepEqual(bridge.aux, {pin: 1, pulse: 2000, enabled: true});
+    await assert.rejects(connection.setAux(12, 1500), /Invalid pin/);
     assert.equal((await client.status()).duty, 0);
-    await connection.shell('aux off', {expected: line => line.startsWith('# aux ')});
-    assert.equal(device.aux.enabled, 0);
+    await connection.auxOff();
+    assert.equal(bridge.aux.enabled, false);
   } finally { await connection.disconnect(); }
 });
 
 test('browser harness supports the complete serial calibration workflow and saved pins', async () => {
   const fixture = JSON.parse(readFileSync(new URL('./calibration-fixture.json', import.meta.url)));
   const device = new BrowserDevice(fixture);
-  const port = new FakePort(bytes => device.write(bytes), {fragment: 13, delay: 1});
+  const bridge = new FakeBridge(bytes => device.uart(bytes), {fragment: 13, delay: 1, pins: [7, 44, -1]});
+  const port = bridge.port;
   const connection = new SerialConnection();
   await connection.connect(port);
   try {
-    assert.match(await connection.shell('pins', {expected: line => line.startsWith('# pins ')}), /rx=7 tx=44/);
-    await connection.mode('app');
+    assert.deepEqual([connection.state.rx, connection.state.tx], [7, 44]);
     await assert.rejects(new PennyClient(connection, 0).status(5), TimeoutError);
     const client = new PennyClient(connection, 1);
     assert.equal((await client.status()).calibrated, true);
-    assert.match(await connection.shell('pins 1 2 -1', {expected: line => line.startsWith('# pins ')}), /rx=1 tx=2 gnd=-1/);
+    const pins = await connection.setPins(1, 2, -1);
+    assert.deepEqual([pins.rx, pins.tx, pins.gnd], [1, 2, -1]);
     const raw = await captureCalibration(client);
     assert.equal(raw.length, 216);
     const solved = solveCapture(reduceCapturePoints(raw));
@@ -60,8 +59,7 @@ test('browser harness supports the complete serial calibration workflow and save
     assert.equal(device.stats.pointsRead, 216);
     assert.equal(device.stats.bytesUploaded, 640);
     assert.equal(device.stats.commits, 1);
-    assert.deepEqual(device.pins, [1, 2, -1]);
-    await connection.mode('off');
+    assert.deepEqual(bridge.pins, [1, 2, -1]);
   } finally { await connection.disconnect(); }
   assert.equal(port.openCount, 1);
   assert.equal(port.closeCount, 1);

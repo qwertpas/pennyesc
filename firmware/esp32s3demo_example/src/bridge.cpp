@@ -1,7 +1,7 @@
 #include <Arduino.h>
-#include "pennyesc_arduino.h"
+#include "pennyesc_bridge.h"
 
-PennyEscBridge bridge;
+PennyBridge bridge;
 
 #define TX_PIN 13
 #define RX_PIN 12
@@ -11,9 +11,7 @@ PennyEscBridge bridge;
 void setup()
 {
     Serial.begin(921600);
-    pinMode(GND_PIN, OUTPUT);
-    digitalWrite(GND_PIN, LOW);
-    bridge.begin(Serial, Serial1, RX_PIN, TX_PIN);
+    bridge.begin(Serial, Serial1, RX_PIN, TX_PIN, GND_PIN);
 }
 
 void loop()

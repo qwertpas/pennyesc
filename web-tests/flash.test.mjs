@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { FLASH_BASE, FLASH_APP_BYTES, Stm32Bootloader, flashBridge, flashEsc, loadEscImage } from '../docs/flash.js';
-import { SerialConnection } from '../docs/serial.js';
+import { BAUD, SerialConnection } from '../docs/serial.js';
 import { PennyClient, decodeFrame, encodeFrame } from '../docs/protocol.js';
-import { FakePort, RomDevice, statusPayload } from './serial-device.mjs';
+import { FakeBridge, RomDevice, statusPayload } from './serial-device.mjs';
 import { ESPLoader } from '../docs/vendor/esptool-js-0.7.0.js';
 
 function image(length = 1100) {
@@ -15,30 +15,18 @@ function image(length = 1100) {
   return bytes;
 }
 
+// ESC 1 (or the address now in flash) plus another ESC at address 2, on one bus.
 function bridgePort(rom, { recover = false } = {}) {
-  const encoder = new TextEncoder(), decoder = new TextDecoder();
-  let mode = 'app';
-  const quiet = [], modes = [];
-  const port = new FakePort(data => {
-    if (data[0] === 33 && data[1] === 35) {
-      const text = decoder.decode(data).trim().slice(2);
-      if (text === 'ping') return encoder.encode('pong\n');
-      if (text.startsWith('bridge ')) {
-        mode = text.slice(7); modes.push(mode);
-        return encoder.encode(`# bridge=${mode}\n`);
-      }
-      throw new Error(`Unknown shell command ${text}`);
-    }
-    if (mode === 'upload') return rom.write(data);
+  const bridge = new FakeBridge((data, baud) => {
+    if (baud === BAUD.BOOT) return rom.write(data);
     const frame = decodeFrame(data);
     const address = rom.running ? rom.memory[0x580 + 107] : 1;
-    if (![0, address, 2].includes(frame.address) || (!rom.running && recover && frame.address === 1)) return null;
+    if (![address, 2].includes(frame.address) || (!rom.running && recover && frame.address === 1)) return null;
     if (frame.command === 1) return encodeFrame(frame.address, 1, statusPayload());
-    if (frame.command === 13) { quiet.push(frame.address); return encodeFrame(frame.address, 13, new Uint8Array([0])); }
-    if (frame.command === 11) return encodeFrame(frame.address, 11, new Uint8Array([0]));
+    if (frame.command === 11) { rom.running = false; return encodeFrame(frame.address, 11, new Uint8Array([0])); }
     throw new Error('Unknown frame');
   }, { fragment: 7 });
-  return { port, quiet, modes };
+  return { port: bridge.port, bridge };
 }
 
 test('application validation rejects oversized, bootloader, and non-app binaries before writing', async () => {
@@ -63,8 +51,9 @@ test('normal flashing erases only app pages, verifies every byte, preserves boot
     assert.ok(rom.memory.slice(0x3d80).every(byte => byte === 0x5a));
     assert.deepEqual(rom.erased, Array.from({ length: 9 }, (_, i) => i));
     assert.deepEqual(rom.written, rom.reads);
-    assert.deepEqual(setup.quiet, [0, 2]);
-    assert.deepEqual(setup.modes, ['handoff', 'upload', 'handoff', 'app']);
+    // Only the target is addressed: no scan, no quiet commands, no bridge modes.
+    assert.deepEqual(setup.bridge.uartWrites.filter(write => write.baud === BAUD.APP).map(write => decodeFrame(write.bytes).command).slice(0, 1), [11]);
+    assert.deepEqual(setup.bridge.commands, [1]);
     assert.ok(rom.running);
     assert.deepEqual(stages.at(-1), ['done', 100]);
   } finally { await connection.disconnect(); }
@@ -98,7 +87,6 @@ test('flashing changes address 1 to 4 and verifies the patched image and new add
     assert.equal((await new PennyClient(connection, 4).status()).calibrated, true);
     await assert.rejects(new PennyClient(connection, 1).status(5));
     assert.ok(rom.memory.slice(0x3d80).every(byte => byte === 0x5a));
-    assert.equal(setup.modes.at(-1), 'app');
   } finally { await connection.disconnect(); }
 });
 
@@ -118,7 +106,7 @@ test('recovery accepts absent app and waits in upload mode for target reset', as
   let resetRequested = false;
   try {
     await flashEsc(new PennyClient(connection, 1), image(200), { recover: true, onResetNeeded: () => { resetRequested = true; } });
-    assert.equal(resetRequested, true); assert.deepEqual(setup.quiet, [0, 2]); assert.equal(rom.running, true);
+    assert.equal(resetRequested, true); assert.equal(rom.running, true);
   } finally { await connection.disconnect(); }
 });
 
@@ -132,6 +120,26 @@ test('verification failure never runs the unverified application', async () => {
   } finally { await connection.disconnect(); }
 });
 
+test('a failed flash leaves the bridge usable at once and says how to recover', async () => {
+  const rom = new RomDevice(); rom.corruptRead = true;
+  const { port } = bridgePort(rom);
+  const connection = new SerialConnection(); await connection.connect(port);
+  try {
+    await assert.rejects(() => flashEsc(new PennyClient(connection, 1), image(200)), /Power-cycle the ESC, then use Recover/);
+    assert.equal((await new PennyClient(connection, 2).status()).x, 123);
+    assert.equal((await connection.setAux(11, 1500)).aux.enabled, true);
+  } finally { await connection.disconnect(); }
+});
+
+test('an ESC that ignores the boot request points to Recover', async () => {
+  const rom = new RomDevice(), { port } = bridgePort(rom, { recover: true });
+  const connection = new SerialConnection(); await connection.connect(port);
+  try {
+    await assert.rejects(() => flashEsc(new PennyClient(connection, 1), image(200)), /did not respond. Use Recover/);
+    assert.deepEqual(rom.erased, []);
+  } finally { await connection.disconnect(); }
+});
+
 test('ROM primitives reject calibration writes and mass erases', async () => {
   const boot = new Stm32Bootloader({ write() { throw new Error('Must not write'); } });
   await assert.rejects(() => boot.erase([112]), /application region/);
@@ -140,7 +148,7 @@ test('ROM primitives reject calibration writes and mass erases', async () => {
 });
 
 test('ESP flasher releases live reader before esptool, verifies files and closes before reconnect', async t => {
-  const port = new FakePort(() => null), connection = new SerialConnection();
+  const { port } = bridgePort(new RomDevice()), connection = new SerialConnection();
   await connection.connect(port);
   const bytes = new Uint8Array([1, 2, 3, 4]);
   const saved = {};

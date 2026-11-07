@@ -1,8 +1,8 @@
 #include <Arduino.h>
-#include "pennyesc_arduino.h"
+#include "pennyesc_bridge.h"
 
 static PennyEsc esc(1);
-static PennyEscBridge bridge;
+static PennyBridge bridge;
 
 void setup()
 {

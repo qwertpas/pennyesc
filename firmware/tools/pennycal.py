@@ -12,6 +12,7 @@ from typing import Callable, Iterable, Sequence
 
 import numpy as np
 import serial
+from pnybridge import BAUD_APP, Bridge
 from pnyproto import (
     FAULT_FLASH,
     FAULT_SENSOR,
@@ -586,21 +587,14 @@ def solve_legacy_csv(path: Path) -> SolvedCalibration:
 
 
 class EspBridge:
+    """Opens the PennyESC bridge; ``serial`` is a pyserial-like UART to the ESC."""
+
     def __init__(self, port: str, baudrate: int = 115200) -> None:
         self.port_name = port
-        self.baudrate = baudrate
-        self.command_prefix = ""
-        self.serial = self._open_serial()
-
-    def _open_serial(self) -> serial.Serial:
-        port = serial.Serial(port=self.port_name, baudrate=self.baudrate, timeout=0.01, write_timeout=1.0)
-        port.dtr = False
-        port.rts = False
-        return port
+        self.serial = Bridge(port, timeout=0.01)
 
     def close(self) -> None:
-        if self.serial.is_open:
-            self.serial.close()
+        self.serial.close()
 
     def __enter__(self) -> "EspBridge":
         return self
@@ -608,96 +602,15 @@ class EspBridge:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def reset_bridge(self) -> None:
-        self.close()
-
-        try:
-            pulse = serial.Serial(port=self.port_name, baudrate=1200, timeout=0.2, write_timeout=0.2)
-            pulse.close()
-        except serial.SerialException:
-            pass
-
-        deadline = time.monotonic() + 8.0
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            time.sleep(0.4)
-            try:
-                self.serial = self._open_serial()
-                time.sleep(1.5)
-                return
-            except serial.SerialException as exc:
-                last_error = exc
-
-        raise TimeoutError(f"boot bridge reset failed: {last_error}")
-
-    def _read_line_until(self, predicate: Callable[[str], bool], timeout: float) -> str:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            line = self.serial.readline()
-            if not line:
-                continue
-            text = line.decode("utf-8", errors="replace").strip()
-            if predicate(text):
-                return text
-        raise TimeoutError("bridge shell did not respond")
-
-    def _try_sync_shell(self, timeout: float) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            self.serial.reset_input_buffer()
-            self.serial.write(b"!#ping\n")
-            self.serial.flush()
-            wait_deadline = time.monotonic() + 0.25
-            while time.monotonic() < wait_deadline:
-                line = self.serial.readline()
-                if not line:
-                    continue
-                text = line.decode("utf-8", errors="replace").strip()
-                if text == "pong":
-                    self.command_prefix = "!#"
-                    return True
-
-            self.serial.reset_input_buffer()
-            self.serial.write(b"\n")
-            self.serial.write(b"ping\n")
-            self.serial.flush()
-            wait_deadline = time.monotonic() + 0.25
-            while time.monotonic() < wait_deadline:
-                line = self.serial.readline()
-                if not line:
-                    continue
-                text = line.decode("utf-8", errors="replace").strip()
-                if text == "pong":
-                    self.command_prefix = ""
-                    return True
-            time.sleep(0.05)
-        return False
-
+    # The bridge has no modes. These remain so older scripts keep working.
     def sync_shell(self, timeout: float = 6.0) -> None:
-        if self._try_sync_shell(timeout):
-            return
-        self.reset_bridge()
-        if self._try_sync_shell(timeout):
-            return
-        raise TimeoutError("bridge shell did not respond")
+        self.serial.hello(timeout)
 
     def enter_bridge(self, mode: str = "app") -> None:
-        self.sync_shell()
-        self.serial.reset_input_buffer()
-        self.serial.reset_output_buffer()
-        self.serial.write(f"{self.command_prefix}bridge {mode}\n".encode("utf-8"))
-        self.serial.flush()
-        self._read_line_until(lambda text: text == f"# bridge={mode}", timeout=2.0)
-        self.command_prefix = "!#"
+        self.serial.set_baud(BAUD_APP)
 
     def exit_bridge(self) -> None:
-        time.sleep(0.025)
-        self.serial.reset_input_buffer()
-        self.serial.reset_output_buffer()
-        self.serial.write(f"{self.command_prefix or '!#'}bridge off\n".encode("utf-8"))
-        self.serial.flush()
-        self._read_line_until(lambda text: text == "# bridge=off", timeout=2.0)
-        self.command_prefix = ""
+        pass
 
 
 class Stm32Client:
