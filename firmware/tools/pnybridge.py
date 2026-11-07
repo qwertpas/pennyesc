@@ -248,6 +248,10 @@ class Bridge:
             self._send(PKT_UART, bytes((self.baud,)) + data[start : start + 240])
         return len(data)
 
+    def fileno(self) -> int:
+        """The USB port's descriptor, for select(); it wakes on any bridge packet."""
+        return self._serial.fileno()
+
     def flush(self) -> None:
         self._serial.flush()
 
