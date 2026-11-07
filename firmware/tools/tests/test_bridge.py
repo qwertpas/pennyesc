@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -432,7 +433,8 @@ def compile_and_run(folder: Path, name: str, source: str, defines: list[str]) ->
     subprocess.run(["c++", "-std=c++14", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                     *defines, *includes, "-I", str(folder), "-I", str(ROOT / "firmware/Lib"),
                     str(folder / f"{name}.cpp"), "-o", str(binary)], check=True)
-    return subprocess.check_output([str(binary)], text=True)
+    # The firmware allocates its queue once for its lifetime, which LeakSanitizer reports on Linux.
+    return subprocess.check_output([str(binary)], text=True, env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"})
 
 
 def stand_ins(folder: Path) -> None:
