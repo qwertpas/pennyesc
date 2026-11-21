@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <defs>
+    <mask id="holes">
+      <rect width="48" height="48" fill="#fff"/>
+      <circle cx="21.25" cy="24" r="6.25"/>
+      <circle cx="9.5" cy="24" r="2.15"/>
+      <circle cx="21.25" cy="12.25" r="2.15"/>
+      <circle cx="21.25" cy="35.75" r="2.15"/>
+    </mask>
+  </defs>
+  <g mask="url(#holes)">
+    <path d="M21.25 4.75h15.1a24.5 24.5 0 0 1 0 38.5h-15.1a19.25 19.25 0 0 1 0-38.5Z" fill="#188566" stroke="#0c5944" stroke-width="1.25"/>
+    <g fill="#beead8">
+      <circle cx="9.5" cy="24" r="3.35"/>
+      <circle cx="21.25" cy="12.25" r="3.35"/>
+      <circle cx="21.25" cy="35.75" r="3.35"/>
+    </g>
+    <path d="M30 17h-2m2 4h-2m2 6h-2m2 4h-2M41 17h2m-2 4h2m-2 6h2m-2 4h2" fill="none" stroke="#9ac9b0" stroke-width="1.35" stroke-linecap="round"/>
+    <g fill="#192e2b">
+      <rect x="29.5" y="13.5" width="12" height="20" rx="1.6"/>
+      <rect x="8" y="9.5" width="8.5" height="8.5" rx="1.2" transform="rotate(45 12.25 13.75)"/>
+      <rect x="10.5" y="29.5" width="5.5" height="8" rx="1" transform="rotate(40 13.25 33.5)"/>
+    </g>
+    <g fill="#ffd266">
+      <circle cx="29.5" cy="39.5" r="2.05"/>
+      <circle cx="34.65" cy="39" r="2.05"/>
+      <circle cx="39" cy="36.65" r="2.05"/>
+    </g>
+  </g>
+</svg>
