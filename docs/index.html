@@ -28,7 +28,6 @@
     <button id="tab-telemetry" role="tab" aria-selected="true" aria-controls="telemetry">Telemetry</button>
     <button id="tab-calibration" role="tab" aria-selected="false" aria-controls="calibration">Calibration</button>
     <button id="tab-aux" role="tab" aria-selected="false" aria-controls="aux">PWM</button>
-    <button id="tab-summary" role="tab" aria-selected="false" aria-controls="summary">Session</button>
     <button id="tab-firmware" role="tab" aria-selected="false" aria-controls="firmware">Firmware</button>
   </div>
   <section id="telemetry" role="tabpanel" aria-labelledby="tab-telemetry">
@@ -53,7 +52,7 @@
       <button id="clear-calibration">Clear plots</button>
       <span id="cal-state" class="muted">—</span>
       <span class="spacer"></span>
-      <button id="export-calibration" disabled>Export session</button>
+      <button id="export-calibration" disabled>Export calibration</button>
     </div>
     <div class="progress-row"><progress id="cal-progress" max="100" value="0"></progress><output id="cal-progress-text"></output></div>
     <div class="cal-plots">
@@ -72,10 +71,6 @@
       <input id="aux-slider" type="range" min="1000" max="2000" step="1" value="1500" aria-label="PWM pulse width">
       <div id="aux-presets" class="tools" aria-label="PWM presets"></div>
     </fieldset>
-  </section>
-  <section id="summary" role="tabpanel" aria-labelledby="tab-summary" hidden>
-    <div class="tools"><output id="session-state">No session</output><span class="spacer"></span><button id="export-session" disabled>Export session</button></div>
-    <pre id="session-data"></pre>
   </section>
   <section id="firmware" role="tabpanel" aria-labelledby="tab-firmware" hidden>
     <div class="firmware-grid">

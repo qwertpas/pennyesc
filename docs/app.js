@@ -77,7 +77,6 @@ function state() {
   keys.enabled = $('key-control').checked && !$('key-control').disabled;
   $('flash-bridge').disabled = busy || connection === ble || !manifest || !('serial' in navigator);
   $('flash-stlink').disabled = busy || !manifest?.pennyesc.bootloader || !navigator.usb;
-  $('export-session').disabled = !session || busy;
   $('export-calibration').disabled = !session || busy;
   $('pause').textContent = paused ? 'Resume' : 'Pause';
 }
@@ -389,17 +388,8 @@ function drawCalibration() {
   plots.xy.set(data.xy); plots.field.set(data.field); plots.residual.set(data.residual);
 }
 
-function updateSession() {
-  if (!session) { $('session-state').value = 'No session'; $('session-data').textContent = ''; state(); return; }
-  $('session-state').value = session.status;
-  $('session-data').textContent = JSON.stringify({...session, static: session.static ? {
-    ...session.static, raw_points: `${raw.length} points`, reduced_points: `${reduced.length} points`, angle_lut: `${solved?.angle_lut?.length ?? 0} values`,
-  } : undefined}, null, 2);
-  state();
-}
-
 $('calibrate').onclick = () => operation(async () => {
-  session = {mode: 'static', port: connection.port.getInfo(), address: client.address, started_at: new Date().toISOString(), status: 'Capturing'};
+  session = {mode: 'static', port: connection.port.getInfo(), address: client.address, started_at: new Date().toISOString()};
   control = {...defaultControl(), clip: control.clip};
   setMode('duty'); updateControl();
   raw = []; reduced = []; solved = undefined;
@@ -416,10 +406,8 @@ $('calibrate').onclick = () => operation(async () => {
       },
     });
     reduced = reduceCapturePoints(raw);
-    session.status = 'Solving'; updateSession();
     solved = solveCapture(reduced); dirty = true;
     session.static = {raw_points: captureRows(raw, true), reduced_points: captureRows(reduced), ...solved, blob: undefined, blob_size: solved.blob.length};
-    session.status = 'Uploading';
     await uploadCalibration(client, solved, {onProgress({stage, done, total}) {
       $('cal-progress').value = stage === 'verify' ? 95 + done * 5 / total : 60 + done * 35 / total;
       $('cal-progress-text').value = stage === 'verify' ? 'Verifying…' : `Upload ${done}/${total}`;
@@ -435,14 +423,21 @@ $('calibrate').onclick = () => operation(async () => {
     $('cal-state').textContent = error.message;
     throw error;
   } finally {
-    session.ended_at = new Date().toISOString(); updateSession(); dirty = true;
+    session.ended_at = new Date().toISOString(); dirty = true;
   }
 });
 $('check-motor').onclick = () => operation(async () => {
   const status = checkResult(await client.status());
   const info = await client.calInfo();
-  showStatus(status); log(statusText(status)); log(JSON.stringify(info));
-  $('cal-state').textContent = info.valid ? `CRC32 ${info.blob_crc32.toString(16).padStart(8,'0')} · ${info.blob_size} bytes` : 'Uncalibrated';
+  const saved = (info.commutation_alignment_turn16 * 360 / 65536).toFixed(2);
+  const angles = [info.valid ? `Saved offset ${saved}° electrical` : 'Uncalibrated'];
+  const sensorOk = status.flags & 0x10;
+  if (sensorOk && (status.x || status.y)) {
+    const angle = (Math.atan2(status.y, status.x) * 180 / Math.PI + 360) % 360;
+    angles.push(`Raw angle ${angle.toFixed(2)}°`);
+  }
+  $('cal-state').textContent = angles.join(' · ');
+  showStatus(status); log(statusText(status)); log(JSON.stringify(info)); log($('cal-state').textContent);
 });
 $('read-calibration').onclick = () => operation(async () => {
   const result = await readCalibration(client);
@@ -455,7 +450,7 @@ $('clear-calibration').onclick = () => {
   if (busy) return;
   raw = []; reduced = []; solved = undefined; session = undefined;
   $('cal-progress').value = 0; $('cal-progress-text').value = ''; $('cal-state').textContent = '—';
-  updateSession(); dirty = true;
+  state(); dirty = true;
 };
 
 $('board').onchange = () => { selectPins(); localStorage.setItem('penny-board', $('board').value); };
@@ -536,7 +531,7 @@ function csv(rows) {
   return [keys.join(','), ...rows.map(row => keys.map(key => JSON.stringify(row[key] ?? '')).join(','))].join('\n') + '\n';
 }
 
-async function exportSession() {
+async function exportCalibration() {
   if (!session) return;
   try {
     const parent = await window.showDirectoryPicker({mode: 'readwrite'});
@@ -553,11 +548,10 @@ async function exportSession() {
       const handle = await directory.getFileHandle(name, {create: true});
       const stream = await handle.createWritable(); await stream.write(data); await stream.close();
     }
-    message('Session exported');
+    message('Calibration exported');
   } catch (error) { if (error.name !== 'AbortError') message(error.message, true); }
 }
-$('export-session').onclick = exportSession;
-$('export-calibration').onclick = exportSession;
+$('export-calibration').onclick = exportCalibration;
 
 let lastDraw = 0;
 function render(now) {
@@ -571,7 +565,7 @@ function render(now) {
 
 async function initialize() {
   setMode('duty');
-  state(); drawLive(); drawCalibration(); updateSession();
+  state(); drawLive(); drawCalibration();
   if (!('serial' in navigator) && !('bluetooth' in navigator)) message('USB and BLE are unavailable', true);
   try {
     const response = await fetch('firmware/manifest.json', {cache: 'no-store'});
