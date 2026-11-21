@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { FLASH_BASE, FLASH_APP_BYTES, Stm32Bootloader, flashBridge, flashEsc, loadEscImage } from '../docs/flash.js';
 import { BAUD, SerialConnection } from '../docs/serial.js';
 import { PennyClient, decodeFrame, encodeFrame } from '../docs/protocol.js';
-import { FakeBridge, RomDevice, statusPayload } from './serial-device.mjs';
+import { FakeBridge, FakePort, RomDevice, statusPayload } from './serial-device.mjs';
 import { ESPLoader } from '../docs/vendor/esptool-js-0.7.0.js';
 
 function image(length = 1100) {
@@ -180,6 +180,7 @@ test('ROM primitives reject calibration writes and mass erases', async () => {
 
 test('ESP flasher releases live reader before esptool, verifies files and closes before reconnect', async t => {
   const { port } = bridgePort(new RomDevice()), connection = new SerialConnection();
+  port.getInfo = () => ({ usbVendorId: 0x10c4, usbProductId: 0xea60 });
   await connection.connect(port);
   const bytes = new Uint8Array([1, 2, 3, 4]);
   const saved = {};
@@ -193,6 +194,7 @@ test('ESP flasher releases live reader before esptool, verifies files and closes
   };
   ESPLoader.prototype.main = async function () {
     assert.equal(this.serialOptions.bufferSize, 65536);
+    assert.equal(this.baudrate, 460800);
     assert.equal(port.closeCount, 1);
     assert.equal(connection.connected, false);
     assert.equal(port.readable, null);
@@ -211,18 +213,59 @@ test('ESP flasher releases live reader before esptool, verifies files and closes
   await connection.connect(port); await connection.disconnect();
 });
 
-test('disconnected ESP flashing selects a fresh port before starting network downloads', async t => {
+test('native S3 stays on one port and stops the watchdogs before loading the stub or downloading', async t => {
   const connection = new SerialConnection(); connection.port = { stale: true };
+  const port = new FakePort(() => {});
+  const bytes = Uint8Array.of(1, 2, 3, 4);
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
-  const originalFetch = globalThis.fetch;
-  let selected = false;
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { serial: { requestPort: async () => { selected = true; return {}; } } } });
-  globalThis.fetch = async () => { assert.equal(selected, true); throw new Error('Download interrupted'); };
-  t.after(() => {
-    Object.defineProperty(globalThis, 'navigator', descriptor);
-    globalThis.fetch = originalFetch;
+  const steps = [], registers = [];
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { serial: {
+    async requestPort() { steps.push('pick'); return port; },
+  } } });
+  t.after(() => Object.defineProperty(globalThis, 'navigator', descriptor));
+  t.mock.method(ESPLoader.prototype, 'detectChip', async function () {
+    steps.push('connect');
+    await this.transport.connect(115200, this.serialOptions);
+    this.chip = {
+      CHIP_NAME: 'ESP32-S3',
+      getChipDescription: async () => 'ESP32-S3',
+      getChipFeatures: async () => 'USB Serial/JTAG',
+      getCrystalFreq: async () => 40,
+      readMac: async () => '',
+    };
   });
-  await assert.rejects(() => flashBridge(connection, { flash: [{ path: 'firmware.bin', address: 0 }] }), /Download interrupted/);
-  assert.equal(selected, true);
+  t.mock.method(ESPLoader.prototype, 'readReg', async address => {
+    assert.equal(address, 0x3fcef14c);
+    return 4;
+  });
+  t.mock.method(ESPLoader.prototype, 'writeReg', async (...args) => { registers.push(args); });
+  t.mock.method(ESPLoader.prototype, 'runStub', async () => {
+    assert.deepEqual(registers, [
+      [0x600080b0, 0x50d83aa1], [0x60008098, 0], [0x600080b0, 0],
+      [0x600080b8, 0x8f1d312a], [0x600080b4, 0x80000000, 0x80000000], [0x600080b8, 0],
+    ]);
+    steps.push('stub');
+  });
+  t.mock.method(ESPLoader.prototype, 'changeBaud', async () => assert.fail('Native USB reopened the port'));
+  t.mock.method(ESPLoader.prototype, 'readFlashId', async () => 1);
+  t.mock.method(globalThis, 'fetch', async () => {
+    steps.push('download');
+    return new Response(bytes);
+  });
+  t.mock.method(ESPLoader.prototype, 'writeFlash', async ({fileArray}) => {
+    steps.push('write'); assert.deepEqual(fileArray[0].data, bytes);
+  });
+  t.mock.method(ESPLoader.prototype, 'readFlash', async () => { steps.push('verify'); return bytes; });
+  t.mock.method(ESPLoader.prototype, 'after', async () => { steps.push('reset'); });
+  const board = { name: 'ESP32S3 SuperMini', chip: 'ESP32-S3', flash: [{ path: 'firmware.bin', address: 0 }] };
+  await flashBridge(connection, board);
+  assert.deepEqual(steps, ['pick', 'connect', 'stub', 'download', 'write', 'verify', 'reset']);
+  assert.equal(port.openCount, 1);
+  assert.equal(port.closeCount, 1);
+  assert.equal(SerialConnection.owner, null);
+
+  t.mock.method(port, 'open', async () => { throw new DOMException('Port disconnected', 'NetworkError'); });
+  await assert.rejects(() => flashBridge(connection, board), /Port disconnected.*Hold BOOT, tap RESET, release BOOT/);
+  assert.deepEqual(steps.slice(7), ['pick', 'connect']);
   assert.equal(SerialConnection.owner, null);
 });

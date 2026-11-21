@@ -168,23 +168,53 @@ export async function fetchBinary(path, base = new URL('./firmware/', import.met
 
 export async function flashBridge(connection, board, { progress = () => {}, onLog = () => {} } = {}) {
   if (!board?.flash?.length) throw new Error('Select a bridge board');
-  const port = connection.connected ? connection.port : await navigator.serial.requestPort();
-  progress('download', 0);
-  const files = await Promise.all(board.flash.map(async file => ({ address: file.address, data: await fetchBinary(file.path) })));
+  const [port, { ESPLoader, Transport }] = await Promise.all([
+    connection.connected ? connection.port : navigator.serial.requestPort(),
+    import('./vendor/esptool-js-0.7.0.js'),
+  ]);
+  const {usbVendorId, usbProductId} = port.getInfo();
+  const nativeS3 = board.chip === 'ESP32-S3' && usbVendorId === 0x303a && usbProductId === 0x1001;
+  const downloadFiles = () => {
+    progress('download', 0);
+    return Promise.all(board.flash.map(async file => ({ address: file.address, data: await fetchBinary(file.path) })));
+  };
+  // Catch a resetting S3 in ROM before waiting for the firmware download.
+  let files = nativeS3 ? null : await downloadFiles();
   await connection.disconnect();
   if (SerialConnection.owner) throw new Error('Another serial operation owns the port');
   const owner = {};
   SerialConnection.owner = owner;
   let transport;
   try {
-    const { ESPLoader, Transport } = await import('./vendor/esptool-js-0.7.0.js');
+    class BridgeLoader extends ESPLoader {
+      async detectChip(...args) {
+        await super.detectChip(...args);
+        if (!nativeS3 || this.chip?.CHIP_NAME !== 'ESP32-S3' || this.secureDownloadMode || this.syncStubDetected) return;
+        // UARTDEV_BUF_NO is 4 for USB Serial/JTAG on S3.
+        if (((await this.readReg(0x3fcef14c)) & 0xff) !== 4) return;
+
+        // Match Python esptool before the stub starts: stop RTC WDT and auto-feed SWD.
+        const rtcLock = 0x600080b0, swdLock = 0x600080b8;
+        await this.writeReg(rtcLock, 0x50d83aa1);
+        await this.writeReg(0x60008098, 0);
+        await this.writeReg(rtcLock, 0);
+        await this.writeReg(swdLock, 0x8f1d312a);
+        await this.writeReg(0x600080b4, 0x80000000, 0x80000000);
+        await this.writeReg(swdLock, 0);
+      }
+    }
     transport = new Transport(port, false);
-    const loader = new ESPLoader({ transport, baudrate: 460800, serialOptions: {bufferSize: 65536},
+    // USB Serial/JTAG has no UART baud limit. Keeping the ROM baud avoids a port reopen.
+    const loader = new BridgeLoader({ transport, baudrate: nativeS3 ? 115200 : 460800, serialOptions: {bufferSize: 65536},
       terminal: { clean() {}, write: onLog, writeLine: onLog }, debugLogging: false });
     progress('connect', 0);
-    const detected = await loader.main();
+    const detected = await loader.main().catch(error => {
+      if (nativeS3) throw new Error(`${error.message} Hold BOOT, tap RESET, release BOOT, then try again.`, {cause: error});
+      throw error;
+    });
     const normalize = name => name.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (normalize(loader.chip.CHIP_NAME) !== normalize(board.chip)) throw new Error(`Selected ${board.name}; connected chip is ${detected}`);
+    files ??= await downloadFiles();
     await loader.writeFlash({ fileArray: files, flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep', eraseAll: false, compress: true,
       reportProgress: (index, written, total) => progress('write', (index + written / total) / files.length * 100),
     });
@@ -195,6 +225,7 @@ export async function flashBridge(connection, board, { progress = () => {}, onLo
     }
     await loader.after('hard_reset');
     progress('done', 100); onLog(`Verified ${board.name}`);
+    if (nativeS3) onLog('Tap RESET if the bridge stays in download mode.');
     connection.port = port;
   } finally {
     try { if (transport && port.readable) await transport.disconnect(); }
