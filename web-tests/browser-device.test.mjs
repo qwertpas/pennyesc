@@ -50,7 +50,11 @@ test('browser harness supports the complete serial calibration workflow and save
     assert.equal((await client.status()).calibrated, true);
     const pins = await connection.setPins(1, 2, -1);
     assert.deepEqual([pins.rx, pins.tx, pins.gnd], [1, 2, -1]);
-    const raw = await captureCalibration(client);
+    const firstSweep = [];
+    const raw = await captureCalibration(client, {onSample(point) {
+      if (device.sweep === 0 && device.active) firstSweep.push(point);
+    }});
+    assert.deepEqual(firstSweep, device.raw.slice(0, 35));
     assert.equal(raw.length, 216);
     const solved = solveCapture(reduceCapturePoints(raw));
     const stored = await uploadCalibration(client, solved);

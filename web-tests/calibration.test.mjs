@@ -66,7 +66,8 @@ class Device {
     this.calls = [];
   }
   async status() {
-    return {result: 0, flags: this.valid ? 1 : 0, x: 123, y: -456, z: 789};
+    assert.equal(this.valid, true, 'Live status is only needed after committing calibration');
+    return {result: 0, flags: 1};
   }
   async exchange(cmd, payload, timeout) {
     this.calls.push({cmd, payload: [...payload], timeout});
@@ -78,15 +79,19 @@ class Device {
         assert.equal(this.active, false);
         assert.equal(payload[1], this.sweep + 1 < 3 ? 0 : 1);
         this.sweep++;
+        this.next = 0;
         this.active = true;
         return Uint8Array.of(0, 36);
       case 2:
-        if (this.active) {
-          this.active = false;
+        if (!this.next) {
+          this.next = 18;
           return Uint8Array.of(0, 1, 18, 36);
         }
+        this.active = false;
+        this.next = 36;
         return Uint8Array.of(0, 0, 36, 36);
       case 3: {
+        assert.ok(payload[1] < this.next);
         const point = this.raw[this.sweep * 36 + payload[1]];
         bytes.set([0, payload[1], point.step_index, point.sweep_dir]);
         for (const [offset, key] of [[4, 'x'], [6, 'y'], [8, 'z'], [14, 'duty']]) data.setInt16(offset, point[key], true);
@@ -129,11 +134,15 @@ class Device {
 
 test('capture, reduce, solve, upload, reboot and readback work as one device workflow', async () => {
   const device = new Device(points(fixture.cases[0].raw));
-  const progress = [], samples = [];
+  const progress = [], samples = [], firstSweep = [];
   assert.equal((await readCalibration(device)).valid, 0);
-  const raw = await captureCalibration(device, {onProgress: p => progress.push(p), onSample: p => samples.push(p)});
+  const raw = await captureCalibration(device, {onProgress: p => progress.push(p), onSample(point) {
+    samples.push(point);
+    if (device.sweep === 0 && device.active) firstSweep.push(point);
+  }});
   assert.deepEqual(raw, device.raw);
-  assert.equal(samples.length, 222);
+  assert.deepEqual(samples, device.raw);
+  assert.deepEqual(firstSweep, device.raw.slice(0, 18));
   assert.equal(progress.at(-1).done, 216);
   const solved = solveCapture(reduceCapturePoints(raw));
   const stored = await uploadCalibration(device, solved, {onProgress: p => progress.push(p)});

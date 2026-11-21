@@ -411,8 +411,7 @@ $('calibrate').onclick = () => operation(async () => {
         $('cal-progress-text').value = `${progress.sweep_dir ? 'Reverse' : 'Forward'} · rotation ${progress.rotation} · ${progress.done}/${progress.total}`;
       },
       onSample(point) {
-        const index = raw.findIndex(value => value.index === point.index);
-        if (index < 0) raw.push(point); else raw[index] = point;
+        raw.push(point);
         dirty = true;
       },
     });

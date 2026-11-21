@@ -264,7 +264,7 @@ export async function captureCalibration(client, {onProgress, onSample, signal} 
     const start = await client.exchange(CMD_CAL, Uint8Array.of(CAL_START, direction), 500);
     response(start, 2, 'CAL_START');
     if (start[1] !== 36) throw new Error(`Unexpected point count ${start[1]}`);
-    let lastSample = -1;
+    let local = 0;
     const deadline = Date.now() + 120000;
     while (true) {
       const status = await client.exchange(CMD_CAL, Uint8Array.of(CAL_STATUS), 500);
@@ -273,32 +273,25 @@ export async function captureCalibration(client, {onProgress, onSample, signal} 
       if (next > 36 || status[3] !== 36) throw new Error('Invalid calibration progress');
       onProgress?.({stage: 'capture', done: base + next, total: 216, active: !!active,
         sweep_dir: direction, rotation: sweep % 3 + 1, step_index: Math.min(next, 35)});
-      if (active && next > 0 && onSample && next !== lastSample) {
-        const live = await client.status();
-        const local = next - 1;
-        onSample({...live, index: base + local, step_index: direction ? 35 - local : local,
-          sweep_dir: direction});
-        lastSample = next;
+      if (!active && next !== 36) throw new Error(`Calibration stopped after ${next} points`);
+      for (; local < next && !signal?.aborted; local++) {
+        const bytes = await client.exchange(CMD_CAL, Uint8Array.of(CAL_READ_POINT, local), 2000);
+        const data = response(bytes, 16, `CAL_READ_POINT ${local}`);
+        const step = direction ? 35 - local : local;
+        if (bytes[1] !== local || bytes[2] !== step || bytes[3] !== direction) throw new Error('Capture point mismatch');
+        const point = {index: base + local, step_index: bytes[2], sweep_dir: bytes[3],
+          x: data.getInt16(4, true), y: data.getInt16(6, true), z: data.getInt16(8, true),
+          xy_radius: data.getUint16(10, true), sample_spread: data.getUint16(12, true), duty: data.getInt16(14, true)};
+        points.push(point);
+        onSample?.(point);
       }
       if (!active) {
-        if (next !== 36) throw new Error(`Calibration stopped after ${next} points`);
+        checkSignal(signal);
         break;
       }
       // The firmware completes the active sweep before cancellation is safe.
       if (Date.now() >= deadline) throw new Error('Calibration sweep timed out');
       await wait(50);
-    }
-    checkSignal(signal);
-    for (let local = 0; local < 36; local++) {
-      const bytes = await client.exchange(CMD_CAL, Uint8Array.of(CAL_READ_POINT, local), 2000);
-      const data = response(bytes, 16, `CAL_READ_POINT ${local}`);
-      const step = direction ? 35 - local : local;
-      if (bytes[1] !== local || bytes[2] !== step || bytes[3] !== direction) throw new Error('Capture point mismatch');
-      const point = {index: base + local, step_index: bytes[2], sweep_dir: bytes[3],
-        x: data.getInt16(4, true), y: data.getInt16(6, true), z: data.getInt16(8, true),
-        xy_radius: data.getUint16(10, true), sample_spread: data.getUint16(12, true), duty: data.getInt16(14, true)};
-      points.push(point);
-      onSample?.(point);
     }
   }
   return points;

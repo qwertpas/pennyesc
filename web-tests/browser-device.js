@@ -56,7 +56,7 @@ export class BrowserDevice {
         return Uint8Array.of(0, this.active ? 1 : 0, this.next, 36);
       case 3: {
         const local = payload[1], point = this.raw[this.sweep * 36 + local];
-        if (!point || this.active) throw new Error('Read calibration point before sweep completed');
+        if (!point || local >= this.next) throw new Error('Read calibration point before it was ready');
         this.stats.pointsRead++;
         return pack('BBBBhhhHHh', 0, local, point.step_index, point.sweep_dir,
           point.x, point.y, point.z, point.xy_radius, point.sample_spread, point.duty);
