@@ -303,6 +303,12 @@
     "name": "pennyesc",
     "escAddress": 1,
     "maxBytes": 14336,
-    "pageBytes": 128
+    "pageBytes": 128,
+    "bootloader": {
+      "path": "pennyesc-bootloader.bin",
+      "address": 134217728,
+      "bytes": 1404,
+      "sha256": "cef324c607b18f289614cd5f1e42632041eec5d9afb40a02fecc767144457609"
+    }
   }
 }

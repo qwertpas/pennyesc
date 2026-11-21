@@ -48,7 +48,7 @@ def main():
         subprocess.run([str(PIO), "run", "-d", str(ROOT / "firmware/esp32s3demo"),
                         *[value for board in BOARDS for value in ("-e", board[0])]], check=True)
         subprocess.run([str(PIO), "run", "-d", str(ROOT / "firmware/pennyesc_libopencm3"),
-                        "-e", "pennyesc_uart"], check=True)
+                        "-e", "pennyesc_uart", "-e", "seed", "-t", "buildprog"], check=True)
 
     boot_app = Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
     bridges = []
@@ -86,6 +86,7 @@ def main():
     app_bytes = int(re.search(r"#define PENNYESC_APP_BYTES (\d+)u", boot)[1])
     page_bytes = int(re.search(r"#define PENNYESC_PAGE_BYTES (\d+)u", boot)[1])
     app.update(name="pennyesc", escAddress=int(default_address[1]), maxBytes=app_bytes, pageBytes=page_bytes)
+    app["bootloader"] = copy_image(project / ".pio/build/seed/firmware.bin", "pennyesc-bootloader.bin", 0x08000000)
     manifest = {"version": 1, "defaultBridge": "qtpy-esp32s3", "bridges": bridges, "pennyesc": app}
     (OUTPUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Packaged {len(bridges)} bridges and pennyesc in {OUTPUT}")

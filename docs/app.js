@@ -3,7 +3,8 @@ import {BleConnection} from './ble.js';
 import {DUTY_LIMIT, PennyClient} from './protocol.js';
 import {captureCalibration, reduceCapturePoints, solveCapture, uploadCalibration,
   readCalibration, captureRows, calibrationPlots} from './calibration.js';
-import {flashBridge, flashEsc} from './flash.js';
+import {fetchBinary, flashBridge, flashEsc} from './flash.js';
+import {flashStLink, requestStLink} from './stlink.js';
 import {LiveData, Telemetry} from './telemetry.js';
 import {defaultControl, controlText, checkResult, runCommand} from './commands.js';
 import {Plot} from './plots.js';
@@ -75,6 +76,7 @@ function state() {
   $('key-control').closest('label').classList.toggle('inactive', $('key-control').disabled);
   keys.enabled = $('key-control').checked && !$('key-control').disabled;
   $('flash-bridge').disabled = busy || connection === ble || !manifest || !('serial' in navigator);
+  $('flash-stlink').disabled = busy || !manifest?.pennyesc.bootloader || !navigator.usb;
   $('export-session').disabled = !session || busy;
   $('export-calibration').disabled = !session || busy;
   $('pause').textContent = paused ? 'Resume' : 'Pause';
@@ -484,18 +486,17 @@ $('flash-bridge').onclick = () => operation(async () => {
   message('Bridge flashed. Connect to use it.');
 }, {resume: false});
 $('esc-image').onchange = () => { $('firmware-file').hidden = $('esc-image').value !== 'file'; };
-async function flashPenny(recover) {
-  let image;
-  const newAddress = Number($('new-address').value);
+async function escImage() {
   if ($('esc-image').value === 'file') {
     const file = $('firmware-file').files[0];
     if (!file) throw new Error('Choose a firmware file');
-    image = new Uint8Array(await file.arrayBuffer());
-  } else {
-    const response = await fetch(new URL(manifest.pennyesc.path, new URL('firmware/manifest.json', location.href)), {cache: 'no-store'});
-    if (!response.ok) throw new Error('Firmware download failed');
-    image = new Uint8Array(await response.arrayBuffer());
+    return new Uint8Array(await file.arrayBuffer());
   }
+  return fetchBinary(manifest.pennyesc.path);
+}
+async function flashPenny(recover) {
+  const newAddress = Number($('new-address').value);
+  const image = await escImage();
   $('flash-log').textContent = '';
   await flashEsc(client, image, {recover, newAddress, progress: flashProgress, onLog: flashLog,
     onResetNeeded() { $('flash-state').value = 'Power-cycle PennyESC now'; }});
@@ -506,6 +507,22 @@ async function flashPenny(recover) {
 }
 $('flash-esc').onclick = () => operation(() => flashPenny(false));
 $('recover-esc').onclick = () => operation(() => flashPenny(true));
+$('flash-stlink').onclick = () => operation(async () => {
+  const device = await requestStLink();
+  const address = Number($('new-address').value);
+  $('flash-log').textContent = '';
+  flashProgress('Preparing ST-Link', 0);
+  try {
+    const [boot, app] = await Promise.all([fetchBinary(manifest.pennyesc.bootloader.path), escImage()]);
+    await flashStLink(device, boot, app, address, flashProgress);
+    if (!connection.connected) $('address').value = address;
+    $('flash-state').value = 'PennyESC flashed and verified';
+    flashLog(`Bootloader and firmware verified at address ${address}`);
+  } catch (error) {
+    $('flash-state').value = 'ST-Link flash failed';
+    throw new Error(error.message, {cause: error});
+  }
+});
 
 function download(data, name, type) {
   const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data], {type}));

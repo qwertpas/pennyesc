@@ -94,6 +94,10 @@
         <input id="firmware-file" type="file" accept=".bin,application/octet-stream" hidden aria-label="PennyESC firmware file">
         <label>New address <select id="new-address"></select></label>
         <div class="tools"><button id="flash-esc" class="primary" data-connected data-usb>Flash PennyESC</button><button id="recover-esc" data-connected data-usb>Recover from bootloader</button></div>
+        <div class="tools">
+          <button id="flash-stlink" disabled>Flash via ST-Link</button>
+          <span class="stlink-help" tabindex="0" aria-describedby="stlink-help">?<span id="stlink-help" role="tooltip">Power the ESC and connect SWDIO, SWCLK and GND to the ST-Link. Connect VTref if your probe requires it. Installs the UART bootloader and firmware at the selected address. Requires WebUSB.</span></span>
+        </div>
       </fieldset>
     </div>
     <div class="progress-row"><progress id="flash-progress" max="100" value="0"></progress><output id="flash-state"></output></div>

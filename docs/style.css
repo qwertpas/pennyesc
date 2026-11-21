@@ -7,3 +7,6 @@
 .u-legend .raw .u-marker{border-radius:50%}.u-legend .cross .u-marker{border:0!important;background:none!important;position:relative}.u-legend .cross .u-marker:after{content:"×";position:absolute;font-size:17px;line-height:12px;left:0;top:-1px}.u-legend .circle .u-marker{border-radius:50%;border:0!important;background:currentColor!important}.u-legend .triangle .u-marker{border:0!important;background:currentColor!important;clip-path:polygon(50% 0,100% 100%,0 100%)}
 
 #aux{min-height:432px}#aux fieldset{max-width:950px}#aux-slider{width:100%;padding:0;accent-color:var(--green)}#aux-pulse{width:90px}
+.stlink-help{position:relative;display:grid;place-items:center;width:20px;height:20px;border:1px solid var(--border);border-radius:50%;color:var(--muted);cursor:help}
+.stlink-help [role=tooltip]{display:none;position:absolute;z-index:1;top:calc(100% + 6px);left:-125px;width:250px;padding:8px 10px;border:1px solid var(--border);border-radius:5px;background:white;color:#253144;box-shadow:0 2px 8px #0002;font-size:12px}
+.stlink-help:is(:hover,:focus) [role=tooltip]{display:block}
